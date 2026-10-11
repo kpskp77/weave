@@ -1,0 +1,145 @@
+// 任务簿记：TaskRecord 存储、唯一阻塞点、任务分派入口。
+// 后端无关——所有后端交互都经由 port 契约（port.hpp）。
+
+#include <algorithm>
+#include <stdexcept>
+#include <utility>
+#include <weave/task.hpp>
+
+#include "core_internal.hpp"
+
+namespace weave {
+namespace detail {
+
+std::unordered_map<int, TaskRecord> g_tasks;
+int g_next_id = 1;
+int g_current = -1;
+int g_root = -1;
+
+TaskRecord& record(int id) {
+  auto it = g_tasks.find(id);
+  if (it == g_tasks.end()) throw std::logic_error("weave: invalid task handle");
+  return it->second;
+}
+
+TaskRecord& current() {
+  if (g_current < 0) throw std::logic_error("weave: blocking primitive outside task context");
+  return record(g_current);
+}
+
+int backend_wait(int ev_id, std::int64_t timeout_ticks, TaskRecord& me) {
+  if (me.cancel_armed) {  // 挂起的取消在下一个阻塞点注入
+    me.cancel_armed = false;
+    throw Cancelled{};
+  }
+  me.state = TaskState::WAITING;
+  const int saved = g_current;  // 挂起期间其他任务的切片会改写 g_current
+  int status = 0;
+  port::wait(ev_id, timeout_ticks, me.abort_ev, &status);  // ← 唯一挂起点
+  g_current = saved;                                       // 恢复本切片的任务身份
+  me.state = TaskState::RUNNING;
+  if (status == WS_ABORTED) {
+    me.cancel_armed = false;
+    throw Cancelled{};
+  }
+  return status;
+}
+
+void dispatch_completed(TaskRecord& r) {
+  if (r.state == TaskState::FAILED) std::rethrow_exception(r.eptr);
+  if (r.state == TaskState::CANCELLED) throw Cancelled{};
+}
+
+void add_done_callback(int id, std::function<void()> cb) {
+  auto& r = record(id);
+  if (terminal(r.state))
+    cb();  // 已终结：立即调用
+  else
+    r.done_callbacks.push_back(std::move(cb));
+}
+
+}  // namespace detail
+
+// ── Task ──────────────────────────────────────────────────────────────
+
+void Task::await() {
+  auto& r = detail::record(id_);
+  if (!detail::terminal(r.state)) detail::backend_wait(r.done_ev, -1, detail::current());
+  detail::dispatch_completed(r);
+}
+
+bool Task::done() const {
+  return detail::terminal(detail::record(id_).state);
+}
+
+bool Task::cancelled() const {
+  return detail::record(id_).state == detail::TaskState::CANCELLED;
+}
+
+void Task::cancel() {
+  auto& r = detail::record(id_);
+  switch (r.state) {
+    case detail::TaskState::PENDING:  // body 永不执行（任务入口拦截）
+    case detail::TaskState::RUNNING:  // 下一个阻塞点注入
+      r.cancel_armed = true;
+      break;
+    case detail::TaskState::WAITING:  // 立即唤醒并在阻塞点注入
+      r.cancel_armed = true;
+      port::trigger(r.abort_ev);
+      break;
+    default:
+      break;
+  }
+}
+
+const std::string& Task::get_name() const {
+  return detail::record(id_).name;
+}
+
+Task create_task(std::string name, std::function<void()> body) {
+  const int id = detail::g_next_id++;
+  detail::TaskRecord r;
+  r.name = std::move(name);
+  r.body = std::move(body);
+  r.abort_ev = port::create_event();
+  r.done_ev = port::create_event();
+  detail::g_tasks.emplace(id, std::move(r));
+  port::spawn(id);
+  return Task(id);
+}
+
+void sleep(duration t) {
+  detail::backend_wait(-1, detail::to_ticks(t), detail::current());
+}
+
+}  // namespace weave
+
+// ── 任务分派入口（由各后端进程调用）────────────────────────────────────
+
+extern "C" void weave_task_main(int task_id) {
+  auto& r = weave::detail::record(task_id);
+  const int saved = weave::detail::g_current;
+  weave::detail::g_current = task_id;
+  if (r.cancel_armed) {
+    // 取消发生在 body 首次调度之前：body 永不执行
+    r.cancel_armed = false;
+    r.state = weave::detail::TaskState::CANCELLED;
+  } else {
+    r.state = weave::detail::TaskState::RUNNING;
+    try {
+      r.body();
+      r.state = weave::detail::TaskState::DONE;  // 吞掉 Cancelled 后正常返回 → DONE
+    } catch (const weave::Cancelled&) {
+      r.state = weave::detail::TaskState::CANCELLED;
+    } catch (...) {
+      r.state = weave::detail::TaskState::FAILED;
+      r.eptr = std::current_exception();
+    }
+  }
+  weave::detail::g_current = saved;
+  auto cbs = std::move(r.done_callbacks);
+  r.done_callbacks.clear();
+  for (auto& cb : cbs)
+    cb();                           // gather 计数等（无任务上下文执行）
+  weave::port::trigger(r.done_ev);  // 唤醒 await 者 / 测试等待链
+}
