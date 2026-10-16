@@ -17,12 +17,17 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 | `task.get_name()` | `task.get_name()` | |
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 为零时间让出 |
 | `Event::wait/set/clear` | `asyncio.Event` | set/clear 竞态采用 edge 语义 |
-| `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | 默认形态（无 `return_exceptions`） |
+| `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | 默认形态（首失败即抛） |
+| `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | 返回 `vector<exception_ptr>`，不提前抛出 |
 | `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义 |
+| `wait({t1, ...}, return_when, timeout)` | `await asyncio.wait(fs, ...)` | 返回 `{done, pending}`；不取消子任务 |
+| `shield(t)` | `asyncio.shield(aw)` | 返回代理任务；取消/超时止于代理 |
+| `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` 按完成顺序阻塞产出 |
+| `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | 结构化并发；首失败取消兄弟 |
 | `Cancelled` / `Timeout` | `CancelledError` / `TimeoutError` | |
 | `WEAVE_TEST` + 注册表 | pytest / 各类 runner | 无对应原语；由后端引导入口运行 |
 
-规划中的扩展一一对齐 asyncio：`TaskGroup`（结构化并发）、`Queue` / `Lock` / `Semaphore` / `Condition`，见[演进方向](#演进方向)。
+规划中的扩展一一对齐 asyncio：`Queue` / `Lock` / `Semaphore` / `Condition`，见[演进方向](#演进方向)。
 
 ### 模型差异（相对 Python，必读）
 
@@ -34,7 +39,7 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 
 ### 已知偏差
 
-- 无 `return_exceptions=True` 形态；
+- `TaskGroup` 无 `ExceptionGroup`：`wait()` 重抛首个失败（按完成顺序）；
 - gather 提前返回后，其余任务晚到的失败仅留在任务簿记中（无 Python 的 "exception was never retrieved" 告警）。
 
 ## 目录结构
@@ -82,6 +87,5 @@ WEAVE_TEST(my_test) {
 
 ## 演进方向
 
-- **sync.hpp**：TaskGroup（失败即取消兄弟，补齐 gather 不取消兄弟的另一面）、gather 的 `return_exceptions`、shield、as_completed、asyncio.wait（FIRST_COMPLETED）——均建于 Event + 唯一阻塞点之上，后端零改动
 - **通信原语**：Queue / Lock / Semaphore / Condition（新头文件 queue.hpp / locks.hpp）
 - **后端**：契约稳定于 `src/core/port.hpp`；SVDPI 与 SystemC 均已在各自工具链验证

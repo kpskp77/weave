@@ -175,5 +175,72 @@ WEAVE_TEST(gather_semantics) {
   // case 7: 空任务组 → 立即返回
   run_case(__func__, "case7", [&] { gather(); });
 
+  // case 8: return_exceptions 形态：全部成功 → 全 nullptr
+  run_case(__func__, "case8", [&] {
+    auto a = create_task("re8_a", [] {});
+    auto b = create_task("re8_b", [] {});
+    auto res = gather({a, b}, return_exceptions);
+    if (res.size() != 2) throw std::logic_error("case8: result count mismatch");
+    if (res[0] || res[1]) throw std::logic_error("case8: all-success results must be nullptr");
+  });
+
+  // case 9: return_exceptions 形态：混合终态全部落地后才返回，按输入顺序映射
+  //   DONE → nullptr；FAILED → 其异常；CANCELLED → 包装 Cancelled
+  run_case(__func__, "case9", [&] {
+    Event block;
+    auto ok = create_task("re9_ok", [] {});
+    auto bad = create_task("re9_bad", [] { throw std::runtime_error("re9_fail"); });
+    auto victim = create_task("re9_victim", [&] { block.wait(); });
+    auto killer = create_task("re9_killer", [&] { victim.cancel(); });
+    auto res = gather({ok, bad, victim}, return_exceptions);  // 不提前抛出
+    if (res.size() != 3) throw std::logic_error("case9: result count mismatch");
+    if (res[0]) throw std::logic_error("case9: DONE must map to nullptr");
+    if (!res[1]) throw std::logic_error("case9: FAILED must map to its exception");
+    try {
+      std::rethrow_exception(res[1]);
+    } catch (const std::runtime_error& e) {
+      if (std::string(e.what()) != "re9_fail")
+        throw std::logic_error("case9: wrong exception mapped");
+    }
+    if (!res[2]) throw std::logic_error("case9: CANCELLED must map to Cancelled");
+    try {
+      std::rethrow_exception(res[2]);
+      throw std::logic_error("case9: unreachable");
+    } catch (const Cancelled&) {
+      // 预期路径
+    }
+    // 全部落地才返回：victim 已终态
+    if (!victim.cancelled()) throw std::logic_error("case9: victim should be settled");
+    killer.await();
+  });
+
+  // case 10: return_exceptions 形态自身被取消 → 取消未完成任务并传播
+  // （与默认形态一致，不收集进结果向量）
+  run_case(__func__, "case10", [&] {
+    Event block;
+    Event grp_ready;
+    auto child = create_task("re10_child", [&] { block.wait(); });
+    auto grp = create_task("re10_grp", [&] {
+      grp_ready.set();
+      try {
+        gather({child}, return_exceptions);
+        throw std::logic_error("case10: unreachable");
+      } catch (const Cancelled&) {
+        // 预期路径
+      }
+    });
+    grp_ready.wait();
+    grp.cancel();
+    grp.await();
+    try {
+      child.await();
+      throw std::logic_error("case10: child should throw Cancelled");
+    } catch (const Cancelled&) {
+      // 预期路径
+    }
+    if (!child.cancelled())
+      throw std::logic_error("case10: outer cancel must cancel pending children");
+  });
+
   report(__func__);
 }

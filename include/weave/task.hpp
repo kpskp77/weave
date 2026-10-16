@@ -18,6 +18,9 @@ class Task;
 namespace detail {
 // 组合原语入口（定义于 src/core/sync.cpp）；此处声明仅供 Task 友元引用。
 void gather_impl(std::initializer_list<Task> tasks);
+// 组合原语内部的句柄/id 互转（定义于 src/core/task.cpp）。
+int task_id(const Task& t);
+Task task_from_id(int id);
 // 后端引导入口（定义于 src/core/registry.cpp）；仅供后端适配层使用。
 int run_registered_test();
 }  // namespace detail
@@ -45,6 +48,8 @@ private:
 
   friend Task create_task(std::string name, std::function<void()> body);
   friend void detail::gather_impl(std::initializer_list<Task> tasks);
+  friend int detail::task_id(const Task& t);
+  friend Task detail::task_from_id(int id);
   friend void wait_for(Task& task, duration timeout);
   friend int detail::run_registered_test();
 };

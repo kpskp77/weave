@@ -40,6 +40,11 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks, TaskRecord& me) {
   me.state = TaskState::RUNNING;
   if (status == WS_ABORTED) {
     me.cancel_armed = false;
+    // 重建 abort 事件：已触发事件的"triggered"状态在后端会滞留
+    // （SystemC 的 change_stamp 判等、SV 的同槽 triggered 标志），
+    // 任务捕获 Cancelled 后在同一 abort_ev 上再次阻塞会被误判为取消命中。
+    port::destroy_event(me.abort_ev);
+    me.abort_ev = port::create_event();
     throw Cancelled{};
   }
   return status;
@@ -56,6 +61,14 @@ void add_done_callback(int id, std::function<void()> cb) {
     cb();  // 已终结：立即调用
   else
     r.done_callbacks.push_back(std::move(cb));
+}
+
+int task_id(const Task& t) {
+  return t.id_;
+}
+
+Task task_from_id(int id) {
+  return Task(id);
 }
 
 }  // namespace detail

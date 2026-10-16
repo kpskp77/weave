@@ -117,6 +117,12 @@ verible-verilog-format --inplace --flagfile=.verible-format <改动的 .sv>
 
 ## 本环境的坑（已踩过）
 
+- **已触发事件的 triggered 状态会滞留**：SystemC 的 `sc_event::triggered()` 按
+  `change_stamp` 判等、SV 的 `triggered` 标志同槽持续——任务捕获 `Cancelled` 后在
+  同一 abort_ev 上再次阻塞会被误判为取消命中。因此 `backend_wait` 注入取消后必须
+  销毁并重建该任务的 abort_ev（见 `src/core/task.cpp`）。同理，组合原语使用裸 port
+  事件时必须用 waiting 标志保证 trigger 必有等待者（无等待者的 trigger 会留下未消费
+  的 delta notification，destroy 后后端侧是未定义行为）。
 - xmake-repo 的 SystemC 按 **C 链接**找 `sc_main`：入口必须 `extern "C"`（见 `tests/sc_main.cpp`）。
 - 此 xmake 版本：`add_requires` 只能在顶层作用域且不能跟在 option/target 定义之后（作用域泄漏）；`has_config(name, value)` 对 set_values 选项不可靠，用 `get_config(name) == "..."`。
 - 时间换算用 `__int128` 防溢出；`ticks_per_sec()` 首次经 port 查询后缓存（static local）。

@@ -49,8 +49,10 @@ target("weave_sc_smoke")
     add_includedirs("include")
     add_defines("WEAVE_BACKEND_SYSTEMC")
     add_files("src/core/*.cpp", "src/backend/*.cpp",
-              "tests/event_semantics.cpp", "tests/gather_semantics.cpp",
-              "tests/task_semantics.cpp", "tests/wait_for_semantics.cpp",
+              "tests/as_completed_semantics.cpp", "tests/event_semantics.cpp",
+              "tests/gather_semantics.cpp", "tests/shield_semantics.cpp",
+              "tests/task_semantics.cpp", "tests/taskgroup_semantics.cpp",
+              "tests/wait_for_semantics.cpp", "tests/wait_semantics.cpp",
               "tests/sc_main.cpp")
     add_packages("systemc")
 
@@ -62,8 +64,10 @@ target("weave_svdpi_smokelib")
     add_includedirs("include")
     add_defines("WEAVE_BACKEND_SVDPI")
     add_files("src/core/*.cpp", "src/backend/*.cpp",
-              "tests/event_semantics.cpp", "tests/gather_semantics.cpp",
-              "tests/task_semantics.cpp", "tests/wait_for_semantics.cpp")
+              "tests/as_completed_semantics.cpp", "tests/event_semantics.cpp",
+              "tests/gather_semantics.cpp", "tests/shield_semantics.cpp",
+              "tests/task_semantics.cpp", "tests/taskgroup_semantics.cpp",
+              "tests/wait_for_semantics.cpp", "tests/wait_semantics.cpp")
     add_packages("svdpi")
 
 -- SVDPI 自检驱动（binary 且 *_smoke 结尾，自动纳入 xmake smoke）：

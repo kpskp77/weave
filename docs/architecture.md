@@ -59,7 +59,7 @@ weave/config.hpp   后端选择宏（默认 SVDPI）
 weave/time.hpp     duration（int64 飞秒）+ 字面量
 weave/task.hpp     Task / create_task / sleep / Cancelled
 weave/event.hpp    Event
-weave/sync.hpp     gather / wait_for / Timeout（组合原语扩展入口）
+weave/sync.hpp     gather / wait_for / wait / shield / as_completed / TaskGroup
 weave/test.hpp     WEAVE_TEST 注册
 weave/sc.hpp       SystemC 后端引导入口
 weave.hpp          umbrella：只依赖本文件即获得全部公共 API
