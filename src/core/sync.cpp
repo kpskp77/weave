@@ -52,7 +52,9 @@ void gather_impl(std::initializer_list<Task> tasks) {
   try {
     st->wake.wait();
   } catch (const Cancelled&) {
-    // gather 被取消：取消所有未完成任务后传播（asyncio 语义）
+    // gather 被取消：取消所有未完成任务后传播（asyncio 语义）。
+    // 级联取消的兄弟任务不携带 gather 调用者的 msg（那是父任务的上下文，
+    // 兄弟任务是被连带取消，msg 属于取消发起方），故传空串。
     for (const Task& t : tasks) {
       if (!terminal(record(t.id_).state)) Task(t.id_).cancel();
     }
@@ -85,7 +87,9 @@ std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return
       if (r.state == detail::TaskState::FAILED)
         st->results[i] = r.eptr;
       else if (r.state == detail::TaskState::CANCELLED)
-        st->results[i] = std::make_exception_ptr(Cancelled{});
+        // return_exceptions 形态的 CANCELLED 映射：重投带原 msg 的 Cancelled，
+        // 对齐 asyncio.gather(*aws, return_exceptions=True) 对 CancelledError(msg) 的保留
+        st->results[i] = std::make_exception_ptr(detail::cancelled_with_msg(r.cancel_msg.c_str()));
       if (--st->remaining == 0) st->wake.set();
     });
     ++i;
@@ -120,8 +124,9 @@ void wait_for(Task& task, duration timeout) {
     detail::dispatch_completed(r);
     return;
   }
-  // 超时：取消并等待取消完成（asyncio 语义），随后抛 Timeout
-  task.cancel();
+  // 超时：取消并等待取消完成（asyncio 语义），随后抛 Timeout。
+  // 取消带 msg 标明原因是 wait_for 超时（对齐 asyncio 3.12+：超时的内部取消会标记来源）。
+  task.cancel("wait_for timeout");
   detail::backend_wait(r.done_ev, -1, me);
   throw Timeout{};
 }
@@ -316,6 +321,8 @@ void TaskGroup::wait() {
   }
 
   if (cancelled || st->failed) {
+    // 首个 FAILED 或等待者被取消：取消所有未完成兄弟（对齐 asyncio TaskGroup）。
+    // 级联取消的兄弟不携带调用者的 msg（msg 属于取消发起方的上下文）。
     for (Task& t : children) {
       if (!t.done()) t.cancel();
     }
@@ -335,7 +342,11 @@ void TaskGroup::wait() {
   port::destroy_event(st->wake_ev);
   port::destroy_event(st->drain_ev);
 
-  if (cancelled) throw Cancelled{};
+  if (cancelled) {
+    // TaskGroup 等待者被取消：抛出携带调用者当前任务 cancel_msg 的 Cancelled，
+    // 让 await 本任务的更外层能看到外层取消原因（对齐 asyncio 的 CancelledError(msg) 传播）。
+    throw detail::cancelled_with_msg(detail::current().cancel_msg.c_str());
+  }
   if (st->failed) detail::dispatch_completed(detail::record(st->first_failed));
 }
 

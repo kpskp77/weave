@@ -55,7 +55,8 @@ src/backend/      svdpi.cpp(默认) / systemc.cpp，整文件由 WEAVE_BACKEND_*
 改动 `src/core/` 时逐条自查：
 
 - **唯一阻塞点**：一切挂起都经 `detail::backend_wait()` → `port::wait`。不得在任何其他地方引入挂起。
-- **协作式取消**：`cancel()` 只置 `cancel_armed` + 触发私有 abort 事件；`Cancelled` 在阻塞点注入；body 吞掉 `Cancelled` 正常返回 → 任务 DONE。禁止强杀进程（破坏 C++ RAII 展开）。
+- **协作式取消**：`cancel(msg)` 只置 `cancel_armed` + 记录 msg + 触发私有 abort 事件；`Cancelled(msg)` 在阻塞点注入；body 吞掉 `Cancelled` 正常返回 → 任务 DONE。禁止强杀进程（破坏 C++ RAII 展开）。msg 对齐 asyncio 3.9+：注入点与 `await`/`gather` 重投处保留同一 msg，级联取消兄弟传空 msg。
+  异常类型分层不可改：`Cancelled` **不派生** `std::exception`（对齐 asyncio 的 `BaseException` 分层，避免被 `catch (const std::exception&)` 兜底静默吞掉取消）；`Timeout` **派生** `std::exception`（对齐 `TimeoutError` 属普通 `Exception`）。
 - **Event edge 语义**：`set()` 快照当前等待者并逐个触发一次性唤醒事件，放行后不复查 flag。`Event::wait()` 成功与取消**两条路径都必须先从 `wake_evs` 摘除再销毁唤醒事件**——否则后续 `set()`（如 gather 提前返回后晚到的兄弟完成）会对已销毁 id 触发（SV 侧空指针解引用）。此 bug 曾真实发生过。
 - **时间**：内部 int64 飞秒；`to_ticks` 向上取整保证至少睡够；`sleep(0)` 保持 0 tick（零时间让出）。
 - **失败传播的 asyncio 语义**：`gather` 首个失败按**完成顺序**立即重抛，兄弟任务不取消（取消兄弟是 TaskGroup 语义）；gather 自身被取消时先级联取消所有未完成任务再传播 `Cancelled`。`wait_for` 超时 → 取消并等取消完成 → 抛 `Timeout`。

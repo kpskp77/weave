@@ -30,7 +30,7 @@ TaskRecord& current() {
 int backend_wait(int ev_id, std::int64_t timeout_ticks, TaskRecord& me) {
   if (me.cancel_armed) {  // 挂起的取消在下一个阻塞点注入
     me.cancel_armed = false;
-    throw Cancelled{};
+    throw cancelled_with_msg(me.cancel_msg.c_str());
   }
   me.state = TaskState::WAITING;
   const int saved = g_current;  // 挂起期间其他任务的切片会改写 g_current
@@ -45,14 +45,16 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks, TaskRecord& me) {
     // 任务捕获 Cancelled 后在同一 abort_ev 上再次阻塞会被误判为取消命中。
     port::destroy_event(me.abort_ev);
     me.abort_ev = port::create_event();
-    throw Cancelled{};
+    throw cancelled_with_msg(me.cancel_msg.c_str());
   }
   return status;
 }
 
 void dispatch_completed(TaskRecord& r) {
   if (r.state == TaskState::FAILED) std::rethrow_exception(r.eptr);
-  if (r.state == TaskState::CANCELLED) throw Cancelled{};
+  // CANCELLED 终态重投带原 msg 的 Cancelled（对齐 asyncio：await 取消任务者收到
+  // 同一 CancelledError(msg)）
+  if (r.state == TaskState::CANCELLED) throw cancelled_with_msg(r.cancel_msg.c_str());
 }
 
 void add_done_callback(int id, std::function<void()> cb) {
@@ -89,8 +91,9 @@ bool Task::cancelled() const {
   return detail::record(id_).state == detail::TaskState::CANCELLED;
 }
 
-void Task::cancel() {
+void Task::cancel(std::string msg) {
   auto& r = detail::record(id_);
+  if (!r.cancel_armed) r.cancel_msg = std::move(msg);  // 首个取消者的 msg 生效（对齐 asyncio）
   switch (r.state) {
     case detail::TaskState::PENDING:  // body 永不执行（任务入口拦截）
     case detail::TaskState::RUNNING:  // 下一个阻塞点注入
@@ -124,6 +127,19 @@ Task create_task(std::string name, std::function<void()> body) {
 void sleep(duration t) {
   detail::backend_wait(-1, detail::to_ticks(t), detail::current());
 }
+
+namespace detail {
+
+Cancelled cancelled_with_msg(const char* msg) noexcept {
+  Cancelled c;
+  // msg 指向 TaskRecord::cancel_msg 的 c_str()，由簿记所有；指针仅在本次 throw
+  // 及其沿途捕获的生命周期内有效（TaskRecord 在任务终结前不销毁）。
+  // 空串视为无 msg（对齐 asyncio 的 None），Cancelled.msg() 返回 nullptr。
+  c.msg_ = (msg && msg[0] != '\0') ? msg : nullptr;
+  return c;
+}
+
+}  // namespace detail
 
 }  // namespace weave
 

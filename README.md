@@ -12,7 +12,7 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 |---|---|---|
 | `create_task(name, fn)` | `asyncio.create_task(coro)` | fn 为普通函数；调度而非立即运行 |
 | `task.await()` | `await task` | FAILED 重抛其异常；CANCELLED 抛 `Cancelled` |
-| `task.cancel()` | `task.cancel()` | 协作式：下一阻塞点注入，可捕获拒绝 |
+| `task.cancel()` / `task.cancel(msg)` | `task.cancel(msg)` | 协作式；msg 对齐 asyncio 3.9+，注入与 await 重投时保留 |
 | `task.done()` / `task.cancelled()` | `task.done()` / `task.cancelled()` | |
 | `task.get_name()` | `task.get_name()` | |
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 为零时间让出 |
@@ -24,7 +24,7 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 | `shield(t)` | `asyncio.shield(aw)` | 返回代理任务；取消/超时止于代理 |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` 按完成顺序阻塞产出 |
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | 结构化并发；首失败取消兄弟 |
-| `Cancelled` / `Timeout` | `CancelledError` / `TimeoutError` | |
+| `Cancelled` / `Timeout` | `CancelledError` / `TimeoutError` | 取消不派生 `std::exception`（对齐 `BaseException` 分层）；`Timeout` 派生 |
 | `WEAVE_TEST` + 注册表 | pytest / 各类 runner | 无对应原语；由后端引导入口运行 |
 
 规划中的扩展一一对齐 asyncio：`Queue` / `Lock` / `Semaphore` / `Condition`，见[演进方向](#演进方向)。

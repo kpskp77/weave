@@ -18,7 +18,13 @@
 
 namespace weave {
 
-struct Timeout {};  // 对应 asyncio.TimeoutError，wait_for 超时抛出
+// 超时信号。对应 asyncio.TimeoutError，wait_for 超时抛出。
+// 与 Cancelled 不同，这里派生 std::exception：asyncio 的 TimeoutError 属于普通
+// Exception（OSError 子类），超时是可被通用 catch (const std::exception&) 兜底
+// 处理的普通失败路径。
+struct Timeout : std::exception {
+  const char* what() const noexcept override { return "weave::Timeout"; }
+};
 
 // ── gather ────────────────────────────────────────────────────────────
 

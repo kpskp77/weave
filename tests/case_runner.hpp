@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <exception>
+#include <weave/task.hpp>
 
 namespace weave_test {
 
@@ -32,6 +33,13 @@ template <typename F>
 void run_case(const char* test, const char* name, F&& body) {
   try {
     body();
+  } catch (const weave::Cancelled& e) {
+    // Cancelled 刻意不派生 std::exception（见 include/weave/task.hpp），
+    // 必须在 std::exception 之前单独接住，否则只会落到 catch (...)。
+    ++failed_count();
+    std::printf("[FAIL] %s::%s: %s\n", test, name, e.what());
+    std::fflush(stdout);
+    throw;
   } catch (const std::exception& e) {
     ++failed_count();
     std::printf("[FAIL] %s::%s: %s\n", test, name, e.what());

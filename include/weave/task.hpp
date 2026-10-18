@@ -11,7 +11,35 @@
 
 namespace weave {
 
-struct Cancelled {};  // 对应 asyncio.CancelledError，在任务阻塞点注入
+class Task;
+struct Cancelled;
+
+namespace detail {
+struct TaskRecord;  // 核心簿记（定义于 src/core/core_internal.hpp）
+
+// 构造带消息的 Cancelled（msg 由 TaskRecord 所有，指针在 throw 生命周期内有效）。
+// 暴露给 detail:: 以便 sync.cpp 的 dispatch 路径保留原消息。
+Cancelled cancelled_with_msg(const char* msg) noexcept;
+}  // namespace detail
+
+// 取消信号。对应 asyncio.CancelledError，在任务阻塞点注入。
+// 刻意不派生 std::exception：对齐 asyncio 3.8 起 CancelledError 归入 BaseException
+// 的分层——用户惯用的 catch (const std::exception&) 兜底不得静默吞掉取消（吞掉会使
+// 任务错误地以 DONE 结束，破坏 gather / TaskGroup / wait_for 对 CANCELLED 终态的
+// 判定）。捕获请显式写 catch (const weave::Cancelled&) 或 catch (...)。
+//
+// 消息对齐 asyncio Task.cancel(msg)（Python 3.9+）：msg 为取消者可选传入的说明，
+// 空消息表示普通取消；msg() 返回的指针仅在捕获该异常的同一 throw 生命周期内有效。
+struct Cancelled {
+  const char* what() const noexcept {  // 诊断用，非虚
+    return msg_ ? msg_ : "weave::Cancelled";
+  }
+  const char* msg() const noexcept { return msg_; }
+
+private:
+  const char* msg_ = nullptr;
+  friend Cancelled detail::cancelled_with_msg(const char* msg) noexcept;
+};
 
 class Task;
 
@@ -38,9 +66,11 @@ public:
   bool valid() const { return id_ >= 0; }
   const std::string& get_name() const;  // 对齐 asyncio.Task.get_name()
 
-  // 协作式取消：PENDING → body 不执行；RUNNING → 下一个阻塞点抛 Cancelled；
-  // WAITING → 立即唤醒并在阻塞点抛 Cancelled。任务可捕获 Cancelled 拒绝取消。
-  void cancel();
+  // 协作式取消（对齐 asyncio Task.cancel(msg)，Python 3.9+）：
+  // PENDING → body 不执行；RUNNING → 下一个阻塞点抛 Cancelled(msg)；
+  // WAITING → 立即唤醒并在阻塞点抛 Cancelled(msg)。任务可捕获 Cancelled 拒绝取消。
+  // msg 为可选的取消原因说明，空串表示普通取消；await 该任务者会看到带同一 msg 的 Cancelled。
+  void cancel(std::string msg = {});
 
 private:
   explicit Task(int id) : id_(id) {}

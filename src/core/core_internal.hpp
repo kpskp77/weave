@@ -33,6 +33,9 @@ struct TaskRecord {
   int abort_ev = -1;  // 每任务私有取消事件（每个阻塞等待都附带此腿）
   int done_ev = -1;   // 任务完成事件（单调，可被任意多方等待）
   bool cancel_armed = false;
+  // 对齐 asyncio Task.cancel(msg) 的 _cancel_message：cancel() 记下的取消原因，
+  // 注入 Cancelled 时取 c_str()；任务进入 CANCELLED 后仍保留，供 await 重投时取同一 msg。
+  std::string cancel_msg;
   std::vector<std::function<void()>> done_callbacks;
 };
 

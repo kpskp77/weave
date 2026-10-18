@@ -40,7 +40,9 @@ Weave 的用户代码运行在仿真器进程内，挂起/恢复由仿真内核�
 
 ### 为什么取消是协作式
 
-`cancel()` 只置标志 + 唤醒，在阻塞点注入 `Cancelled` 异常。禁用 SV `disable` / `process::kill()`：强杀会在任意点撕裂 C++ 调用栈，RAII 不展开、资源泄漏、簿记状态错乱。这与 asyncio 的协作式取消（`CancelledError` 在 await 点抛出、可捕获拒绝）同构。
+`cancel()` 只置标志 + 唤醒，在阻塞点注入 `Cancelled` 异常。禁用 SV `disable` / `process::kill()`：强杀会在任意点撕裂 C++ 调用栈，RAII 不展开、资源泄漏、簿记状态错乱。这与 asyncio 的协作式取消（`CancelledError` 在 await 点抛出、可捕获拒绝）同构。`cancel(msg)` 对齐 asyncio 3.9+ 的 `Task.cancel(msg)`：msg 存入任务簿记，在阻塞点注入的 `Cancelled` 与后续 `await`/`gather` 重投处保留同一 msg；组合原语级联取消兄弟任务时传空 msg（msg 属于取消发起方上下文）。
+
+取消信号的类型分层同样对齐 asyncio：`Cancelled` **刻意不派生 `std::exception`**（对应 Python 3.8 起 `CancelledError` 属于 `BaseException`），使惯用的 `catch (const std::exception&)` 兜底不会静默吞掉取消——吞掉会让任务错误地以 DONE 结束，破坏 gather / TaskGroup / wait_for 对 CANCELLED 终态的判定；`Timeout` 则**派生 `std::exception`**（对应 `TimeoutError` 属于普通 `Exception`），超时是可由通用日志/兜底代码处理的普通失败路径。
 
 ### Event 的 edge 语义
 
