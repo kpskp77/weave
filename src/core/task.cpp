@@ -27,8 +27,9 @@ TaskRecord& current() {
   return record(g_current);
 }
 
-int backend_wait(int ev_id, std::int64_t timeout_ticks, TaskRecord& me) {
-  if (me.cancel_armed) {  // 挂起的取消在下一个阻塞点注入
+int backend_wait(int ev_id, std::int64_t timeout_ticks) {
+  TaskRecord& me = current();  // 被挂起者恒为当前任务（只能挂起自身）
+  if (me.cancel_armed) {       // 挂起的取消在下一个阻塞点注入
     me.cancel_armed = false;
     throw cancelled_with_msg(me.cancel_msg.c_str());
   }
@@ -79,7 +80,7 @@ Task task_from_id(int id) {
 
 void Task::await() {
   auto& r = detail::record(id_);
-  if (!detail::terminal(r.state)) detail::backend_wait(r.done_ev, -1, detail::current());
+  if (!detail::terminal(r.state)) detail::backend_wait(r.done_ev, -1);
   detail::dispatch_completed(r);
 }
 
@@ -125,7 +126,7 @@ Task create_task(std::string name, std::function<void()> body) {
 }
 
 void sleep(duration t) {
-  detail::backend_wait(-1, detail::to_ticks(t), detail::current());
+  detail::backend_wait(-1, detail::to_ticks(t));
 }
 
 namespace detail {

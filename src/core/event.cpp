@@ -36,7 +36,7 @@ void Event::wait() {
   const int w = port::create_event();
   impl_->wake_evs.push_back(w);
   try {
-    detail::backend_wait(w, -1, detail::current());
+    detail::backend_wait(w, -1);
   } catch (...) {
     // 取消路径：唤醒事件未被 set() 消费，自行摘除并销毁
     auto& v = impl_->wake_evs;

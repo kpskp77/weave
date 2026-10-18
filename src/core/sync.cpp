@@ -118,8 +118,7 @@ void wait_for(Task& task, duration timeout) {
     detail::dispatch_completed(r);
     return;
   }
-  auto& me = detail::current();
-  const int st = detail::backend_wait(r.done_ev, detail::to_ticks(timeout), me);
+  const int st = detail::backend_wait(r.done_ev, detail::to_ticks(timeout));
   if (st == detail::WS_EVENT) {
     detail::dispatch_completed(r);
     return;
@@ -127,7 +126,7 @@ void wait_for(Task& task, duration timeout) {
   // 超时：取消并等待取消完成（asyncio 语义），随后抛 Timeout。
   // 取消带 msg 标明原因是 wait_for 超时（对齐 asyncio 3.12+：超时的内部取消会标记来源）。
   task.cancel("wait_for timeout");
-  detail::backend_wait(r.done_ev, -1, me);
+  detail::backend_wait(r.done_ev, -1);
   throw Timeout{};
 }
 
@@ -169,8 +168,7 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when, durat
   if (!st->signalled && timeout.count() != 0) {
     try {
       st->waiting = true;
-      detail::backend_wait(st->wake_ev, timeout.count() < 0 ? -1 : detail::to_ticks(timeout),
-                           detail::current());
+      detail::backend_wait(st->wake_ev, timeout.count() < 0 ? -1 : detail::to_ticks(timeout));
       st->waiting = false;
     } catch (...) {
       st->waiting = false;
@@ -233,7 +231,7 @@ Task AsCompleted::next() {
     if (st.produced >= st.total) throw std::logic_error("as_completed: no more tasks");
     st.waiting = true;
     try {
-      detail::backend_wait(st.wake_ev, -1, detail::current());
+      detail::backend_wait(st.wake_ev, -1);
     } catch (...) {
       st.waiting = false;  // 取消只中断 next() 本身，队列与子任务不受影响
       throw;
@@ -313,7 +311,7 @@ void TaskGroup::wait() {
   if (!st->failed && st->remaining > 0) {  // 注册期间未满足唤醒条件才阻塞
     st->waiting = true;
     try {
-      detail::backend_wait(st->wake_ev, -1, detail::current());
+      detail::backend_wait(st->wake_ev, -1);
     } catch (const Cancelled&) {
       cancelled = true;  // 等待者被取消：级联取消全部未完成子任务
     }
@@ -332,7 +330,7 @@ void TaskGroup::wait() {
     while (st->remaining > 0) {
       st->draining = true;
       try {
-        detail::backend_wait(st->drain_ev, -1, detail::current());
+        detail::backend_wait(st->drain_ev, -1);
       } catch (const Cancelled&) {
         // 二次取消：继续等落地
       }

@@ -50,7 +50,9 @@ TaskRecord& current();
 
 // 唯一阻塞点：所有原语都经此进入后端等待。职责：取消预检 → 状态标记 →
 // 保存/恢复 g_current → 取消注入。
-int backend_wait(int ev_id, std::int64_t timeout_ticks, TaskRecord& me);
+// 被挂起者恒为 current()：asyncio 语义下挂起只会是自身挂起（作用于其他任务
+// 一律是唤醒/取消，不是挂起），故不接受外部传入任务记录。
+int backend_wait(int ev_id, std::int64_t timeout_ticks);
 
 void dispatch_completed(TaskRecord& r);
 void add_done_callback(int id, std::function<void()> cb);
