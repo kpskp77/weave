@@ -168,7 +168,6 @@ extern "C" void weave_task_main(int task_id) {
   weave::detail::g_current = saved;
   auto cbs = std::move(r.done_callbacks);
   r.done_callbacks.clear();
-  for (auto& cb : cbs)
-    cb();                           // gather 计数等（无任务上下文执行）
+  for (auto& cb : cbs) cb();        // gather 计数等（无任务上下文执行）
   weave::port::trigger(r.done_ev);  // 唤醒 await 者 / 测试等待链
 }

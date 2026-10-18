@@ -24,8 +24,7 @@ void Event::set() {
   impl_->flag = true;
   const auto pending = std::move(impl_->wake_evs);  // 快照当前等待者
   impl_->wake_evs.clear();
-  for (int w : pending)
-    port::trigger(w);
+  for (int w : pending) port::trigger(w);
 }
 
 void Event::clear() {
