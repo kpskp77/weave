@@ -93,7 +93,7 @@ bool Task::cancelled() const {
   return detail::record(id_).state == detail::TaskState::CANCELLED;
 }
 
-void Task::cancel(std::string msg) {
+void Task::cancel(std::string msg) const {
   auto& r = detail::record(id_);
   if (!r.cancel_armed) r.cancel_msg = std::move(msg);  // 首个取消者的 msg 生效（对齐 asyncio）
   switch (r.state) {

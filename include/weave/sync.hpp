@@ -58,7 +58,7 @@ inline constexpr return_exceptions_t return_exceptions{};
 // ── wait_for ──────────────────────────────────────────────────────────
 
 // 超时即 cancel 任务并等待取消完成，然后抛 Timeout（asyncio 3.12+ 语义）。
-void wait_for(Task& task, duration timeout);
+void wait_for(const Task& task, duration timeout);
 
 // ── wait（asyncio.wait）────────────────────────────────────────────────
 

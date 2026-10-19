@@ -87,7 +87,9 @@ public:
   // PENDING → body 不执行；RUNNING → 下一个阻塞点抛 Cancelled(msg)；
   // WAITING → 立即唤醒并在阻塞点抛 Cancelled(msg)。任务可捕获 Cancelled 拒绝取消。
   // msg 为可选的取消原因说明，空串表示普通取消；await 该任务者会看到带同一 msg 的 Cancelled。
-  void cancel(std::string msg = {});
+  // const：Task 是句柄，取消改的是被引用任务的簿记状态而非句柄本身（同 shared_ptr 的
+  // operator* const 语义），因此允许经由 const Task& 发起取消（如 gather 的级联取消）。
+  void cancel(std::string msg = {}) const;
 
 private:
   explicit Task(int id) : id_(id) {}
@@ -97,7 +99,6 @@ private:
   friend void detail::gather_impl(std::initializer_list<Task> tasks);
   friend int detail::task_id(const Task& t);
   friend Task detail::task_from_id(int id);
-  friend void wait_for(Task& task, duration timeout);
   friend int detail::run_registered_test();
 };
 

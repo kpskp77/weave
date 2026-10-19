@@ -56,7 +56,7 @@ void gather_impl(std::initializer_list<Task> tasks) {
     // 级联取消的兄弟任务不携带 gather 调用者的 msg（那是父任务的上下文，
     // 兄弟任务是被连带取消，msg 属于取消发起方），故传空串。
     for (const Task& t : tasks) {
-      if (!terminal(record(t.id_).state)) Task(t.id_).cancel();
+      if (!t.done()) t.cancel();
     }
     throw;
   }
@@ -100,10 +100,7 @@ std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return
   } catch (const Cancelled&) {
     // gather 被取消：取消所有未完成任务后传播（与默认形态一致）
     for (const Task& t : tasks) {
-      if (!t.done()) {
-        Task copy = t;  // cancel() 非 const
-        copy.cancel();
-      }
+      if (!t.done()) t.cancel();
     }
     throw;
   }
@@ -112,7 +109,7 @@ std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return
 
 // ── wait_for ──────────────────────────────────────────────────────────
 
-void wait_for(Task& task, duration timeout) {
+void wait_for(const Task& task, duration timeout) {
   auto& r = detail::record(detail::task_id(task));
   if (detail::terminal(r.state)) {
     detail::dispatch_completed(r);
@@ -324,7 +321,7 @@ void TaskGroup::wait() {
   if (cancelled || st->failed) {
     // 首个 FAILED 或等待者被取消：取消所有未完成兄弟（对齐 asyncio TaskGroup）。
     // 级联取消的兄弟不携带调用者的 msg（msg 属于取消发起方的上下文）。
-    for (Task& t : children) {
+    for (const Task& t : children) {
       if (!t.done()) t.cancel();
     }
     // 等所有子任务落地后才抛出：子任务可能引用本栈帧的对象，绝不能让它们
