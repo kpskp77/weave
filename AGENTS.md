@@ -97,6 +97,43 @@ src/backend/      svdpi.cpp(默认) / systemc.cpp，整文件由 WEAVE_BACKEND_*
   必须保证任务在该栈帧退出前已完成（结束前 `await`/`gather`，或异常路径先收尾兄弟任务）——
   否则子任务 resume 即 use-after-free（子任务可能在父任务失败后继续被调度，崩在 jemalloc/free）。
 
+## 语言标准：C++17
+
+全仓库固定 **C++17**，唯一开关是 `xmake.lua` 的 `set_languages("c++17")`。
+
+- **不得引入 C++20+ 特性**：concepts / ranges / coroutine / `std::format` / designated
+  initializers / `std::string::starts_with` / `std::span` / `std::move_only_function`。
+  需要它们时作为"当前限制"记下来（例：任务 body 不能捕获 `unique_ptr`，因为
+  `std::function` 要求可拷贝），不要私下升标准。
+- **升标准是跨后端改动**：会同时影响两个后端与 `-sv_lib` 边界，必须按上面的约定在两种
+  `--backend` 配置下各跑一次 `xmake smoke`，并同步 README 的「语言标准」一节。
+- **公共头必须能用 `-std=c++17` 独立编译**：与"每个公共头可独立编译"是同一约束的
+  两个面；用到的头要显式 include（`<optional>`、`<string_view>`、`<type_traits>` 等），
+  不得靠传递包含。
+- **已在用的 C++17 惯用法，新代码沿用、不要退回旧写法**：`std::optional`
+  （`Cancelled::msg()`、`wait` 的 timeout）、`std::string_view`
+  （`detail::cancelled_with_msg`）、`[[nodiscard]]`（纯查询与资源获取，如
+  `port::create_event`）、`[[maybe_unused]]`、`inline constexpr` 变量
+  （`return_exceptions`）、结构化绑定、`std::exchange`、`std::make_unique` /
+  `unique_ptr`（后端事件表）、`static_assert` + `std::is_invocable_v` /
+  `std::is_trivially_copyable_v`、`std::filesystem`（仅测试驱动）。
+- **几条边界不要越**（均已评估，越了会破坏既有不变量）：
+  1. `string_view` 不能替代需要**所有权**的参数：`create_task(name)`、
+     `TaskGroup::create_task`、`Task::cancel(msg)`、`register_test(name)`。
+     `Cancelled::msg_` 是借用视图，指向 `TaskRecord::cancel_msg`，且 `what()` 依赖
+     `std::string` 的 NUL 结尾。
+  2. `std::optional` 不能用于 port 契约的**线格式哨兵**（`ev_id < 0`、
+     `timeout_ticks < 0`、`abort_id < 0`）：那是与 SV DPI 的约定，改它要同时动
+     `sv/weave_pkg.sv` 与两个后端。
+  3. 模板没有按类型分支时不加 `if constexpr`（`create_task`/`gather` 只是转发）；
+     `if-init` 同理——`record()`/`event_by_id` 的 `find` 之后都要继续用迭代器，
+     写成 `if (init; cond) ... else` 反而更难读，没有自然落点就不硬套。
+- **`Cancelled` 必须保持平凡可拷贝**（`task.hpp` 有 `static_assert` 守护）：它跨
+  `-sv_lib` 边界抛出，不得加 `std::string` 之类的堆成员；带消息的构造只经
+  `detail::cancelled_with_msg` 这一条路（`msg` 由 `TaskRecord` 所有）。
+- **`constexpr` 也用作编译期守卫**：时间字面量越界（`10000_s`）是编译错误而非静默回绕，
+  见 `include/weave/time.hpp` 的 `detail::fs_scaled`。
+
 ## 代码风格（提交前必做）
 
 **C++ 遵循 `.clang-format`**（Google 基线，项目内覆盖项）：

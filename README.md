@@ -58,6 +58,14 @@ AGENTS.md         给 AI 编码助手的操作手册
 
 架构与关键设计决策（为什么不用 coroutine、协作式取消、edge 语义、时间精度、头文件分层、边界）：[docs/architecture.md](docs/architecture.md)。
 
+## 语言标准：C++17
+
+Weave 以 **C++17** 为最低标准，全仓库统一（`xmake.lua` 的 `set_languages("c++17")` 是唯一开关），不启用 C++20 及更高特性。
+
+- **调用方同样要求 C++17+**：公共 API 直接暴露 C++17 标准库类型——`Cancelled::msg()` 返回 `std::optional<std::string_view>`，`wait(...)` 的 timeout 是 `std::optional<duration>`。用 `-std=c++17`（或更高）编译测试库即可，无需额外宏或依赖。
+- **为什么是 17 而不是 20**：本项目需要的特性集（`std::optional` / `std::string_view` / `inline` 变量 / if-init / `[[nodiscard]]` / 结构化绑定 / 放宽的 `constexpr`）在 C++17 已齐备；**不使用 C++20 coroutine** 是设计决定而非标准限制——挂起由仿真内核承载（见 [docs/architecture.md](docs/architecture.md)）。
+- **不引入 C++20+ 特性**：concepts / ranges / coroutine / `std::format` / designated initializers / `std::string::starts_with` / `std::span` / `std::move_only_function` 均不使用，以保持两条工具链（VCS DPI 侧宿主编译器、SystemC 3.x）都能编译。
+
 ## 构建与运行
 
 ```bash
