@@ -89,7 +89,7 @@ std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return
       else if (r.state == detail::TaskState::CANCELLED)
         // return_exceptions 形态的 CANCELLED 映射：重投带原 msg 的 Cancelled，
         // 对齐 asyncio.gather(*aws, return_exceptions=True) 对 CancelledError(msg) 的保留
-        st->results[i] = std::make_exception_ptr(detail::cancelled_with_msg(r.cancel_msg.c_str()));
+        st->results[i] = std::make_exception_ptr(detail::cancelled_with_msg(r.cancel_msg));
       if (--st->remaining == 0) st->wake.set();
     });
     ++i;
@@ -346,7 +346,7 @@ void TaskGroup::wait() {
   if (cancelled) {
     // TaskGroup 等待者被取消：抛出携带调用者当前任务 cancel_msg 的 Cancelled，
     // 让 await 本任务的更外层能看到外层取消原因（对齐 asyncio 的 CancelledError(msg) 传播）。
-    throw detail::cancelled_with_msg(detail::current().cancel_msg.c_str());
+    throw detail::cancelled_with_msg(detail::current().cancel_msg);
   }
   if (st->failed) detail::dispatch_completed(detail::record(st->first_failed));
 }

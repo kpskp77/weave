@@ -32,7 +32,7 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
   TaskRecord& me = current();  // 被挂起者恒为当前任务（只能挂起自身）
   if (me.cancel_armed) {       // 挂起的取消在下一个阻塞点注入
     me.cancel_armed = false;
-    throw cancelled_with_msg(me.cancel_msg.c_str());
+    throw cancelled_with_msg(me.cancel_msg);
   }
   me.state = TaskState::WAITING;
   const int saved = g_current;  // 挂起期间其他任务的切片会改写 g_current
@@ -47,7 +47,7 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
     // 任务捕获 Cancelled 后在同一 abort_ev 上再次阻塞会被误判为取消命中。
     port::destroy_event(me.abort_ev);
     me.abort_ev = port::create_event();
-    throw cancelled_with_msg(me.cancel_msg.c_str());
+    throw cancelled_with_msg(me.cancel_msg);
   }
   return status;
 }
@@ -56,7 +56,7 @@ void dispatch_completed(TaskRecord& r) {
   if (r.state == TaskState::FAILED) std::rethrow_exception(r.eptr);
   // CANCELLED 终态重投带原 msg 的 Cancelled（对齐 asyncio：await 取消任务者收到
   // 同一 CancelledError(msg)）
-  if (r.state == TaskState::CANCELLED) throw cancelled_with_msg(r.cancel_msg.c_str());
+  if (r.state == TaskState::CANCELLED) throw cancelled_with_msg(r.cancel_msg);
 }
 
 void add_done_callback(int id, std::function<void()> cb) {
@@ -134,12 +134,12 @@ void sleep(duration t) {
 
 namespace detail {
 
-Cancelled cancelled_with_msg(const char* msg) noexcept {
+Cancelled cancelled_with_msg(std::string_view msg) noexcept {
   Cancelled c;
-  // msg 指向 TaskRecord::cancel_msg 的 c_str()，由簿记所有；视图仅在本次 throw
+  // msg 是 TaskRecord::cancel_msg 的视图，由簿记所有；视图仅在本次 throw
   // 及沿途捕获的生命周期内有效（TaskRecord 在任务终结前不销毁）。
   // 空串视为无 msg（对齐 asyncio 的 None），Cancelled::msg() 返回 nullopt。
-  if (msg && msg[0] != '\0') c.msg_ = std::string_view(msg);
+  if (!msg.empty()) c.msg_ = msg;
   return c;
 }
 

@@ -21,8 +21,12 @@ namespace detail {
 struct TaskRecord;  // 核心簿记（定义于 src/core/core_internal.hpp）
 
 // 构造带消息的 Cancelled（msg 由 TaskRecord 所有，视图在 throw 生命周期内有效）。
+// 传视图而非 const char*：视图不拥有数据，与 Cancelled::msg_ 的借用语义一致，
+// 且调用方（均为 std::string 成员）传整串时无需 strlen。
+// 不变量：视图必须源自 std::string 的完整内容（尾部紧跟 NUL），
+// 因为 Cancelled::what() 直接返回 data() 当 C 串用。
 // 暴露给 detail:: 以便 sync.cpp 的 dispatch 路径保留原消息。
-Cancelled cancelled_with_msg(const char* msg) noexcept;
+Cancelled cancelled_with_msg(std::string_view msg) noexcept;
 }  // namespace detail
 
 // 取消信号。对应 asyncio.CancelledError，在任务阻塞点注入。
@@ -45,7 +49,7 @@ struct Cancelled {
 
 private:
   std::optional<std::string_view> msg_;
-  friend Cancelled detail::cancelled_with_msg(const char* msg) noexcept;
+  friend Cancelled detail::cancelled_with_msg(std::string_view msg) noexcept;
 };
 
 // 异常对象退化为"一个可空视图 + 判别"，平凡可拷贝（跳异常时无堆分配、无拷贝构造
