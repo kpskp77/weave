@@ -104,7 +104,7 @@ WEAVE_TEST(gather_semantics) {
   run_case(__func__, "case4", [&] {
     Event block;
     auto victim = create_task("victim4", [&] { block.wait(); });
-    auto killer = create_task("killer4", [&victim] { victim.cancel(); });
+    [[maybe_unused]] auto killer = create_task("killer4", [&victim] { victim.cancel(); });
     try {
       gather(victim);
       throw std::logic_error("case4: gather should throw Cancelled");
@@ -112,7 +112,6 @@ WEAVE_TEST(gather_semantics) {
       // 预期路径
     }
     if (!victim.cancelled()) throw std::logic_error("case4: victim should be cancelled");
-    (void)killer;
   });
 
   // case 5: gather 自身被取消 → 先取消所有未完成任务，再传播 Cancelled。

@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include <weave/task.hpp>
@@ -50,7 +51,9 @@ inline constexpr return_exceptions_t return_exceptions{};
 // 返回结果——DONE → nullptr；FAILED → 其异常；CANCELLED → 包装 Cancelled
 // 的 exception_ptr。gather 自身被取消仍按默认形态语义：
 // 取消所有未完成任务后传播 Cancelled。
-std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return_exceptions_t);
+// 返回结果必须被消费：忽略返回值等于白等一轮（子任务已全部落地却丢掉异常）。
+[[nodiscard]] std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks,
+                                                     return_exceptions_t);
 
 // ── wait_for ──────────────────────────────────────────────────────────
 
@@ -82,18 +85,18 @@ WaitResult wait(std::initializer_list<Task> tasks,
 // wait_for 超时 / gather 级联取消只停在代理层，inner 继续运行。
 // （Task::await 本就不向被等任务传播取消——与 asyncio 一致；
 //   shield 用于组合原语会取消子任务的场景。）
-Task shield(Task& inner);
+[[nodiscard]] Task shield(Task& inner);
 
 // ── as_completed（asyncio.as_completed）────────────────────────────────
 
 class AsCompleted {
 public:
-  bool pending() const;  // 尚有未产出的任务
+  [[nodiscard]] bool pending() const noexcept;  // 尚有未产出的任务
 
   // 阻塞至下一个任务完成，按完成顺序返回（已终态，.await() 立即取结果
   // 或重抛异常）；全部产出后调用抛 std::logic_error。
   // 取消只中断 next() 本身：已完成队列与子任务均不受影响。单消费者。
-  Task next();
+  [[nodiscard]] Task next();
 
 private:
   struct Impl;
@@ -122,6 +125,7 @@ public:
   Task create_task(std::string name, std::function<void()> body);
   template <typename F>
   Task create_task(std::string name, F&& body) {
+    static_assert(std::is_invocable_v<F&>, "weave: task body must be callable with no arguments");
     return create_task(std::move(name), std::function<void()>(std::forward<F>(body)));
   }
 

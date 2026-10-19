@@ -16,18 +16,17 @@ struct Event::Impl {
 
 Event::Event() : impl_(std::make_shared<Impl>()) {}
 
-bool Event::is_set() const {
+bool Event::is_set() const noexcept {
   return impl_->flag;
 }
 
 void Event::set() {
   impl_->flag = true;
-  const auto pending = std::move(impl_->wake_evs);  // 快照当前等待者
-  impl_->wake_evs.clear();
+  const auto pending = std::exchange(impl_->wake_evs, {});  // 快照当前等待者
   for (int w : pending) port::trigger(w);
 }
 
-void Event::clear() {
+void Event::clear() noexcept {
   impl_->flag = false;
 }
 

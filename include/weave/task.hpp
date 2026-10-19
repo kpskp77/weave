@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <weave/time.hpp>
 
 namespace weave {
@@ -47,6 +48,11 @@ private:
   friend Cancelled detail::cancelled_with_msg(const char* msg) noexcept;
 };
 
+// 异常对象退化为"一个可空视图 + 判别"，平凡可拷贝（跳异常时无堆分配、无拷贝构造
+// 开销），也可跨 -sv_lib 共享库边界传递。
+static_assert(std::is_trivially_copyable_v<Cancelled>,
+              "Cancelled must stay trivially copyable: thrown across the DSO boundary");
+
 class Task;
 
 namespace detail {
@@ -67,9 +73,10 @@ public:
   // 必须在任务上下文内调用（阻塞原语）。
   void await();
 
-  bool done() const;  // 到达任一终态（DONE / FAILED / CANCELLED），对齐 asyncio.Task.done()
-  bool cancelled() const;
-  bool valid() const { return id_ >= 0; }
+  // 到达任一终态（DONE / FAILED / CANCELLED），对齐 asyncio.Task.done()
+  [[nodiscard]] bool done() const;
+  [[nodiscard]] bool cancelled() const;
+  [[nodiscard]] bool valid() const noexcept { return id_ >= 0; }
   const std::string& get_name() const;  // 对齐 asyncio.Task.get_name()
 
   // 协作式取消（对齐 asyncio Task.cancel(msg)，Python 3.9+）：
@@ -96,6 +103,7 @@ Task create_task(std::string name, std::function<void()> body);
 
 template <typename F>
 Task create_task(std::string name, F&& body) {
+  static_assert(std::is_invocable_v<F&>, "weave: task body must be callable with no arguments");
   return create_task(std::move(name), std::function<void()>(std::forward<F>(body)));
 }
 

@@ -218,7 +218,7 @@ struct AsCompleted::Impl {
 
 AsCompleted::AsCompleted(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
-bool AsCompleted::pending() const {
+bool AsCompleted::pending() const noexcept {
   return impl_->produced < impl_->total;
 }
 

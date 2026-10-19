@@ -30,7 +30,8 @@ WEAVE_TEST(taskgroup_semantics) {
   run_case(__func__, "case2", [&] {
     Event block;
     TaskGroup tg;
-    auto failer = tg.create_task("tg2_failer", [] { throw std::runtime_error("tg2_boom"); });
+    [[maybe_unused]] auto failer =
+        tg.create_task("tg2_failer", [] { throw std::runtime_error("tg2_boom"); });
     auto victim = tg.create_task("tg2_victim", [&] { block.wait(); });
     try {
       tg.wait();
@@ -42,7 +43,6 @@ WEAVE_TEST(taskgroup_semantics) {
     if (!victim.cancelled()) throw std::logic_error("case2: sibling must be cancelled on failure");
     if (!victim.done())
       throw std::logic_error("case2: siblings must be settled before wait returns");
-    (void)failer;
   });
 
   // case 3: 子任务被外部取消 → 容忍，不触发兄弟取消，wait 正常返回

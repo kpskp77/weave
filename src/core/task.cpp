@@ -12,15 +12,15 @@
 namespace weave {
 namespace detail {
 
-std::unordered_map<int, TaskRecord> g_tasks;
-int g_next_id = 1;
+std::deque<TaskRecord> g_tasks;
 int g_current = -1;
 int g_root = -1;
 
 TaskRecord& record(int id) {
-  auto it = g_tasks.find(id);
-  if (it == g_tasks.end()) throw std::logic_error("weave: invalid task handle");
-  return it->second;
+  // 索引 = id - 1：id 从 1 单调递增且从不回收，直接下标即可，无哈希查找
+  if (id < 1 || static_cast<std::size_t>(id) > g_tasks.size())
+    throw std::logic_error("weave: invalid task handle");
+  return g_tasks[static_cast<std::size_t>(id - 1)];
 }
 
 TaskRecord& current() {
@@ -115,13 +115,15 @@ const std::string& Task::get_name() const {
 }
 
 Task create_task(std::string name, std::function<void()> body) {
-  const int id = detail::g_next_id++;
+  // id 由簿记长度推导（从 1 起），保证 index = id - 1 在下方任何一步抛异常时
+  // 都不会错位（用独立计数器的话，create_event 失败会白白消费一个 id）。
+  const int id = static_cast<int>(detail::g_tasks.size()) + 1;
   detail::TaskRecord r;
   r.name = std::move(name);
   r.body = std::move(body);
   r.abort_ev = port::create_event();
   r.done_ev = port::create_event();
-  detail::g_tasks.emplace(id, std::move(r));
+  detail::g_tasks.push_back(std::move(r));  // 索引 = id - 1
   port::spawn(id);
   return Task(id);
 }
@@ -168,8 +170,7 @@ extern "C" void weave_task_main(int task_id) {
     }
   }
   weave::detail::g_current = saved;
-  auto cbs = std::move(r.done_callbacks);
-  r.done_callbacks.clear();
+  auto cbs = std::exchange(r.done_callbacks, {});
   for (auto& cb : cbs) cb();        // gather 计数等（无任务上下文执行）
   weave::port::trigger(r.done_ev);  // 唤醒 await 者 / 测试等待链
 }

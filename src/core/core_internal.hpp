@@ -3,11 +3,12 @@
 // 核心内部共享状态：任务簿记 + 唯一阻塞点。非公共 API，
 // 仅供 src/core 与 src/backend 使用。
 
+#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include <weave/task.hpp>
 #include <weave/time.hpp>
@@ -39,9 +40,12 @@ struct TaskRecord {
   std::vector<std::function<void()>> done_callbacks;
 };
 
-// 定义于 task.cpp
-extern std::unordered_map<int, TaskRecord> g_tasks;
-extern int g_next_id;
+// 定义于 task.cpp。索引 = id - 1：id 从 1 递增且从不回收，所以用顺序容器
+// 而非哈希表；deque 的 push_back 不使已有元素的引用失效，满足"TaskRecord& 可跨
+// 挂起点持有"（vector 扩容会搬家，不可用）。
+// 注意：id 由 g_tasks.size() 推导（见 create_task），不另设计数器——否则
+// create_event/push_back 抛异常时 id 已被消费而记录未落地，id→索引会永久错位。
+extern std::deque<TaskRecord> g_tasks;
 extern int g_current;  // 当前执行切片的任务 id；-1 = 非任务上下文（harness 链）
 extern int g_root;
 

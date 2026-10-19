@@ -11,10 +11,10 @@ class Event {
 public:
   Event();
 
-  void wait();   // 阻塞直到 set()；已置位则立即返回
-  void set();    // 置位并唤醒所有当前等待者
-  void clear();  // 复位标志（不影响已被 set 判定唤醒的等待者）
-  bool is_set() const;
+  void wait();            // 阻塞直到 set()；已置位则立即返回
+  void set();             // 置位并唤醒所有当前等待者
+  void clear() noexcept;  // 复位标志（不影响已被 set 判定唤醒的等待者）
+  [[nodiscard]] bool is_set() const noexcept;
 
 private:
   struct Impl;

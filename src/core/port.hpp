@@ -31,9 +31,10 @@ namespace port {
 // 创建执行 weave_task_main(task_id) 的仿真进程（见上方进程模型）。
 void spawn(int task_id);
 
-// 一次性唤醒机制。
+// 一次性唤醒机制。create_event 的返回值必须被保存并最终 destroy_event：
+// 丢弃即泄漏一个后端事件 id（后端侧是一次真实的对象分配）。
 void trigger(int ev_id);
-int create_event();
+[[nodiscard]] int create_event();
 void destroy_event(int ev_id);
 
 // 1 秒对应的后端 tick 数（决定 fs→tick 换算精度）。

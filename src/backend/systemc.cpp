@@ -30,6 +30,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <stdexcept>
 #include <systemc>
 #include <unordered_map>
@@ -40,13 +41,13 @@
 namespace weave {
 namespace {
 
-std::unordered_map<int, sc_core::sc_event*> g_events;
+std::unordered_map<int, std::unique_ptr<sc_core::sc_event>> g_events;
 int g_next_ev = 0;
 
-sc_core::sc_event* event_by_id(int ev_id) {
+sc_core::sc_event& event_by_id(int ev_id) {
   const auto it = g_events.find(ev_id);
   if (it == g_events.end()) throw std::out_of_range("weave: invalid event id");
-  return it->second;
+  return *it->second;
 }
 
 double tick_seconds() {
@@ -62,18 +63,19 @@ void spawn(int task_id) {
 }
 
 void trigger(int ev_id) {
-  event_by_id(ev_id)->notify();
+  event_by_id(ev_id).notify();
 }
 
 int create_event() {
   const int id = g_next_ev++;
-  g_events[id] = new sc_core::sc_event();
+  g_events.try_emplace(id, std::make_unique<sc_core::sc_event>());
   return id;
 }
 
 void destroy_event(int ev_id) {
-  delete g_events[ev_id];
-  g_events.erase(ev_id);
+  // 与 event_by_id 一致地对未知 id 报错（否则双重 destroy 会被静默吃掉）；
+  // erase(key) 返回删除个数，省掉一次 find，unique_ptr 负责真正释放
+  if (g_events.erase(ev_id) == 0) throw std::out_of_range("weave: invalid event id");
 }
 
 std::int64_t ticks_per_sec() {
@@ -81,11 +83,14 @@ std::int64_t ticks_per_sec() {
 }
 
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
-  const sc_core::sc_event& ab = *event_by_id(abort_id);
+  const sc_core::sc_event& ab = event_by_id(abort_id);
   const bool has_to = timeout_ticks >= 0;
-  const sc_core::sc_time to(timeout_ticks * tick_seconds(), sc_core::SC_SEC);
+  // 无超时腿时不以负 tick 构造 sc_time（负时间无意义），用 SC_ZERO_TIME 占位
+  const sc_core::sc_time to =
+      has_to ? sc_core::sc_time(timeout_ticks * tick_seconds(), sc_core::SC_SEC)
+             : sc_core::SC_ZERO_TIME;
   if (ev_id >= 0) {
-    const sc_core::sc_event& e = *event_by_id(ev_id);
+    const sc_core::sc_event& e = event_by_id(ev_id);
     if (has_to)
       sc_core::wait(to, e | ab);
     else
@@ -99,7 +104,7 @@ void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
   // 同槽冲突时取消腿优先（与 sv/weave_pkg.sv 的 weave_sv_wait 一致）
   if (ab.triggered())
     *status = 2;
-  else if (ev_id >= 0 && event_by_id(ev_id)->triggered())
+  else if (ev_id >= 0 && event_by_id(ev_id).triggered())
     *status = 0;
   else
     *status = 1;
@@ -117,7 +122,7 @@ int run() {
   // delta 0 即失败），delta notification 会被错过——故先查状态，未终态才等待；
   // 查状态与 wait 之间无其他进程插空（单活动进程），不会竞态。
   sc_core::sc_spawn([done_ev] {
-    while (detail::root_status() < 0) sc_core::wait(*event_by_id(done_ev));
+    while (detail::root_status() < 0) sc_core::wait(event_by_id(done_ev));
     const int st = detail::root_status();
     if (st == 0)
       std::printf("WEAVE TEST PASSED\n");

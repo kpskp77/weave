@@ -28,8 +28,8 @@ int run_registered_test() {
   // 根任务 await 其完成再跑下一个；任一测试 FAILED → 根任务 FAILED（整体失败）。
   // 串行 + 确定性（delta-cycle），顺序无关的并行留作扩展。
   Task root = create_task("weave_root", [] {
-    for (const auto& entry : registry()) {
-      Task t = create_task(entry.first, entry.second);
+    for (const auto& [name, fn] : registry()) {
+      Task t = create_task(name, fn);
       t.await();
     }
   });
