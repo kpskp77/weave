@@ -137,5 +137,19 @@ WEAVE_TEST(wait_semantics) {
       throw std::logic_error("case8: empty wait must return empty grouping");
   });
 
+  // case 9: timeout 用 optional<duration> 表达（取代 duration{-1} 哨兵）——
+  // nullopt 即无超时（由 case1-3 的默认实参覆盖）；负时长不再意味着"无超时"，
+  // 按非正时长处理：直接快照，不阻塞不让出。
+  run_case(__func__, "case9", [&] {
+    Event gate;
+    auto a = create_task("w9_a", [&] { gate.wait(); });
+    auto r = weave::wait({a}, ReturnWhen::ALL_COMPLETED, duration{-1});
+    if (!r.done.empty() || r.pending.size() != 1)
+      throw std::logic_error("case9: negative timeout must snapshot immediately");
+    if (a.done()) throw std::logic_error("case9: negative timeout must not yield");
+    gate.set();
+    a.await();
+  });
+
   report(__func__);
 }

@@ -132,7 +132,8 @@ void wait_for(Task& task, duration timeout) {
 
 // ── wait（asyncio.wait）────────────────────────────────────────────────
 
-WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when, duration timeout) {
+WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
+                std::optional<duration> timeout) {
   WaitResult res;
   if (tasks.size() == 0) return res;
 
@@ -163,12 +164,14 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when, durat
     });
   }
 
-  // duration{0} 特判为直接快照（对齐 asyncio.wait(timeout=0) 的立即返回），
-  // 不做零时间让出——否则结果依赖 delta 调度顺序，不确定。
-  if (!st->signalled && timeout.count() != 0) {
+  // nullopt = 无超时；非正时长（duration{0} 及负值）特判为直接快照（对齐
+  // asyncio.wait(timeout=0) 的立即返回），不做零时间让出——否则结果依赖
+  // delta 调度顺序，不确定。
+  const bool snapshot_only = timeout.has_value() && timeout->count() <= 0;
+  if (!st->signalled && !snapshot_only) {
     try {
       st->waiting = true;
-      detail::backend_wait(st->wake_ev, timeout.count() < 0 ? -1 : detail::to_ticks(timeout));
+      detail::backend_wait(st->wake_ev, timeout.has_value() ? detail::to_ticks(*timeout) : -1);
       st->waiting = false;
     } catch (...) {
       st->waiting = false;

@@ -10,6 +10,7 @@
 #include <functional>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -68,12 +69,12 @@ struct WaitResult {
 // 对齐 asyncio.wait：只按当时状态分组返回，永不重抛子任务异常、
 // 永不取消子任务。FIRST_EXCEPTION 仅 FAILED 触发提前返回（CANCELLED
 // 不算，对齐 CPython 的 not f.cancelled() and f.exception() is not None）。
-// timeout 到点按当时状态分组返回；duration{0} 特判为直接快照（不阻塞、
-// 不让出）；负值（默认）= 无超时。
+// timeout 到点按当时状态分组返回；nullopt（默认，对应 asyncio 的 timeout=None）
+// 表示无超时；duration{0} 特判为直接快照（不阻塞、不让出），非正时长同此处理。
 // 等待者自身被取消 → 传播 Cancelled，子任务不受影响。
 WaitResult wait(std::initializer_list<Task> tasks,
                 ReturnWhen return_when = ReturnWhen::ALL_COMPLETED,
-                duration timeout = duration{-1});
+                std::optional<duration> timeout = std::nullopt);
 
 // ── shield（asyncio.shield）────────────────────────────────────────────
 
