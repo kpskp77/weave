@@ -27,14 +27,14 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 | `Cancelled` / `Timeout` | `CancelledError` / `TimeoutError` | 取消不派生 `std::exception`（对齐 `BaseException` 分层）；`Timeout` 派生 |
 | `WEAVE_TEST` + 注册表 | pytest / 各类 runner | 无对应原语；由后端引导入口运行 |
 
-规划中的扩展一一对齐 asyncio：`Queue` / `Lock` / `Semaphore` / `Condition`，见[演进方向](#演进方向)。
+规划中的扩展同样一一对齐 asyncio：`Queue` / `Lock` / `Semaphore` / `Condition`，见[演进方向](#演进方向)。
 
 ### 模型差异（相对 Python，必读）
 
 映射表之外有三条结构性差异，误用大多源于此处：
 
 - **无 coroutine / await**：组合原语是任务上下文内的普通阻塞调用，不是可等待对象；`gather(...)` 直接阻塞到完成，不返回 future。
-- **无事件循环对象**：调度由仿真内核承担。`create_task` 创建的任务在**父任务碰到下一个阻塞点之后**才开始运行（后端进程语义保证，对应 asyncio 的调度时机）。
+- **无事件循环对象**：调度由仿真内核承担。`create_task` 创建的任务在**父任务碰到下一个阻塞点之后**才开始运行（对应 asyncio 的调度时机）。
 - **取消不破坏调用栈**：协作式取消 + 禁止强杀仿真进程，C++ RAII 始终正常展开（区别于线程取消）。
 
 ### 已知偏差
@@ -42,58 +42,7 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 - `TaskGroup` 无 `ExceptionGroup`：`wait()` 重抛首个失败（按完成顺序）；
 - gather 提前返回后，其余任务晚到的失败仅留在任务簿记中（无 Python 的 "exception was never retrieved" 告警）。
 
-## 目录结构
-
-```
-include/weave/    公共 API：weave.hpp(umbrella) + 按领域拆分
-                  config（后端宏）/ time / task / event / sync / test / sc
-src/core/         后端无关核心 + port.hpp 后端契约（7 个原语）
-src/backend/      后端适配（宏二选一）：svdpi.cpp（默认）/ systemc.cpp
-sv/               SVDPI 后端协议（事件表、三腿等待、spawn、tb 骨架）
-examples/         示例：按域演示全部公共 API（task / event / sync / taskgroup）
-                  外加一个端到端用例；纳入 xmake smoke 的**双后端**回归
-tests/            SystemC 内核上的语义自检（断言与后端 main 分离成文件）
-docs/             技术细节：architecture.md / backends.md
-AGENTS.md         给 AI 编码助手的操作手册
-```
-
-架构与关键设计决策（为什么不用 coroutine、协作式取消、edge 语义、时间精度、头文件分层、边界）：[docs/architecture.md](docs/architecture.md)。
-
-## 语言标准：C++17
-
-Weave 以 **C++17** 为最低标准，全仓库统一（`xmake.lua` 的 `set_languages("c++17")` 是唯一开关），不启用 C++20 及更高特性。
-
-- **调用方同样要求 C++17+**：公共 API 直接暴露 C++17 标准库类型——`Cancelled::msg()` 返回 `std::optional<std::string_view>`，`wait(...)` 的 timeout 是 `std::optional<duration>`。用 `-std=c++17`（或更高）编译测试库即可，无需额外宏或依赖。
-- **为什么是 17 而不是 20**：本项目需要的特性集（`std::optional` / `std::string_view` / `inline` 变量 / if-init / `[[nodiscard]]` / 结构化绑定 / 放宽的 `constexpr`）在 C++17 已齐备；**不使用 C++20 coroutine** 是设计决定而非标准限制——挂起由仿真内核承载（见 [docs/architecture.md](docs/architecture.md)）。
-- **不引入 C++20+ 特性**：concepts / ranges / coroutine / `std::format` / designated initializers / `std::string::starts_with` / `std::span` / `std::move_only_function` 均不使用，以保持两条工具链（VCS DPI 侧宿主编译器、SystemC 3.x）都能编译。
-
-## 构建与运行
-
-```bash
-xmake smoke      # 语义自检回归：构建全部目标 + 运行全部 *_smoke（期望 PASSED）
-xmake examples   # 示例回归（独立，与 smoke 不同集）：一次跑完两种后端
-```
-
-- `xmake examples` 与 smoke 用例**分离**：示例只用公共头、链接 `libweave.so`（不内联核心
-  源码），因此真实跨过 DSO 边界。它会在同一次调用里依次跑两种后端（结束后还原调用者的
-  `--backend`）：
-  - **SystemC**：`weave_examples_sc`（可执行文件，`weave::sc::run()` 引导）本地真实内核运行；
-  - **SVDPI**：`weave_examples_svdpi`（共享库）+ VCS 驱动，与 `libweave.so` 一起经 `-sv_lib`
-    加载运行；无 VCS 时只做编译验证并打印 SKIP。
-- 产物（`build/<plat>/<arch>/<mode>/`）：`libweave.so`（后端由 `--backend` 选择）、
-  示例两种形态 `weave_examples_sc`（可执行）与 `libweave_examples_svdpi.so`（共享库），
-  以及 `*_smoke` 自检二进制。
-- VCS 手工调试（SVDPI 后端；`xmake examples` 已自动完成编译与运行，下列命令仅供手工排查）：
-  `vcs -full64 -sverilog sv/weave_pkg.sv sv/weave_tb.sv -sv_lib .../weave
-  -sv_lib .../weave_examples_svdpi && ./simv`。
-- 后端切换（`--backend=systemc`）、SystemC 集成（`weave::sc::run()`）、新增后端指南：[docs/backends.md](docs/backends.md)。
-- 自检跑在真实 SystemC 内核上（xmake-repo 提供，首次构建自动安装），delta-cycle 语义保证结论确定性可复现。
-- 把 `libweave.so` 链进**自己的可执行文件**（如 SystemC 应用）时，需加 `-rdynamic` 并
-  用 `-fvisibility=default` 编公共头：`Cancelled` / `Timeout` 由库抛出、由你的代码 catch，
-  而 libc++ 按指针比较 `type_info`——可执行文件里那份 RTTI 必须能经动态符号解析到与库里同一份。
-  用 `-sv_lib` 加载两个共享库（VCS 场景）时由动态链接器统合，不受此限。
-
-## 在 C++ 中写测试
+## 快速开始
 
 ```cpp
 #include <weave/weave.hpp>
@@ -104,10 +53,57 @@ WEAVE_TEST(my_test) {
     Event ev;
     auto t1 = create_task("producer", [&] { sleep(100_ns); ev.set(); });
     auto t2 = create_task("consumer", [&] { ev.wait(); /* ... */ });
-    wait_for(t1, 1_us);          // 超时即取消并抛 weave::Timeout
+    wait_for(t1, 1_us);          // 超时即取消任务并抛 weave::Timeout
     gather(t1, t2);
 }
 ```
+
+## 构建与运行
+
+```bash
+xmake smoke      # 语义自检：构建全部目标 + 运行全部 *_smoke（两种后端各跑一次）
+xmake examples   # 示例回归：一次跑完 systemc + svdpi
+```
+
+两者职责不同、都不可省：`tests/` 的断言体与 `examples/` 的示例互不编入对方载荷；示例按用户用法编译
+（只用公共头、链接 `libweave.so`，真实跨过 DSO 边界）。产物在 `build/<plat>/<arch>/<mode>/`；无 VCS/IES
+时 SVDPI 侧驱动打印 SKIP 并返回 0（等价于只做编译验证）。后端切换、SystemC 引导入口、VCS 手工运行、
+新增后端见 [docs/backends.md](docs/backends.md)。
+
+> 把 `libweave.so` 链进**自己的可执行文件**时需 `-rdynamic` + `-fvisibility=default`：`Cancelled` /
+> `Timeout` 跨 DSO 的 typeinfo 唯一性要求（见 backends.md 的「ABI 提示」）；`-sv_lib` 加载不受此限。
+
+## 语言标准：C++17 起
+
+全仓库以 **C++17 为最低标准**（`xmake.lua` 的 `set_languages("c++17")` 是唯一开关）：库自身按 C++17
+构建，且公开能力在 C++17 下必须功能完备。**更新的标准同样支持**——调用方可以自己选 `-std=c++20` /
+`c++23` / `c++2c` 编译，公共头在 C++17/20/23 下均验证可干净编译。
+
+- **17 即完备**：公共头不把任何 C++20+ 特性当作必需（`Cancelled::msg()` 是
+  `std::optional<std::string_view>`，`wait` 的 timeout 是 `std::optional<duration>`）。
+- **更高标准也可用**：公共头不依赖随标准版本改变含义、已被弃用或已移除的写法，因此升级 `-std=` 不会
+  引入告警或行为变化。
+- **不使用 C++20 coroutine 是设计决定而非标准限制**：挂起由仿真内核承载，与标准版本无关。
+
+详见 [docs/architecture.md](docs/architecture.md) 的「语言基线」一节。
+
+## 目录结构
+
+```
+include/weave/    公共 API：weave.hpp(umbrella) + config/time/task/event/sync/test[/sc]
+src/core/         后端无关核心 + port.hpp 后端契约
+src/backend/      后端适配（宏二选一）：svdpi.cpp（默认）/ systemc.cpp
+sv/               SVDPI 后端协议（事件表、三腿等待、spawn、tb 骨架）
+examples/         按域演示全部公共 API + 一个端到端用例（xmake examples 回归）
+tests/            语义自检断言体（xmake smoke 回归）
+docs/             architecture.md / backends.md
+```
+
+## 延伸阅读
+
+- [docs/architecture.md](docs/architecture.md)：设计决策与实现约束（为何不用 coroutine、取消、edge 语义、时间、语言基线）
+- [docs/backends.md](docs/backends.md)：DPI 协议、SystemC 集成、ABI 注意事项、新增后端指南
+- [AGENTS.md](AGENTS.md)：面向 AI 编码助手的构建/验证约定与不变量
 
 ## 演进方向
 

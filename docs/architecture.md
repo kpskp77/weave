@@ -69,6 +69,43 @@ weave.hpp          umbrella：只依赖本文件即获得全部公共 API
 
 核心内部状态只放 `src/core/*_internal.hpp`（不进公共头，不跨出 src/）。
 
+## 语言基线：C++17 起
+
+**C++17 是最低要求，不是上限。** 库自身以 C++17 构建（`set_languages("c++17")` 是唯一开关），且所有
+公开能力必须在 C++17 下功能完备——这一点由回归保证。同时公共头必须能让使用**更高标准**的调用方直接
+include：不依赖随标准版本改变含义、已被弃用或已移除的写法，在 `-std=c++20` / `c++23` 下与 C++17 下
+一样 `-Wall -Wextra -Werror` 干净。
+
+选 17 作为下限，是因为所需特性集（`std::optional` / `std::string_view` / `inline` 变量 / if-init /
+`[[nodiscard]]` / 结构化绑定 / 放宽的 `constexpr`）已齐备。**不把 C++20+ 特性当作必需**（concepts、
+ranges、coroutine、`std::format`、`std::span`、designated initializers、`std::move_only_function`）：
+既为了 VCS DPI 侧宿主编译器与 SystemC 3.x 两条工具链，也为了让调用方自选的 `-std=` 都能编译；不用
+coroutine 则是设计决定（见上）。
+
+- **抬升最低标准**（例如把 `set_languages` 改成 c++20）属跨后端改动：影响两个后端与 `-sv_lib` 边界，
+  需在两种 `--backend` 下各跑一次 `xmake smoke`。
+- **调用方用更新的标准**不需任何改动，也不改变构建配置。
+- 校验方式：每个公共头各以一个只含 `#include <weave/X.hpp>` 的 TU，在 `-std=c++17` / `c++20` / `c++23`
+  下以 `-Wall -Wextra -Werror -fsyntax-only` 编译一次（`sc.hpp` 需加 SystemC include 路径与
+  `WEAVE_BACKEND_SYSTEMC`）。
+
+已在用、新代码沿用的惯用法：`std::optional`（`Cancelled::msg()`、`wait` 的 timeout）、`std::string_view`、
+`[[nodiscard]]`（纯查询与资源获取）、`[[maybe_unused]]`、`inline constexpr`、结构化绑定、`std::exchange`、
+`unique_ptr`（后端事件表）、`static_assert` + `std::is_invocable_v` / `std::is_trivially_copyable_v`。
+
+几条已评估、不要再越的边界：
+
+1. **所有权参数仍用 `std::string`**：`create_task(name)`、`TaskGroup::create_task`、`Task::cancel(msg)`、
+   `register_test(name)`。`Cancelled::msg_` 是借用视图，指向 `TaskRecord::cancel_msg`，且 `what()` 依赖
+   `std::string` 的 NUL 结尾。`Cancelled` 必须保持平凡可拷贝（跨 `-sv_lib` 边界抛出，不得带堆成员），
+   带消息的构造只经 `detail::cancelled_with_msg` 这一条路。
+2. **`std::optional` 不进 port 契约的线格式**：`ev_id < 0`、`timeout_ticks < 0`、`abort_id < 0` 是与 SV
+   DPI 的约定，改它要同时动 `sv/weave_pkg.sv` 与两个后端。
+3. **没有按类型分支就不加 `if constexpr`**；`if-init` 同理——`record()` / `event_by_id()` 的 `find` 之后
+   都要继续用迭代器，硬套反而更难读。
+4. **`constexpr` 也用作编译期守卫**：时间字面量越界（`10000_s`）是编译错误而非静默回绕
+   （`include/weave/time.hpp` 的 `detail::fs_scaled`）。
+
 ## 边界
 
 Weave 专注并发行为编排，不覆盖 EDA 验证的全部功能。**不提供**：DUT signal-level 读写；总线 driver/monitor；UVM component hierarchy；transaction 与 coverage；SystemC TLM 建模；仿真内核本身；C++ 线程与 coroutine 调度。这些由 SystemVerilog、UVM、cocotb、SystemC 等既有工具提供——Weave 把 C++ 测试行为以统一接口接入它们。
