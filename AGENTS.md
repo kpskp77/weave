@@ -11,11 +11,20 @@ Weave 是 C++ 测试逻辑与 EDA 仿真内核之间的行为编排层：API 借
 **原则：每次改动都要回归所有用例，不挑跑、不省略。**
 
 ```bash
-xmake smoke   # 唯一回归入口：构建全部目标 + 运行全部 *_smoke 自检二进制
+xmake smoke      # 语义自检：构建全部目标 + 运行全部 *_smoke 自检二进制
+xmake examples   # 示例回归（独立）：一次跑完 systemc + svdpi 两种后端
 ```
 
 - 自检目标统一以 `_smoke` 结尾（xmake.lua 中的 `smoke` 任务按此模式自动发现并纳入），
   新增用例无需修改回归命令。
+- **示例与自检分离**：`examples/` 按**用户用法**编译——只用 `include/weave/` 的公共 API，
+  通过 `add_deps("weave")` 链接 `libweave.so`（不把核心源码编进去），因此真实跨过 DSO 边界。
+  `xmake examples` 在**一次调用里依次跑两种后端**（任务内部切换 `--backend`，结束时还原）：
+  - `systemc` → `weave_examples_sc`（可执行文件，`weave::sc::run()` 引导）本地运行；
+  - `svdpi`   → `weave_examples_svdpi`（共享库）+ `weave_examples_svdpi_driver`
+                （同一份 `tests/svdpi_driver.cpp`）在 VCS 上 `-sv_lib` 加载运行，
+                无 VCS 时驱动打印 SKIP 并返回 0（等价于只做编译验证）。
+  因此改公共头/示例只需跑一次 `xmake examples`；`xmake smoke` 仍需两种 `--backend` 各跑一次。
 - 跨后端的改动（`port.hpp`、后端文件、`config.hpp`、xmake 宏映射）必须在两种配置下各跑一次：
 
 ```bash
@@ -71,6 +80,7 @@ src/backend/      svdpi.cpp(默认) / systemc.cpp，整文件由 WEAVE_BACKEND_*
 | 新通信原语（Queue/Lock/Semaphore/…） | 新公共头 `include/weave/<域>.hpp` + umbrella 加入 include |
 | 新后端 | `src/backend/<name>.cpp`（宏守卫）+ `config.hpp` 加宏 + xmake 映射 |
 | 新自检断言 | `tests/<域>_semantics.cpp`（每域一个 `WEAVE_TEST`，逐用例包 `run_case` + 末尾 `report`，见测试编写约定；新文件需同时加入 xmake 的 `weave_sc_smoke` 与 `weave_svdpi_smokelib` 两个 target） |
+| 新示例 | `examples/<域>_demo.cpp`（`examples/*.cpp` glob 自动纳入 `weave_examples_sc`/`weave_examples_svdpi`，无需改 xmake.lua；示例不用 `run_case`，末尾一行 `printf`；回归 `xmake examples` 会双后端各跑一遍） |
 
 原则：**凡能由"任务簿记 + Event + 三腿等待"组合出的原语进核心层；凡需要新挂起形态的才动 port 契约**。
 
@@ -96,6 +106,11 @@ src/backend/      svdpi.cpp(默认) / systemc.cpp，整文件由 WEAVE_BACKEND_*
 - **任务 body 不得引用会先销毁的栈帧**：lambda 按引用捕获测试局部 `Event`/`Task` 等时，
   必须保证任务在该栈帧退出前已完成（结束前 `await`/`gather`，或异常路径先收尾兄弟任务）——
   否则子任务 resume 即 use-after-free（子任务可能在父任务失败后继续被调度，崩在 jemalloc/free）。
+- **示例不编进任何 `*_smoke` 载荷**：`weave_sc_smoke` / `weave_svdpi_smokelib` 只含
+  `tests/` 的断言体（两者除 `sc_main` 外同集，这是刻意保持的对称）。示例按用户视角单独
+  编译与回归（`weave_examples` / `weave_examples_svdpi`，入口 `xmake examples`），仍须守住
+  同两条约束：同步完全事件驱动、不得依赖只在某一后端成立的时序/触发语义——示例要在
+  SystemC 可执行与 VCS 双库两种形态下都跑通。示例不需要 `run_case`，末尾 `printf` 一行即可。
 
 ## 语言标准：C++17
 
@@ -166,3 +181,10 @@ verible-verilog-format --inplace --flagfile=.verible-format <改动的 .sv>
 - xmake-repo 的 SystemC 按 **C 链接**找 `sc_main`：入口必须 `extern "C"`（见 `tests/sc_main.cpp`）。
 - 此 xmake 版本：`add_requires` 只能在顶层作用域且不能跟在 option/target 定义之后（作用域泄漏）；`has_config(name, value)` 对 set_values 选项不可靠，用 `get_config(name) == "..."`。
 - 时间换算用 `__int128` 防溢出；`ticks_per_sec()` 首次经 port 查询后缓存（static local）。
+- **跨 DSO 的 catch 依赖 typeinfo 唯一**：libc++ 在 Linux/Android 上按 Itanium ABI 只比较
+  `type_info` 指针。把公共异常类型链进**可执行文件**时，若用 `-fvisibility-inlines-hidden`
+  编译（xmake-repo 的 systemc 包会给依赖目标带上），那份 RTTI 会被弱化甚至丢弃，
+  `-rdynamic` 也导不出去 → 与 `libweave.so` 里那份变成两个对象，`catch` 静默失配、异常穿透到
+  最外层（表现为整个测试 FAILED 且看不出哪个 catch 漏了）。修法：消费者
+  `-fvisibility=default` + `-rdynamic`（`weave_examples_sc` 即如此）。`-sv_lib` 双库加载（VCS，
+  如 `weave_examples_svdpi`/`weave_svdpi_smokelib`）由动态链接器统合，不受影响。

@@ -50,7 +50,8 @@ include/weave/    公共 API：weave.hpp(umbrella) + 按领域拆分
 src/core/         后端无关核心 + port.hpp 后端契约（7 个原语）
 src/backend/      后端适配（宏二选一）：svdpi.cpp（默认）/ systemc.cpp
 sv/               SVDPI 后端协议（事件表、三腿等待、spawn、tb 骨架）
-examples/         示例：覆盖全部 MVP 原语
+examples/         示例：按域演示全部公共 API（task / event / sync / taskgroup）
+                  外加一个端到端用例；纳入 xmake smoke 的**双后端**回归
 tests/            SystemC 内核上的语义自检（断言与后端 main 分离成文件）
 docs/             技术细节：architecture.md / backends.md
 AGENTS.md         给 AI 编码助手的操作手册
@@ -69,13 +70,28 @@ Weave 以 **C++17** 为最低标准，全仓库统一（`xmake.lua` 的 `set_lan
 ## 构建与运行
 
 ```bash
-xmake smoke    # 回归入口：构建全部目标 + 运行全部 *_smoke 自检（期望 PASSED）
+xmake smoke      # 语义自检回归：构建全部目标 + 运行全部 *_smoke（期望 PASSED）
+xmake examples   # 示例回归（独立，与 smoke 不同集）：一次跑完两种后端
 ```
 
-- 默认产出 `build/<plat>/<arch>/<mode>/libweave.so / libweave_demo.so`（SVDPI 后端）。
-- VCS 运行：`vcs -full64 -sverilog sv/weave_pkg.sv sv/weave_tb.sv -sv_lib .../weave -sv_lib .../weave_demo && ./simv`
+- `xmake examples` 与 smoke 用例**分离**：示例只用公共头、链接 `libweave.so`（不内联核心
+  源码），因此真实跨过 DSO 边界。它会在同一次调用里依次跑两种后端（结束后还原调用者的
+  `--backend`）：
+  - **SystemC**：`weave_examples_sc`（可执行文件，`weave::sc::run()` 引导）本地真实内核运行；
+  - **SVDPI**：`weave_examples_svdpi`（共享库）+ VCS 驱动，与 `libweave.so` 一起经 `-sv_lib`
+    加载运行；无 VCS 时只做编译验证并打印 SKIP。
+- 产物（`build/<plat>/<arch>/<mode>/`）：`libweave.so`（后端由 `--backend` 选择）、
+  示例两种形态 `weave_examples_sc`（可执行）与 `libweave_examples_svdpi.so`（共享库），
+  以及 `*_smoke` 自检二进制。
+- VCS 手工调试（SVDPI 后端；`xmake examples` 已自动完成编译与运行，下列命令仅供手工排查）：
+  `vcs -full64 -sverilog sv/weave_pkg.sv sv/weave_tb.sv -sv_lib .../weave
+  -sv_lib .../weave_examples_svdpi && ./simv`。
 - 后端切换（`--backend=systemc`）、SystemC 集成（`weave::sc::run()`）、新增后端指南：[docs/backends.md](docs/backends.md)。
 - 自检跑在真实 SystemC 内核上（xmake-repo 提供，首次构建自动安装），delta-cycle 语义保证结论确定性可复现。
+- 把 `libweave.so` 链进**自己的可执行文件**（如 SystemC 应用）时，需加 `-rdynamic` 并
+  用 `-fvisibility=default` 编公共头：`Cancelled` / `Timeout` 由库抛出、由你的代码 catch，
+  而 libc++ 按指针比较 `type_info`——可执行文件里那份 RTTI 必须能经动态符号解析到与库里同一份。
+  用 `-sv_lib` 加载两个共享库（VCS 场景）时由动态链接器统合，不受此限。
 
 ## 在 C++ 中写测试
 

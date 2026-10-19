@@ -1,5 +1,6 @@
-// Weave 示例：覆盖 MVP 全部原语（sleep / Event / gather / wait_for / cancel）。
-// 期望行为：slow 任务因 wait_for 超时被取消，demo 正常收尾，仿真 PASSED。
+// 端到端示例：把 task / Event / wait_for / cancel / gather 串成一个典型的
+// producer-consumer 测试。slow 因 wait_for 超时被取消，demo 正常收尾，仿真 PASSED。
+// 各原语的独立用法见同目录：task_demo / event_demo / sync_demo / taskgroup_demo。
 
 #include <stdexcept>
 #include <string>
