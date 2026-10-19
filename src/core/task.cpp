@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <weave/task.hpp>
 
@@ -133,10 +134,10 @@ namespace detail {
 
 Cancelled cancelled_with_msg(const char* msg) noexcept {
   Cancelled c;
-  // msg 指向 TaskRecord::cancel_msg 的 c_str()，由簿记所有；指针仅在本次 throw
-  // 及其沿途捕获的生命周期内有效（TaskRecord 在任务终结前不销毁）。
-  // 空串视为无 msg（对齐 asyncio 的 None），Cancelled.msg() 返回 nullptr。
-  c.msg_ = (msg && msg[0] != '\0') ? msg : nullptr;
+  // msg 指向 TaskRecord::cancel_msg 的 c_str()，由簿记所有；视图仅在本次 throw
+  // 及沿途捕获的生命周期内有效（TaskRecord 在任务终结前不销毁）。
+  // 空串视为无 msg（对齐 asyncio 的 None），Cancelled::msg() 返回 nullopt。
+  if (msg && msg[0] != '\0') c.msg_ = std::string_view(msg);
   return c;
 }
 

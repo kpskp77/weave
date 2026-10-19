@@ -6,7 +6,9 @@
 
 #include <functional>
 #include <initializer_list>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <weave/time.hpp>
 
 namespace weave {
@@ -17,7 +19,7 @@ struct Cancelled;
 namespace detail {
 struct TaskRecord;  // 核心簿记（定义于 src/core/core_internal.hpp）
 
-// 构造带消息的 Cancelled（msg 由 TaskRecord 所有，指针在 throw 生命周期内有效）。
+// 构造带消息的 Cancelled（msg 由 TaskRecord 所有，视图在 throw 生命周期内有效）。
 // 暴露给 detail:: 以便 sync.cpp 的 dispatch 路径保留原消息。
 Cancelled cancelled_with_msg(const char* msg) noexcept;
 }  // namespace detail
@@ -29,15 +31,19 @@ Cancelled cancelled_with_msg(const char* msg) noexcept;
 // 判定）。捕获请显式写 catch (const weave::Cancelled&) 或 catch (...)。
 //
 // 消息对齐 asyncio Task.cancel(msg)（Python 3.9+）：msg 为取消者可选传入的说明，
-// 空消息表示普通取消；msg() 返回的指针仅在捕获该异常的同一 throw 生命周期内有效。
+// 未传消息（普通取消）对应 asyncio 的 msg=None，用 nullopt 表达。
+// msg() 返回的视图指向 TaskRecord::cancel_msg，仅在捕获该异常的同一 throw
+// 生命周期内有效。
 struct Cancelled {
   const char* what() const noexcept {  // 诊断用，非虚
-    return msg_ ? msg_ : "weave::Cancelled";
+    // 视图恒来自 std::string::c_str()，故 data() 保证以 NUL 结尾
+    return msg_ ? msg_->data() : "weave::Cancelled";
   }
-  const char* msg() const noexcept { return msg_; }
+  // msg=None → nullopt（不再用 nullptr 哨兵）
+  std::optional<std::string_view> msg() const noexcept { return msg_; }
 
 private:
-  const char* msg_ = nullptr;
+  std::optional<std::string_view> msg_;
   friend Cancelled detail::cancelled_with_msg(const char* msg) noexcept;
 };
 

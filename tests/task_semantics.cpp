@@ -6,7 +6,7 @@
 // weave_svdpi_smoke 两个后端回归。
 
 #include <stdexcept>
-#include <string>
+#include <string_view>
 #include <weave/weave.hpp>
 
 #include "case_runner.hpp"
@@ -132,7 +132,7 @@ WEAVE_TEST(task_semantics) {
         never.wait();
         throw std::logic_error("case7: cancelled waiter must not return");
       } catch (const Cancelled& e) {
-        if (std::string(e.msg() ? e.msg() : "") != "shutdown")
+        if (e.msg() != std::string_view{"shutdown"})
           throw std::logic_error("case7: Cancelled must carry cancel msg at injection point");
         throw;
       }
@@ -143,13 +143,14 @@ WEAVE_TEST(task_semantics) {
       victim.await();
       throw std::logic_error("case7: await must rethrow Cancelled");
     } catch (const Cancelled& e) {
-      if (std::string(e.msg() ? e.msg() : "") != "shutdown")
+      if (e.msg() != std::string_view{"shutdown"})
         throw std::logic_error("case7: await must rethrow Cancelled with original msg");
     }
     if (!victim.cancelled()) throw std::logic_error("case7: victim should be CANCELLED");
   });
 
-  // case 8: cancel() 不带 msg → Cancelled 的 msg 为空（普通取消），what() 回落到默认文案。
+  // case 8: cancel() 不带 msg → Cancelled::msg() 为 nullopt（对应 asyncio 的 msg=None），
+  // what() 回落到默认文案。
   run_case(__func__, "case8", [&] {
     Event ready;
     auto victim = create_task("plain_victim", [&] {
@@ -159,7 +160,7 @@ WEAVE_TEST(task_semantics) {
         never.wait();
         throw std::logic_error("case8: unreachable");
       } catch (const Cancelled& e) {
-        if (e.msg() != nullptr) throw std::logic_error("case8: plain cancel must have empty msg");
+        if (e.msg()) throw std::logic_error("case8: plain cancel must have no msg");
         throw;
       }
     });
@@ -169,8 +170,7 @@ WEAVE_TEST(task_semantics) {
       victim.await();
       throw std::logic_error("case8: await must rethrow Cancelled");
     } catch (const Cancelled& e) {
-      if (e.msg() != nullptr)
-        throw std::logic_error("case8: plain cancel rethrown must have empty msg");
+      if (e.msg()) throw std::logic_error("case8: plain cancel rethrown must have no msg");
     }
   });
 
