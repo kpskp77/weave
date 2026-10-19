@@ -21,9 +21,12 @@ option("backend")
     set_values("svdpi", "systemc")
     set_description("Simulation backend")
 
+-- 编译告警策略：所有目标统一 -Wall -Wextra 且警告即错误（set_warnings 的 error
+-- 级别映射为 -Werror）。第三方包头文件由 add_packages 以 -isystem 引入，不受影响。
 -- Weave 核心（src/core 后端无关簿记 + src/backend 宏选择的后端适配）
 target("weave")
     set_kind("shared")
+    set_warnings("all", "extra", "error")
     add_includedirs("include", {public = true})
     add_files("src/core/*.cpp", "src/backend/*.cpp")
     if get_config("backend") == "systemc" then
@@ -36,6 +39,7 @@ target("weave")
 
 -- 示例测试（编译进独立共享库，与 weave 一同 -sv_lib 加载）
 target("weave_demo")
+    set_warnings("all", "extra", "error")
     set_kind("shared")
     add_deps("weave")
     add_rpathdirs("$ORIGIN")
@@ -45,6 +49,7 @@ target("weave_demo")
 -- SystemC 由 xmake-repo 提供（add_requires("systemc")，构建任意目标前会自动安装）。
 --   xmake build weave_sc_smoke && ./build/<plat>/<arch>/<mode>/weave_sc_smoke
 target("weave_sc_smoke")
+    set_warnings("all", "extra", "error")
     set_kind("binary")
     add_includedirs("include")
     add_defines("WEAVE_BACKEND_SYSTEMC")
@@ -60,6 +65,7 @@ target("weave_sc_smoke")
 -- 编成仿真器 -sv_lib 加载的共享库。后端宏显式固定为 SVDPI，与 --backend 配置无关，
 -- 两种配置下都回归 DPI 路径。
 target("weave_svdpi_smokelib")
+    set_warnings("all", "extra", "error")
     set_kind("shared")
     add_includedirs("include")
     add_defines("WEAVE_BACKEND_SVDPI")
@@ -74,6 +80,7 @@ target("weave_svdpi_smokelib")
 -- 定位 VCS → 编译 sv/ 骨架并链接 smokelib → 运行 simv 并以输出标记判 Pass。
 -- 无 VCS/IES 环境时打印 SKIP 并以 0 退出（见 AGENTS.md）。
 target("weave_svdpi_smoke")
+    set_warnings("all", "extra", "error")
     set_kind("binary")
     -- links = false：只保留构建顺序依赖，不把 smokelib 链进驱动。
     -- 否则动态加载器在 main() 运行前就会因库内未定义的 DPI 符号

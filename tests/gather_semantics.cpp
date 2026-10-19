@@ -222,7 +222,7 @@ WEAVE_TEST(gather_semantics) {
     auto grp = create_task("re10_grp", [&] {
       grp_ready.set();
       try {
-        gather({child}, return_exceptions);
+        (void)gather({child}, return_exceptions);  // 期望抛出：结果无意义
         throw std::logic_error("case10: unreachable");
       } catch (const Cancelled&) {
         // 预期路径

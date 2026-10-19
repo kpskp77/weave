@@ -110,7 +110,8 @@ WEAVE_TEST(taskgroup_semantics) {
       gate.wait();
       throw std::runtime_error("tg6_late");
     });
-    auto early = tg.create_task("tg6_early", [] { throw std::runtime_error("tg6_early"); });
+    [[maybe_unused]] auto early =
+        tg.create_task("tg6_early", [] { throw std::runtime_error("tg6_early"); });
     try {
       tg.wait();
       throw std::logic_error("case6: unreachable");

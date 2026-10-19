@@ -40,7 +40,7 @@ WEAVE_TEST(as_completed_semantics) {
     ac.next().await();
     if (ac.pending()) throw std::logic_error("case2: pending must be false at end");
     try {
-      ac.next();
+      (void)ac.next();  // 期望抛出：返回值无意义
       throw std::logic_error("case2: unreachable");
     } catch (const std::logic_error& e) {
       if (std::string(e.what()).find("no more tasks") == std::string::npos) throw;
@@ -72,7 +72,7 @@ WEAVE_TEST(as_completed_semantics) {
       auto ac = as_completed({child});
       ready.set();
       try {
-        ac.next();
+        (void)ac.next();  // 期望抛出：返回值无意义
         throw std::logic_error("case4: unreachable");
       } catch (const Cancelled&) {
         // 预期路径：取消只中断本次 next()
@@ -110,7 +110,7 @@ WEAVE_TEST(as_completed_semantics) {
     auto ac = as_completed({});
     if (ac.pending()) throw std::logic_error("case6: empty set must not be pending");
     try {
-      ac.next();
+      (void)ac.next();  // 期望抛出：返回值无意义
       throw std::logic_error("case6: unreachable");
     } catch (const std::logic_error& e) {
       if (std::string(e.what()).find("no more tasks") == std::string::npos) throw;
