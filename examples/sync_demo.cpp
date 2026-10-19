@@ -89,7 +89,9 @@ WEAVE_TEST(sync_demo) {
     Event slow_gate;
     auto quick = create_task("wait_quick", [] {});
     auto slow = create_task("wait_slow", [&] { slow_gate.wait(); });
-    auto r = wait({quick, slow}, ReturnWhen::FIRST_COMPLETED);
+    // 注意：必须写成 weave::wait——glibc 的 <stdlib.h> 在全局命名空间里定义了
+    // union wait，而实参 weave::Task 会触发 ADL，非限定调用两者都是候选（歧义）。
+    auto r = weave::wait({quick, slow}, ReturnWhen::FIRST_COMPLETED);
     if (r.done.size() != 1 || r.pending.size() != 1)
       throw std::logic_error("sync_demo: FIRST_COMPLETED must split done/pending");
     slow_gate.set();
@@ -98,7 +100,7 @@ WEAVE_TEST(sync_demo) {
     // timeout 到点同样只做分组快照
     Event gate2;
     auto t = create_task("wait_timeout", [&] { gate2.wait(); });
-    auto snapshot = wait({t}, ReturnWhen::ALL_COMPLETED, 1_ns);
+    auto snapshot = weave::wait({t}, ReturnWhen::ALL_COMPLETED, 1_ns);
     if (!snapshot.done.empty() || snapshot.pending.size() != 1)
       throw std::logic_error("sync_demo: timeout must return the current grouping");
     gate2.set();
