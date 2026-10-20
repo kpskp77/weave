@@ -62,11 +62,16 @@ port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md�
 - **Event edge 语义**：`set()` 快照当前等待者并逐个触发，放行后不复查 flag；`wait()` 成功与取消**两条
   路径**都必须先从 `wake_evs` 摘除再销毁唤醒事件，否则后续 `set()` 会对已销毁 id 触发。该清场现由单个
   `detail::scope_exit` 守卫承担（摘除与销毁的顺序写在 lambda 体内，不依赖析构逆序）。
-- **`detail::on_scope_exit` 只在清理「跨调用状态」时用**：目前仅两处——`Event::wait()`（`wake_evs` 挂在
-  共享 `Impl` 上）、`AsCompleted::next()`（`waiting` 挂在跨调用的 `*impl_` 上）。这两处若在取消/异常路径
-  漏清，后续 `set()`/callback 会对无等待者的事件触发。`wait()`/`TaskGroup::wait()` 的状态是函数局部量
-  （`st` 随栈帧作废），那两处保持显式清场代码——不为异常逸出路径引入守卫，那已是 bug 路径。守卫的
-  析构不抛、不挂起；需要挂起的收尾（TaskGroup 级联取消后等落地）永远留在显式代码里。
+- **`detail::on_scope_exit` 用在「帧死后仍有读者」的状态上**：`Event::wait()`（`wake_evs` 挂在共享
+  `Impl` 上）、`AsCompleted::next()`（`waiting` 挂在跨调用的 `*impl_` 上）、`wait()`/`TaskGroup::wait()`
+  （`WaitState`/`GroupState` 虽局部，但被未完成子任务的 done_callback 按 `shared_ptr` 持有，帧死后
+  仍活着，回调仍会读 `waiting`/`signalled`）。
+- **标志复位与事件销毁的耦合看取消是否逸出**：`wait()`（asyncio.wait）设计上把 `Cancelled` 原样往上传
+  （不取消子任务），逸出时子任务仍 pending、`st` 仍被其回调持有，所以「先落 `waiting` 再 `destroy_event`」
+  必须成对写在同一个守卫里——拆成「守卫 + 直线代码」，直线那句在取消路径上执行不到，子任务晚到完成
+  就会对已销毁 id `trigger`（SystemC 侧抛 `invalid event id`）。`TaskGroup::wait()` 不同：`Cancelled`
+  就地捕获并 drain 完兄弟才外抛，标志复位留在 `try` 之后就够，守卫只需销毁事件。
+- 守卫的析构不抛、不挂起；需要挂起的收尾（TaskGroup 级联取消后等落地）永远留在显式代码里。
 - **时间**：内部 int64 飞秒，`to_ticks` 向上取整保证至少睡够，`sleep(0)` 保持 0 tick。飞秒上限 ≈ 2.56 h
   仿真时间，越界字面量是**编译错误**（`time.hpp` 的 constexpr 守卫），不会静默回绕。
 - **失败传播**：`gather` 首个失败按**完成顺序**立即重抛、兄弟不取消（取消兄弟是 TaskGroup 语义）；gather

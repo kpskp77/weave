@@ -156,6 +156,14 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
   st->remaining = static_cast<long>(tasks.size());
   st->wake_ev = port::create_event();
 
+  // 覆盖异常与正常路径。销毁前必须先落下 waiting：晚到的完成只在 waiting 为真时
+  // trigger，标志滞留为 true 就会对已销毁 id 触发（走不到 catch 的清场，所以两件事
+  // 必须在同一个 lambda 里成对完成）。
+  auto destroy_wake = detail::on_scope_exit([&st] {
+    st->waiting = false;
+    port::destroy_event(st->wake_ev);
+  });
+
   for (const Task& t : tasks) {
     const int id = detail::task_id(t);
     detail::add_done_callback(id, [st, id]() {
@@ -176,17 +184,10 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
   // delta 调度顺序，不确定。
   const bool snapshot_only = timeout.has_value() && timeout->count() <= 0;
   if (!st->signalled && !snapshot_only) {
-    try {
-      st->waiting = true;
-      detail::backend_wait(st->wake_ev, timeout.has_value() ? detail::to_ticks(*timeout) : -1);
-      st->waiting = false;
-    } catch (...) {
-      st->waiting = false;
-      port::destroy_event(st->wake_ev);
-      throw;  // Cancelled：asyncio.wait 从不取消子任务，原样传播
-    }
+    st->waiting = true;
+    detail::backend_wait(st->wake_ev, timeout.has_value() ? detail::to_ticks(*timeout) : -1);
+    st->waiting = false;
   }
-  port::destroy_event(st->wake_ev);
 
   for (const Task& t : tasks) {
     if (t.done())
@@ -241,8 +242,7 @@ Task AsCompleted::next() {
     if (st.produced >= st.total) throw std::logic_error("as_completed: no more tasks");
     st.waiting = true;
     // 这里必须异常安全：st 是 *impl_，跨 next() 调用存活——标志若留在 true，后续 completion
-    // 就会对无等待者的 wake_ev 触发。wait()/TaskGroup::wait() 里的 st 是函数局部量，随栈帧
-    // 作废，故那两处保持显式清场，不引入守卫。
+    // 就会对无等待者的 wake_ev 触发。
     auto clear_waiting = detail::on_scope_exit([&st] { st.waiting = false; });
     detail::backend_wait(st.wake_ev, -1);  // 取消只中断 next() 本身，队列与子任务不受影响
   }
@@ -298,6 +298,14 @@ void TaskGroup::wait() {
   st->wake_ev = port::create_event();
   st->drain_ev = port::create_event();
 
+  // 两个裸事件由守卫在作用域退出时销毁。不必像 wait() 那样在守卫里复位标志：Cancelled 就地捕获
+  // 并 drain 完兄弟后才外抛，能逸出的只剩 current()/record() 的不变量违例（已是 bug 路径），
+  // 原实现同样不为它们复位 st。
+  auto destroy_events = detail::on_scope_exit([&st] {
+    port::destroy_event(st->wake_ev);
+    port::destroy_event(st->drain_ev);
+  });
+
   for (const Task& t : children) {
     const int id = detail::task_id(t);
     detail::add_done_callback(id, [st, id]() {
@@ -345,8 +353,6 @@ void TaskGroup::wait() {
       st->draining = false;
     }
   }
-  port::destroy_event(st->wake_ev);
-  port::destroy_event(st->drain_ev);
 
   if (cancelled) {
     // TaskGroup 等待者被取消：抛出携带调用者当前任务 cancel_msg 的 Cancelled，
