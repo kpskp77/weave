@@ -62,10 +62,11 @@ port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md�
 - **Event edge 语义**：`set()` 快照当前等待者并逐个触发，放行后不复查 flag；`wait()` 成功与取消**两条
   路径**都必须先从 `wake_evs` 摘除再销毁唤醒事件，否则后续 `set()` 会对已销毁 id 触发。该清场现由单个
   `detail::scope_exit` 守卫承担（摘除与销毁的顺序写在 lambda 体内，不依赖析构逆序）。
-- **作用域清场用 `detail::on_scope_exit`**：`scope_exit` 的析构不抛且不挂起，故只能覆盖「作用域内」的
-  清场（事件摘除/销毁、`waiting`/`draining` 标志复位）；需要挂起的收尾（TaskGroup 级联取消后等落地）
-  必须留在显式代码里，跨作用域/对象寿命的所有权（`AsCompleted::Impl`、`TaskRecord::abort_ev`）仍用
-  显式成员 + 析构。`port::destroy_event` 在不变量成立时不失败是其正确性前提。
+- **`detail::on_scope_exit` 只在清理「跨调用状态」时用**：目前仅两处——`Event::wait()`（`wake_evs` 挂在
+  共享 `Impl` 上）、`AsCompleted::next()`（`waiting` 挂在跨调用的 `*impl_` 上）。这两处若在取消/异常路径
+  漏清，后续 `set()`/callback 会对无等待者的事件触发。`wait()`/`TaskGroup::wait()` 的状态是函数局部量
+  （`st` 随栈帧作废），那两处保持显式清场代码——不为异常逸出路径引入守卫，那已是 bug 路径。守卫的
+  析构不抛、不挂起；需要挂起的收尾（TaskGroup 级联取消后等落地）永远留在显式代码里。
 - **时间**：内部 int64 飞秒，`to_ticks` 向上取整保证至少睡够，`sleep(0)` 保持 0 tick。飞秒上限 ≈ 2.56 h
   仿真时间，越界字面量是**编译错误**（`time.hpp` 的 constexpr 守卫），不会静默回绕。
 - **失败传播**：`gather` 首个失败按**完成顺序**立即重抛、兄弟不取消（取消兄弟是 TaskGroup 语义）；gather

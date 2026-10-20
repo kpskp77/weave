@@ -155,10 +155,6 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
   st->when = return_when;
   st->remaining = static_cast<long>(tasks.size());
   st->wake_ev = port::create_event();
-  // 裸事件由守卫在作用域退出时销毁：原实现的 catch 内销毁只覆盖 Cancelled，返回值组装
-  // 阶段的 bad_alloc 会泄漏该 id。callbacks 只在 waiting 为真时 trigger，故销毁时不存在
-  // 未消费的唤醒。
-  auto destroy_wake = detail::on_scope_exit([&st] { port::destroy_event(st->wake_ev); });
 
   for (const Task& t : tasks) {
     const int id = detail::task_id(t);
@@ -180,11 +176,17 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
   // delta 调度顺序，不确定。
   const bool snapshot_only = timeout.has_value() && timeout->count() <= 0;
   if (!st->signalled && !snapshot_only) {
-    st->waiting = true;
-    auto clear_waiting = detail::on_scope_exit([&st] { st->waiting = false; });
-    // Cancelled：asyncio.wait 从不取消子任务，原样传播（事件与标志由守卫清场）
-    detail::backend_wait(st->wake_ev, timeout.has_value() ? detail::to_ticks(*timeout) : -1);
+    try {
+      st->waiting = true;
+      detail::backend_wait(st->wake_ev, timeout.has_value() ? detail::to_ticks(*timeout) : -1);
+      st->waiting = false;
+    } catch (...) {
+      st->waiting = false;
+      port::destroy_event(st->wake_ev);
+      throw;  // Cancelled：asyncio.wait 从不取消子任务，原样传播
+    }
   }
+  port::destroy_event(st->wake_ev);
 
   for (const Task& t : tasks) {
     if (t.done())
@@ -238,9 +240,11 @@ Task AsCompleted::next() {
     }
     if (st.produced >= st.total) throw std::logic_error("as_completed: no more tasks");
     st.waiting = true;
+    // 这里必须异常安全：st 是 *impl_，跨 next() 调用存活——标志若留在 true，后续 completion
+    // 就会对无等待者的 wake_ev 触发。wait()/TaskGroup::wait() 里的 st 是函数局部量，随栈帧
+    // 作废，故那两处保持显式清场，不引入守卫。
     auto clear_waiting = detail::on_scope_exit([&st] { st.waiting = false; });
-    // 取消只中断 next() 本身，队列与子任务不受影响
-    detail::backend_wait(st.wake_ev, -1);
+    detail::backend_wait(st.wake_ev, -1);  // 取消只中断 next() 本身，队列与子任务不受影响
   }
 }
 
@@ -293,15 +297,6 @@ void TaskGroup::wait() {
   st->remaining = static_cast<long>(children.size());
   st->wake_ev = port::create_event();
   st->drain_ev = port::create_event();
-  // 两个裸事件由守卫在作用域退出时销毁。注意与 Event::wait()/wait() 不同：这里原实现
-  // 只有末尾一处销毁，从 body 逸出的异常（create 后的 bad_alloc、record() 的 logic_error）
-  // 会跳过它而泄漏两个 id，并让 waiting/draining 留在 true——守卫把这条路径一并补上。
-  // 「销毁时不存在未消费的唤醒」依赖作用域退出顺序：复位标志的守卫声明在内层块（后声明
-  // → 先析构），故 destroy 时 waiting/draining 已为 false，callbacks 不会再 trigger。
-  auto destroy_evs = detail::on_scope_exit([&st] {
-    port::destroy_event(st->wake_ev);
-    port::destroy_event(st->drain_ev);
-  });
 
   for (const Task& t : children) {
     const int id = detail::task_id(t);
@@ -323,12 +318,12 @@ void TaskGroup::wait() {
   bool cancelled = false;
   if (!st->failed && st->remaining > 0) {  // 注册期间未满足唤醒条件才阻塞
     st->waiting = true;
-    auto clear_waiting = detail::on_scope_exit([&st] { st->waiting = false; });
     try {
       detail::backend_wait(st->wake_ev, -1);
     } catch (const Cancelled&) {
       cancelled = true;  // 等待者被取消：级联取消全部未完成子任务
     }
+    st->waiting = false;
   }
 
   if (cancelled || st->failed) {
@@ -342,14 +337,16 @@ void TaskGroup::wait() {
     // 最终以首个取消/失败为准。
     while (st->remaining > 0) {
       st->draining = true;
-      auto clear_draining = detail::on_scope_exit([&st] { st->draining = false; });
       try {
         detail::backend_wait(st->drain_ev, -1);
       } catch (const Cancelled&) {
         // 二次取消：继续等落地
       }
+      st->draining = false;
     }
   }
+  port::destroy_event(st->wake_ev);
+  port::destroy_event(st->drain_ev);
 
   if (cancelled) {
     // TaskGroup 等待者被取消：抛出携带调用者当前任务 cancel_msg 的 Cancelled，
