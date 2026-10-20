@@ -155,8 +155,9 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
   st->when = return_when;
   st->remaining = static_cast<long>(tasks.size());
   st->wake_ev = port::create_event();
-  // 裸事件由守卫在作用域退出时销毁（含 throw 路径）：callbacks 只在 waiting 为真时
-  // trigger，故销毁时不存在未消费的唤醒。
+  // 裸事件由守卫在作用域退出时销毁：原实现的 catch 内销毁只覆盖 Cancelled，返回值组装
+  // 阶段的 bad_alloc 会泄漏该 id。callbacks 只在 waiting 为真时 trigger，故销毁时不存在
+  // 未消费的唤醒。
   auto destroy_wake = detail::on_scope_exit([&st] { port::destroy_event(st->wake_ev); });
 
   for (const Task& t : tasks) {
@@ -292,8 +293,11 @@ void TaskGroup::wait() {
   st->remaining = static_cast<long>(children.size());
   st->wake_ev = port::create_event();
   st->drain_ev = port::create_event();
-  // 两个裸事件由守卫在作用域退出时销毁（含 throw 路径）：callbacks 只在
-  // waiting/draining 为真时 trigger，故销毁时不存在未消费的唤醒。
+  // 两个裸事件由守卫在作用域退出时销毁。注意与 Event::wait()/wait() 不同：这里原实现
+  // 只有末尾一处销毁，从 body 逸出的异常（create 后的 bad_alloc、record() 的 logic_error）
+  // 会跳过它而泄漏两个 id，并让 waiting/draining 留在 true——守卫把这条路径一并补上。
+  // 「销毁时不存在未消费的唤醒」依赖作用域退出顺序：复位标志的守卫声明在内层块（后声明
+  // → 先析构），故 destroy 时 waiting/draining 已为 false，callbacks 不会再 trigger。
   auto destroy_evs = detail::on_scope_exit([&st] {
     port::destroy_event(st->wake_ev);
     port::destroy_event(st->drain_ev);
