@@ -91,14 +91,17 @@ coroutine 则是设计决定（见上）。
 
 已在用、新代码沿用的惯用法：`std::optional`（`Cancelled::msg()`、`wait` 的 timeout）、`std::string_view`、
 `[[nodiscard]]`（纯查询与资源获取）、`[[maybe_unused]]`、`inline constexpr`、结构化绑定、`std::exchange`、
-`unique_ptr`（后端事件表）、`static_assert` + `std::is_invocable_v` / `std::is_trivially_copyable_v`。
+`unique_ptr`（后端事件表）、`static_assert` + `std::is_invocable_v` / `std::is_nothrow_copy_constructible_v`。
 
 几条已评估、不要再越的边界：
 
 1. **所有权参数仍用 `std::string`**：`create_task(name)`、`TaskGroup::create_task`、`Task::cancel(msg)`、
    `register_test(name)`。`Cancelled::msg_` 是借用视图，指向 `TaskRecord::cancel_msg`，且 `what()` 依赖
-   `std::string` 的 NUL 结尾。`Cancelled` 必须保持平凡可拷贝（跨 `-sv_lib` 边界抛出，不得带堆成员），
-   带消息的构造只经 `detail::cancelled_with_msg` 这一条路。
+   `std::string` 的 NUL 结尾。`Cancelled` 不得带堆成员、拷贝须 nothrow（跨 `-sv_lib` 边界抛出）；
+   带消息的构造只经 `detail::cancelled_with_msg` 这一条路。**它不再是 trivially copyable**：
+   `what()` 是库里外联定义的 key function，使 typeinfo 单库唯一（多态类按标准不平凡拷贝），
+   以 catch 正确性换取该类型特征，详见 [backends.md](backends.md)「ABI 提示」。
+   同理，**不要把 `Cancelled::what()` / `Timeout::what()` 改回内联定义**。
 2. **`std::optional` 不进 port 契约的线格式**：`ev_id < 0`、`timeout_ticks < 0`、`abort_id < 0` 是与 SV
    DPI 的约定，改它要同时动 `sv/weave_pkg.sv` 与两个后端。
 3. **没有按类型分支就不加 `if constexpr`**；`if-init` 同理——`record()` / `event_by_id()` 的 `find` 之后

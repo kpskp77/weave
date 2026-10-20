@@ -70,8 +70,9 @@ xmake examples   # 示例回归：一次跑完 systemc + svdpi
 时 SVDPI 侧驱动打印 SKIP 并返回 0（等价于只做编译验证）。后端切换、SystemC 引导入口、VCS 手工运行、
 新增后端见 [docs/backends.md](docs/backends.md)。
 
-> 把 `libweave.so` 链进**自己的可执行文件**时需 `-rdynamic` + `-fvisibility=default`：`Cancelled` /
-> `Timeout` 跨 DSO 的 typeinfo 唯一性要求（见 backends.md 的「ABI 提示」）；`-sv_lib` 加载不受此限。
+> 把 `libweave.so` 链进**自己的可执行文件**时**无需**任何 RTTI 可见性/导出标志（`-fvisibility=default`
+> / `-rdynamic` 都不需要）：两个异常类型的 `what()` 是库内外联定义的 key function，typeinfo 在库里
+> 只有一份、消费方只留未定义引用（见 backends.md 的「ABI 提示」）。
 
 ## 语言标准：C++17 起
 

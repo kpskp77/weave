@@ -132,6 +132,14 @@ void sleep(duration t) {
   detail::backend_wait(-1, detail::to_ticks(t));
 }
 
+// Cancelled::what() 的外联定义。
+// 这个定义（而非声明）坐在库里，是本类型的 key function：vtable 与 typeinfo 只在
+// 这一个 TU 生成，下游 TU 只留未定义引用、经动态链接解析到同一份。消息视图恒来自
+// std::string::c_str()，故 data() 保证以 NUL 结尾，可直接当 C 串返回。
+const char* Cancelled::what() const noexcept {
+  return msg_ ? msg_->data() : "weave::Cancelled";
+}
+
 namespace detail {
 
 Cancelled cancelled_with_msg(std::string_view msg) noexcept {

@@ -16,6 +16,16 @@
 #include "core_internal.hpp"
 
 namespace weave {
+
+// Timeout::what() 的外联定义。
+// 定义放在库里（而非内联回头文件），使它成为本类型的 key function：vtable 与
+// typeinfo 只在这一个 TU 生成一份，消费方 TU 只留未定义引用、经动态链接解析到同一份。
+// 若改回内联，typeinfo 会退化成每个 TU 一份的 weak 定义，libc++abi 按指针比较
+// type_info，跨 DSO 的 catch 会静默失配。
+const char* Timeout::what() const noexcept {
+  return "weave::Timeout";
+}
+
 namespace detail {
 
 // 语义对齐 asyncio.gather(return_exceptions=False)：

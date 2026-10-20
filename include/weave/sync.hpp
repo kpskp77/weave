@@ -24,8 +24,14 @@ namespace weave {
 // 与 Cancelled 不同，这里派生 std::exception：asyncio 的 TimeoutError 属于普通
 // Exception（OSError 子类），超时是可被通用 catch (const std::exception&) 兜底
 // 处理的普通失败路径。
+//
+// what() 必须**外联定义**（src/core/sync.cpp）——它是本类型的 key function：
+// 有了它，vtable 与 typeinfo 只在定义它的那个 TU（libweave.so）里各生成一份，
+// 消费方的每个 TU 只留下未定义引用，经动态链接解析到库内那一份。若把它写回内联
+// （或删掉），typeinfo 会退化成每个 TU 一份的 weak 定义：libc++abi 按指针比较
+// type_info，catch 便会在跨 DSO 场景静默失配。
 struct Timeout : std::exception {
-  const char* what() const noexcept override { return "weave::Timeout"; }
+  const char* what() const noexcept override;
 };
 
 // ── gather ────────────────────────────────────────────────────────────

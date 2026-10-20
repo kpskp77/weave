@@ -39,11 +39,19 @@ Cancelled cancelled_with_msg(std::string_view msg) noexcept;
 // 未传消息（普通取消）对应 asyncio 的 msg=None，用 nullopt 表达。
 // msg() 返回的视图指向 TaskRecord::cancel_msg，仅在捕获该异常的同一 throw
 // 生命周期内有效。
+//
+// what() 是**虚函数**且**外联定义**（src/core/task.cpp），仅作诊断。这两点都是刻意
+// 的：外联的虚函数充当 key function，使 vtable/typeinfo 只在库内生成一份，消费方
+// 的 TU 只留未定义引用，跨 DSO 的 catch 才对得上（libc++abi 按指针比较 type_info；
+// 类型若保持非多态，typeinfo 会退化成每个 TU 一份的 weak 定义，catch 在隐藏可见性
+// 的构建下静默失配）。代价是多态类不再平凡可拷贝（标准规定含虚函数的类拷贝构造
+// 不平凡）——这里选择 catch 正确性，断言改成盯真正关心的性质（见下方 static_assert）。
 struct Cancelled {
-  const char* what() const noexcept {  // 诊断用，非虚
-    // 视图恒来自 std::string::c_str()，故 data() 保证以 NUL 结尾
-    return msg_ ? msg_->data() : "weave::Cancelled";
-  }
+  // 多态类型必须声明虚析构：Cancelled 会经 std::make_exception_ptr 等路径
+  // 在堆上构造/销毁（gather(return_exceptions)），非虚析构会触发
+  // -Wdelete-non-abstract-non-virtual-dtor（-Werror 下直接编译失败）。
+  virtual ~Cancelled() = default;
+  virtual const char* what() const noexcept;
   // msg=None → nullopt（不再用 nullptr 哨兵）
   std::optional<std::string_view> msg() const noexcept { return msg_; }
 
@@ -52,10 +60,13 @@ private:
   friend Cancelled detail::cancelled_with_msg(std::string_view msg) noexcept;
 };
 
-// 异常对象退化为"一个可空视图 + 判别"，平凡可拷贝（跳异常时无堆分配、无拷贝构造
-// 开销），也可跨 -sv_lib 共享库边界传递。
-static_assert(std::is_trivially_copyable_v<Cancelled>,
-              "Cancelled must stay trivially copyable: thrown across the DSO boundary");
+// 异常对象 = "一个可空视图 + 判别"，不含堆成员、拷贝不抛：跳异常路径不额外分配。
+// 注意不能要求 trivially_copyable：what() 是库内唯一生成的 key function（见上），
+// 而标准规定多态类的拷贝构造不平凡——RTTI 跨 DSO 单份（catch 正确性）优先于这个
+// 类型特征。这里改盯真正想要的两件事：拷贝/析构 nothrow，且无任何堆成员。
+static_assert(std::is_nothrow_copy_constructible_v<Cancelled> &&
+                  std::is_nothrow_destructible_v<Cancelled>,
+              "Cancelled must be cheap to throw: nothrow copy, no heap members");
 
 class Task;
 

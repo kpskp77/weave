@@ -61,19 +61,27 @@ extern "C" int sc_main(int, char**) { return weave::sc::run(); }
 // → 返回 root_status() 作进程退出码；若目标平台的 SystemC 按 C++ 链接，去掉 extern "C"
 ```
 
-**ABI 提示（可执行文件链接 libweave 时）**：`Cancelled` / `Timeout` 是公共头里定义、
-由库抛出、由用户代码 catch 的类型。libc++ 在 Linux/Android 上按 Itanium ABI 假设类型信息
-全局唯一（`type_info` 只比较指针），因此两侧必须绑定同一份 typeinfo：
+**ABI 提示（异常类型跨 DSO）**：`Cancelled` / `Timeout` 由库抛出、由用户代码 catch。
+libc++abi 在 Linux/Android 上按 Itanium ABI 假设类型信息全局唯一（`type_info` 只比较指针），
+所以两侧必须是**同一个** typeinfo 对象。公共头里直接写内联定义会让 GCC/Clang 把它当作
+vague linkage：每个用到它的 TU 各生成一份 weak 定义；又比如 xmake `mode.release` 会给所有
+非 shared 目标默认设 `symbols = hidden`（`-fvisibility=hidden -fvisibility-inlines-hidden`），
+消费方可执行文件里那份就成了**局部符号**——与库内那份不同一，`catch` 全部静默失配
+（链接、启动都不报错，只是异常穿透到最外层）。
 
-- 用 `-fvisibility=default` 编译（xmake-repo 的 systemc 包会给依赖目标带
-  `-fvisibility=hidden` 与 `-fvisibility-inlines-hidden`，把公共异常类型的 RTTI 弱化甚至丢弃，
-  使 `-rdynamic` 也导不出去，实测 catch 全部失配）；
-- 可执行文件链接时加 `-rdynamic`（= `-Wl,--export-dynamic`），让库内 throw 处的引用
-  经动态符号解析到可执行文件导出的那份 RTTI。
+修复放在**类型定义**上，不在构建标志上：两个类型的 `what()` 都**只在公共头声明、在库里
+外联定义**（`src/core/sync.cpp` / `src/core/task.cpp`）。外联的非内联虚函数充当 **key
+function**，vtable 与 typeinfo 只在库的该 TU 生成一份，消费方 TU 只留未定义引用，经开载时
+动态链接解析到同一份。因此：
 
-用 `-sv_lib` 加载 `weave` 与示例/测试库（VCS 场景）时，由动态链接器在加载期统合两份
-RTTI，无需上述设置。仓库内的 `weave_examples_sc` 目标（`xmake examples`，仅 --backend=systemc）
-就是按这套消费者设置构建的；`weave_examples_svdpi`（共享库形态）则不需要。
+- 消费方**不需要** `-fvisibility=default`，也**不需要** `-rdynamic`（仓库的 `weave_examples_sc`
+  目标就不带这两项，release 模式带 `-fvisibility=hidden` 也照样跑通）；
+- 判别方法：`nm -D <exe> | grep _ZTIN5weave` 应全部是 `U`（未定义），`D`/`V` 定义只出现在
+  `libweave.so`；若哪天 `what()` 被改回内联，这里会重新出现定义、`catch` 就会退回到失配；
+- 代价：`Cancelled` 因此成为多态类型（带虚析构，不再是 trivially copyable）；它的不变式
+  退为「借用视图、无堆成员、拷贝 nothrow」（`task.hpp` 的 `static_assert` 盯这三件事）。
+
+用 `-sv_lib` 加载 `weave` 与示例/测试库（VCS 场景）同理，库内单份 RTTI 经动态链接器共用。
 
 ## 新增后端
 

@@ -53,6 +53,11 @@ port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md�
   兄弟传空 msg，注入点与 `await` 重投处保留原 msg。
 - **异常类型分层不可改**：`Cancelled` **不派生** `std::exception`（对齐 `BaseException`，不被兜底 catch
   静默吞掉），`Timeout` **派生**（对齐 `TimeoutError`）。
+- **两个异常类型的 `what()` 必须外联定义在库里**（`src/core/sync.cpp` / `src/core/task.cpp`）：它是
+  两个类型的 key function，vtable/typeinfo 因此只在 libweave.so 生成一份，消费方 TU 只留未定义引用。
+  一旦写回内联，typeinfo 退化成每 TU 一份的 weak 定义，libc++abi 按指针比对 → 跨 DSO 的 catch
+  静默失配（编译、链接都不报错）。因此 `Cancelled` 是多态类型且带虚析构（不再是 trivially
+  copyable，断言改为 nothrow 拷贝 + 无堆成员）。
 - **Event edge 语义**：`set()` 快照当前等待者并逐个触发，放行后不复查 flag；`wait()` 成功与取消**两条
   路径**都必须先从 `wake_evs` 摘除再销毁唤醒事件，否则后续 `set()` 会对已销毁 id 触发。
 - **时间**：内部 int64 飞秒，`to_ticks` 向上取整保证至少睡够，`sleep(0)` 保持 0 tick。飞秒上限 ≈ 2.56 h
@@ -84,8 +89,8 @@ port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md�
   必须在 C++17 下功能完备——不得把 C++20+ 特性当必需；同时公共头必须能在更新的标准（C++20/23）下
   干净编译（不依赖随标准改变含义/被弃用/被移除的写法，`-Wall -Wextra -Werror` 下无告警），调用方可
   自选 `-std=`。公共头必须能独立编译（用到的头显式 include，不靠传递包含）。已评估的边界（`string_view`
-  不能替代需所有权的参数、port 线格式哨兵仍用负值、无类型分支不加 `if constexpr`、`Cancelled` 保持
-  平凡可拷贝）见 architecture.md 的「语言基线」。
+  不能替代需所有权的参数、port 线格式哨兵仍用负值、无类型分支不加 `if constexpr`、`Cancelled` 的
+  `what()` 必须外联以保 typeinfo 单库唯一）见 architecture.md 的「语言基线」。
 
 ## 测试编写约定
 
@@ -105,6 +110,7 @@ port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md�
 ```bash
 clang-format -i <改动的 .cpp/.hpp>                                        # Google 基线，见 .clang-format
 verible-verilog-format --inplace --flagfile=.verible-format <改动的 .sv>  # 见 .verible-format
+stylua <改动的 .xmake>  # 见 .stylua.toml
 ```
 
 - 只格式化自己改动的文件，不做全仓库无关重排；具体参数以两个配置文件为准（2 空格缩进、列宽 100 等）。
@@ -121,5 +127,9 @@ verible-verilog-format --inplace --flagfile=.verible-format <改动的 .sv>  # �
 - 此 xmake 版本：`add_requires` 只能在顶层作用域且不能跟在 option/target 定义之后（作用域泄漏）；
   `has_config(name, value)` 对 set_values 选项不可靠，用 `get_config(name) == "..."`。
 - 时间换算用 `__int128` 防溢出；`ticks_per_sec()` 首次经 port 查询后缓存（static local）。
-- **跨 DSO 的 catch 依赖 typeinfo 唯一**：消费者需 `-fvisibility=default` + `-rdynamic`，否则 `catch`
-  静默失配、异常穿透到最外层（详见 [docs/backends.md](docs/backends.md) 的「ABI 提示」与 xmake.lua 注释）。
+- **跨 DSO 的 catch 依赖 typeinfo 唯一**：已由「异常类型的 `what()` 外联定义」保证（见不变量一节），
+  消费方可执行文件**不需要**任何 `-fvisibility=default` / `-rdynamic`；即便 xmake `mode.release` 对非
+  shared 目标默认设了 `symbols=hidden`（`-fvisibility=hidden -fvisibility-inlines-hidden`，与 package 无关）
+  也照样能 catch。判别：`nm -D <exe> | grep _ZTIN5weave` 应全是 `U`，定义只在 libweave.so；
+  反之（exe 里出现 `D`/`V` 定义）说明 key function 被写回内联了。详见
+  [docs/backends.md](docs/backends.md) 的「ABI 提示」。

@@ -50,12 +50,8 @@ end
 target("weave", function()
   set_kind("shared")
   set_warnings("all", "extra", "error")
-  -- 公共头里定义、由库抛出、由调用方 catch 的异常类型（Cancelled/Timeout）其 typeinfo
-  -- 与 vtable 需跨库对齐；libc++ 按指针比较 type_info，两侧须导出同一份。故保持
-  -- 默认可见性（不继承依赖包可能带入的 -fvisibility=hidden）。
-  add_cxflags("-fvisibility=default")
   add_includedirs("include", { public = true })
-  add_files("src/core/*.cpp", "src/backend/*.cpp")
+  add_files("src/**.cpp")
   if get_config("backend") == "systemc" then
     add_packages("systemc")
     on_load(systemc_rpath)
@@ -78,8 +74,7 @@ target("weave_sc_smoke", function()
   add_includedirs("include")
   add_defines("WEAVE_BACKEND_SYSTEMC")
   add_files(
-    "src/core/*.cpp",
-    "src/backend/*.cpp",
+    "src/**.cpp",
     "tests/as_completed_semantics.cpp",
     "tests/event_semantics.cpp",
     "tests/gather_semantics.cpp",
@@ -92,11 +87,6 @@ target("weave_sc_smoke", function()
   )
   add_packages("systemc")
   on_load(systemc_rpath)
-  -- 动态版 libsystemc.so 自带 main 并把 sc_main 留作未定义符号（`U sc_main`），
-  -- 必须由可执行文件从 dynsym 提供；而 mode.release 默认 set_symbols("hidden")，
-  -- 不显式改回 default 就会报
-  -- "hidden symbol `sc_main' ... is referenced by DSO"。
-  add_cxflags("-fvisibility=default")
 end)
 
 -- SVDPI 自检库：与 weave_sc_smoke 共用同一组断言体（tests/*_semantics.cpp），
@@ -154,15 +144,9 @@ end)
 target("weave_examples_sc", function()
   set_warnings("all", "extra", "error")
   set_kind("binary")
-  add_includedirs("include")
   add_deps("weave")
   add_rpathdirs("$ORIGIN")
   add_files("examples/*.cpp", "tests/sc_main.cpp")
-  -- 可执行文件形态下公共异常类型会再生成一份 RTTI/vtable，libc++ 按指针比较
-  -- type_info，需经动态符号解析到同一份 → 加 -rdynamic（--export-dynamic）。
-  -- 共享库形态（weave_examples_svdpi）动态链接器自行统合，无需此设置。
-  add_cxflags("-fvisibility=default")
-  add_ldflags("-rdynamic")
   add_packages("systemc")
   on_load(systemc_rpath)
 end)
@@ -173,7 +157,6 @@ end)
 target("weave_examples_svdpi", function()
   set_warnings("all", "extra", "error")
   set_kind("shared")
-  add_includedirs("include")
   add_deps("weave")
   add_rpathdirs("$ORIGIN")
   add_files("examples/*.cpp")
