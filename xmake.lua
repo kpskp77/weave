@@ -185,7 +185,7 @@ task("smoke", function()
       local name = target:name()
       if target:get("kind") == "binary" and name:match("^weave_smoke_") then
         print("==> " .. name)
-        local code = os.execv("xmake", { "run", target:name() })
+        local code = os.execv("xmake", { "run", name })
         if code ~= 0 then os.raise(name .. " failed (exit " .. tostring(code) .. ")") end
       end
     end
