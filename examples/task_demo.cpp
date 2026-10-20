@@ -36,6 +36,18 @@ WEAVE_TEST(task_demo) {
   ticked.wait();
   timer.await();
 
+  // ── 变量时延：duration 支持 + - * / ，时延可直接由运行期变量算出 ──────
+  // 越界/除零抛异常且非正时长夹到 0 tick（见 time.hpp）；这里用分段的固定步长累加：
+  Event paced_done;
+  const int rounds = 3;
+  const duration step = 20_ns;
+  auto paced = create_task("paced", [&] {
+    for (int i = 0; i < rounds; ++i) sleep(step);  // rounds * step 拆成三段
+    paced_done.set();
+  });
+  paced_done.wait();
+  paced.await();
+
   // ── cancel(msg)：在目标的下一个阻塞点注入 Cancelled(msg) ──────────────
   Event ready, caught;
   auto victim = create_task("victim", [&] {

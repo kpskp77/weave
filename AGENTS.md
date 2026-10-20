@@ -72,8 +72,10 @@ port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md�
   就会对已销毁 id `trigger`（SystemC 侧抛 `invalid event id`）。`TaskGroup::wait()` 不同：`Cancelled`
   就地捕获并 drain 完兄弟才外抛，标志复位留在 `try` 之后就够，守卫只需销毁事件。
 - 守卫的析构不抛、不挂起；需要挂起的收尾（TaskGroup 级联取消后等落地）永远留在显式代码里。
-- **时间**：内部 int64 飞秒，`to_ticks` 向上取整保证至少睡够，`sleep(0)` 保持 0 tick。飞秒上限 ≈ 2.56 h
-  仿真时间，越界字面量是**编译错误**（`time.hpp` 的 constexpr 守卫），不会静默回绕。
+- **时间**：内部 int64 飞秒，`to_ticks` 向上取整保证至少睡够，**非正时长一律夹到 0 tick**
+  （`sleep(0)` 保持 0 tick；负 tick 在线格式里是"无超时腿"，漏下去就是永久阻塞）。飞秒上限 ≈ 2.56 h
+  仿真时间，越界字面量是**编译错误**（`time.hpp` 的 constexpr 守卫），运行期算术（`+ - * /`）
+  越界抛 `std::overflow_error`、除零抛 `std::domain_error`，两边都**不静默回绕**。
 - **失败传播**：`gather` 首个失败按**完成顺序**立即重抛、兄弟不取消（取消兄弟是 TaskGroup 语义）；gather
   自身被取消则先级联取消未完成任务；`wait_for` 超时 → 取消并等取消完成 → 抛 `Timeout`。
 

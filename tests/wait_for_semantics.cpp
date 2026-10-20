@@ -102,5 +102,26 @@ WEAVE_TEST(wait_for_semantics) {
       throw std::logic_error("case4: resisted-cancel task must end DONE");
   });
 
+  // case 5: 非正 timeout（duration 算术可为负）→ 立即超时，不走"无超时腿"：
+  // to_ticks 把非正时长夹到 0 tick，否则负 tick 在 port 线格式里表示无超时腿，
+  // wait_for 会一直等到任务自己完成。语义同 asyncio 3.12+（timeout<=0 立即取消）。
+  run_case(__func__, "case5", [&] {
+    Event ready;
+    auto slow = create_task("slow5", [&] {
+      ready.set();
+      Event never;
+      never.wait();
+    });
+    ready.wait();  // slow 已阻塞：非正 timeout 必先到点
+    try {
+      wait_for(slow, duration{} - 1_ns);
+      throw std::logic_error("case5: non-positive timeout must throw Timeout");
+    } catch (const Timeout&) {
+      // 预期路径
+    }
+    if (!slow.done() || !slow.cancelled())
+      throw std::logic_error("case5: timed-out task must be cancelled after wait_for returns");
+  });
+
   report(__func__);
 }

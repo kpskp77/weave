@@ -62,6 +62,7 @@ target("weave_smoke_sc", function()
   add_files(
     "src/**.cpp",
     "tests/as_completed_semantics.cpp",
+    "tests/duration_semantics.cpp",
     "tests/event_semantics.cpp",
     "tests/gather_semantics.cpp",
     "tests/shield_semantics.cpp",
@@ -86,6 +87,7 @@ target("weave_smoke_svdpi", function()
     "src/core/*.cpp",
     "src/backend/*.cpp",
     "tests/as_completed_semantics.cpp",
+    "tests/duration_semantics.cpp",
     "tests/event_semantics.cpp",
     "tests/gather_semantics.cpp",
     "tests/shield_semantics.cpp",
