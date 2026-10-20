@@ -4,8 +4,8 @@
 // 时序仍完全事件驱动（ready 锁交接保证被测任务已阻塞），
 // 超时时长只是被测机制本身的输入，不用于表达用例间次序。
 // 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
-// 与 gather_semantics.cpp 共用同一断言体风格，由 weave_sc_smoke /
-// weave_svdpi_smoke 两个后端回归。
+// 与 gather_semantics.cpp 共用同一断言体风格，由 weave_smoke_sc /
+// weave_smoke_svdpi 两个后端回归。
 
 #include <stdexcept>
 #include <string>

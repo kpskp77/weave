@@ -11,7 +11,7 @@ Weave 是 C++ 测试逻辑与 EDA 仿真内核之间的行为编排层：API 借
 **原则：每次改动都回归所有用例，不挑跑、不省略。**
 
 ```bash
-xmake smoke      # 语义自检：构建全部目标 + 运行全部 *_smoke 自检二进制
+xmake smoke      # 语义自检：构建 smoke 载荷 + 逐个 xmake run 运行 weave_smoke_* 自检二进制
 xmake examples   # 示例回归（独立）：一次跑完 systemc + svdpi 两种后端
 ```
 
@@ -23,9 +23,10 @@ xmake f --backend=systemc && xmake smoke
 xmake f --backend=svdpi   # 还原默认配置
 ```
 
-- 自检目标以 `_smoke` 结尾即被 smoke 任务自动纳入，新增用例无需改回归命令。
+- 自检二进制按 `weave_smoke_*` 命名才会被 smoke 任务逐个运行；新增自检目标还需把它加进 `smoke` 任务
+  的 `xmake build` 列表（运行统一走 `xmake run`，见下方「本环境的坑」）。
 - `tests/` 与 `examples/` 载荷严格分离：示例只经 `add_deps("weave")` 链接 `libweave.so`（不内联核心
-  源码），不编进任何 `*_smoke` 载荷；反向亦然。改公共头或示例只需跑一次 `xmake examples`。
+  源码），不编进任何 `weave_smoke_*` 载荷；反向亦然。改公共头或示例只需跑一次 `xmake examples`。
 - 无 VCS/IES 时 SVDPI 驱动打印 SKIP 并返回 0（等价于只做编译验证），跳过 SVDPI 侧即可。
 - 首次构建自动安装 xmake-repo 的 SystemC；自检跑在真实内核上，delta-cycle 语义保证结论确定性。
 
@@ -72,7 +73,7 @@ port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md�
 | 新同步原语（TaskGroup/shield/as_completed/…） | `include/weave/sync.hpp` + `src/core/sync.cpp` |
 | 新通信原语（Queue/Lock/Semaphore/…） | 新公共头 `include/weave/<域>.hpp` + umbrella 加入 include |
 | 新后端 | `src/backend/<name>.cpp`（宏守卫）+ `config.hpp` 加宏 + xmake 映射 |
-| 新自检断言 | `tests/<域>_semantics.cpp`，同时加入 `weave_sc_smoke` 与 `weave_svdpi_smokelib` |
+| 新自检断言 | `tests/<域>_semantics.cpp`，同时加入 `weave_smoke_sc` 与 `weave_smoke_svdpi` |
 | 新示例 | `examples/<域>_demo.cpp`（glob 自动纳入，无需改 xmake.lua） |
 
 原则：**能由"任务簿记 + Event + 三腿等待"组合出的原语进核心层；需新挂起形态的才动 port 契约。**
@@ -124,6 +125,9 @@ stylua <改动的 .xmake>  # 见 .stylua.toml
   `abort_ev`。同理，组合原语使用裸 port 事件时必须用 waiting 标志保证 trigger 必有等待者（无等待者的
   trigger 会留下未消费的 delta notification，destroy 后后端侧是未定义行为）。
 - xmake-repo 的 SystemC 按 **C 链接**找 `sc_main`：入口必须 `extern "C"`（见 `tests/sc_main.cpp`）。
+- **SystemC 自检必须经 `xmake run` 跑**：`add_packages(systemc)` 不会产生 rpath（xmake 只为 shared 目标
+  依赖自动补 `$ORIGIN`），运行期靠 `xmake run` 注入包带的 `LD_LIBRARY_PATH`；`os.execv(targetfile)`
+  直接执行会报 `library "libsystemc.so.3.0" not found`。故 smoke / examples 任务统一走 `xmake run <target>`。
 - 此 xmake 版本：`add_requires` 只能在顶层作用域且不能跟在 option/target 定义之后（作用域泄漏）；
   `has_config(name, value)` 对 set_values 选项不可靠，用 `get_config(name) == "..."`。
 - 时间换算用 `__int128` 防溢出；`ticks_per_sec()` 首次经 port 查询后缓存（static local）。

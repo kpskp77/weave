@@ -61,7 +61,7 @@ WEAVE_TEST(my_test) {
 ## 构建与运行
 
 ```bash
-xmake smoke      # 语义自检：构建全部目标 + 运行全部 *_smoke（两种后端各跑一次）
+xmake smoke      # 语义自检：构建 smoke 载荷 + 用 xmake run 逐个跑 weave_smoke_*（两种后端各跑一次）
 xmake examples   # 示例回归：一次跑完 systemc + svdpi
 ```
 

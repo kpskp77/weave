@@ -2,8 +2,8 @@
 // （PENDING 不执行 body / 阻塞点注入 / 拒绝取消）、终态任务 cancel 幂等、
 // 句柄属性（valid/get_name）、sleep(0) 零时间让出。
 // 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
-// 与 gather_semantics.cpp 共用同一断言体风格，由 weave_sc_smoke /
-// weave_svdpi_smoke 两个后端回归。
+// 与 gather_semantics.cpp 共用同一断言体风格，由 weave_smoke_sc /
+// weave_smoke_svdpi 两个后端回归。
 
 #include <stdexcept>
 #include <string_view>

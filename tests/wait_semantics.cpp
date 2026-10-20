@@ -1,4 +1,4 @@
-// Weave C++ 簿记层自检：在真实 SystemC 内核上（weave_sc_smoke）验证 wait 的
+// Weave C++ 簿记层自检：在真实 SystemC 内核上（weave_smoke_sc）验证 wait 的
 // asyncio.wait 语义。同步完全事件驱动（纯 delta cycle），不依赖真实时钟。
 // 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
 

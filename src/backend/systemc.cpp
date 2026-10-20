@@ -19,7 +19,7 @@
 //   // run() spawn 根任务与汇报进程：终态打印 PASSED/FAILED，
 //   // sc_start() 至 sc_stop()，返回 root_status() 作进程退出码
 //
-// 已在 xmake-repo SystemC 3.0.2 上验证（weave_sc_smoke 目标，
+// 已在 xmake-repo SystemC 3.0.2 上验证（weave_smoke_sc 目标，
 // 全部 gather 语义断言在真实内核上通过）；接口行为对照 sv/weave_pkg.sv。
 
 #if defined(__has_include)

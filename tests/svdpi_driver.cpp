@@ -1,6 +1,6 @@
 // SVDPI 后端 VCS 驱动（可复用于不同 -sv_lib 载荷）。
 // 同一份驱动由两个目标各编一次，只差三个宏：载荷库名、工作目录、诊断标签：
-//   weave_svdpi_smoke          → libweave_svdpi_smokelib（tests/ 的断言体）
+//   weave_smoke_svdpi_driver    → libweave_smoke_svdpi（tests/ 的断言体）
 //   weave_examples_svdpi_driver → libweave_examples_svdpi（examples/ 的示例）
 // 两者都在真实 VCS 内核上运行，覆盖 svdpi.cpp 的 DPI 粘合层：scope 切换、
 // fork...join_none 的 spawn 调度、三腿等待（join_any + disable fork）、事件表。
@@ -29,7 +29,7 @@
 #error "WEAVE_SVDPI_SV_DIR must be defined (path to sv/ sources)"
 #endif
 #ifndef WEAVE_SVDPI_LIB
-#error "WEAVE_SVDPI_LIB must be defined (-sv_lib basename, e.g. libweave_svdpi_smokelib)"
+#error "WEAVE_SVDPI_LIB must be defined (-sv_lib basename, e.g. libweave_smoke_svdpi)"
 #endif
 #ifndef WEAVE_SVDPI_WORK
 #error "WEAVE_SVDPI_WORK must be defined (per-payload work dir name)"

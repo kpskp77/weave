@@ -1,8 +1,8 @@
 // Event 语义自检：edge 语义（set 快照等待者，clear 不收回已判定的放行）、
 // 多等待者同时唤醒、等待中被取消后 set() 不得触碰已销毁的唤醒事件。
 // 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
-// 与 gather_semantics.cpp 共用同一断言体风格，由 weave_sc_smoke /
-// weave_svdpi_smoke 两个后端回归。
+// 与 gather_semantics.cpp 共用同一断言体风格，由 weave_smoke_sc /
+// weave_smoke_svdpi 两个后端回归。
 
 #include <stdexcept>
 #include <weave/weave.hpp>

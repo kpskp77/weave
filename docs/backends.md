@@ -6,8 +6,8 @@
 
 | 宏 | 后端 | 引导入口 | 状态 |
 |---|---|---|---|
-| `WEAVE_BACKEND_SVDPI`（默认） | SystemVerilog DPI（VCS/IES/Xcelium） | `extern "C" void weave_run()`，由 sv/weave_tb.sv 调用 | 真实 VCS 内核运行验证（weave_svdpi_smoke，无 VCS 自动 SKIP） |
-| `WEAVE_BACKEND_SYSTEMC` | SystemC（xmake-repo 3.0.2） | `int weave::sc::run()`，在 sc_main 中调用 | 真实内核运行验证（weave_sc_smoke） |
+| `WEAVE_BACKEND_SVDPI`（默认） | SystemVerilog DPI（VCS/IES/Xcelium） | `extern "C" void weave_run()`，由 sv/weave_tb.sv 调用 | 真实 VCS 内核运行验证（weave_smoke_svdpi_driver，无 VCS 自动 SKIP） |
+| `WEAVE_BACKEND_SYSTEMC` | SystemC（xmake-repo 3.0.2） | `int weave::sc::run()`，在 sc_main 中调用 | 真实内核运行验证（weave_smoke_sc） |
 
 切换：
 
@@ -37,7 +37,7 @@ vcs -full64 -sverilog sv/weave_pkg.sv sv/weave_tb.sv \
 
 | 目标 | `-sv_lib` 载荷 | 内容 | 入口 |
 |---|---|---|---|
-| `weave_svdpi_smoke` | `libweave_svdpi_smokelib` | `tests/` 断言体 | `xmake smoke` |
+| `weave_smoke_svdpi_driver` | `libweave_smoke_svdpi` | `tests/` 断言体 | `xmake smoke` |
 | `weave_examples_svdpi_driver` | `libweave_examples_svdpi` | `examples/` 示例 | `xmake examples` |
 
 两者都自行定位 vcs、编译上述骨架、运行 simv 并以输出标记 `WEAVE TEST PASSED` 判 Pass；
@@ -88,4 +88,4 @@ function**，vtable 与 typeinfo 只在库的该 TU 生成一份，消费方 TU 
 1. 新增 `include/weave/config.hpp` 宏（加入互斥校验与默认逻辑）。
 2. 新建 `src/backend/<name>.cpp`，整文件 `#if defined(WEAVE_BACKEND_<NAME>)` 守卫，实现 `weave::port` 的 7 个原语 + 自选引导入口（参考 svdpi.cpp / systemc.cpp）。
 3. xmake 映射：`--backend` 选项加值，目标内 `get_config` 比较定义宏与依赖。
-4. 回归：`xmake smoke` 必须全绿（新增自检目标命名为 `*_smoke` 即自动纳入）。
+4. 回归：`xmake smoke` 必须全绿（新增自检目标按 `weave_smoke_*` 命名，并加进 `smoke` 任务的构建列表）。
