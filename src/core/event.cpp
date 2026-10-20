@@ -33,23 +33,17 @@ void Event::clear() noexcept {
 void Event::wait() {
   if (impl_->flag) return;  // 已置位：立即通过
   const int w = port::create_event();
-  impl_->wake_evs.push_back(w);
-  try {
-    detail::backend_wait(w, -1);
-  } catch (...) {
-    // 取消路径：唤醒事件未被 set() 消费，自行摘除并销毁
-    auto& v = impl_->wake_evs;
+  auto& v = impl_->wake_evs;
+  // 清场覆盖成功与异常两条路径，且必须先摘除再销毁：set() 之后仍可能被再次调用
+  // （如 gather 首个失败后，晚到的兄弟完成再次置位），否则会对已销毁的事件 id
+  // 触发唤醒。守卫声明在 push_back 之前：入列抛出时 erase 空转，事件照样销毁。
+  auto guard = detail::on_scope_exit([&v, w] {
     v.erase(std::remove(v.begin(), v.end(), w), v.end());
     port::destroy_event(w);
-    throw;
-  }
+  });
+  v.push_back(w);
   // edge 语义：被 set() 快照触发即放行，不复查 flag。
-  // 成功路径同样要摘除再销毁：set() 之后仍可能被再次调用
-  // （如 gather 首个失败后，晚到的兄弟完成再次置位），
-  // 否则会对已销毁的事件 id 触发唤醒。
-  auto& v = impl_->wake_evs;
-  v.erase(std::remove(v.begin(), v.end(), w), v.end());
-  port::destroy_event(w);
+  detail::backend_wait(w, -1);
 }
 
 }  // namespace weave

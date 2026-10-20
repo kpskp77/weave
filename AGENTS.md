@@ -60,7 +60,12 @@ port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md�
   静默失配（编译、链接都不报错）。因此 `Cancelled` 是多态类型且带虚析构（不再是 trivially
   copyable，断言改为 nothrow 拷贝 + 无堆成员）。
 - **Event edge 语义**：`set()` 快照当前等待者并逐个触发，放行后不复查 flag；`wait()` 成功与取消**两条
-  路径**都必须先从 `wake_evs` 摘除再销毁唤醒事件，否则后续 `set()` 会对已销毁 id 触发。
+  路径**都必须先从 `wake_evs` 摘除再销毁唤醒事件，否则后续 `set()` 会对已销毁 id 触发。该清场现由单个
+  `detail::scope_exit` 守卫承担（摘除与销毁的顺序写在 lambda 体内，不依赖析构逆序）。
+- **作用域清场用 `detail::on_scope_exit`**：`scope_exit` 的析构不抛且不挂起，故只能覆盖「作用域内」的
+  清场（事件摘除/销毁、`waiting`/`draining` 标志复位）；需要挂起的收尾（TaskGroup 级联取消后等落地）
+  必须留在显式代码里，跨作用域/对象寿命的所有权（`AsCompleted::Impl`、`TaskRecord::abort_ev`）仍用
+  显式成员 + 析构。`port::destroy_event` 在不变量成立时不失败是其正确性前提。
 - **时间**：内部 int64 飞秒，`to_ticks` 向上取整保证至少睡够，`sleep(0)` 保持 0 tick。飞秒上限 ≈ 2.56 h
   仿真时间，越界字面量是**编译错误**（`time.hpp` 的 constexpr 守卫），不会静默回绕。
 - **失败传播**：`gather` 首个失败按**完成顺序**立即重抛、兄弟不取消（取消兄弟是 TaskGroup 语义）；gather

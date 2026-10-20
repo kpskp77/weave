@@ -9,6 +9,7 @@
 #include <exception>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 #include <weave/task.hpp>
 #include <weave/time.hpp>
@@ -25,6 +26,35 @@ inline bool terminal(TaskState s) {
 }
 
 enum WaitStatus : int { WS_EVENT = 0, WS_TIMEOUT = 1, WS_ABORTED = 2 };
+
+// 作用域退出动作：析构时执行 f（除非 release()）。f 必须按 noexcept 语义编写——
+// 析构不抛，故 port::destroy_event 的不变量一旦被破坏即 terminate，而非静默替换
+// 正在传播的异常。用途限于「作用域内」的清场（摘除/销毁/复位标志）；跨作用域或
+// 对象寿命的所有权仍要显式成员 + 析构（见 AsCompleted::Impl、TaskRecord::abort_ev）。
+template <class F>
+class scope_exit {
+public:
+  explicit scope_exit(F f) noexcept : f_(std::move(f)) {}
+  scope_exit(scope_exit&& o) noexcept
+      : f_(std::move(o.f_)), armed_(std::exchange(o.armed_, false)) {}
+  scope_exit(const scope_exit&) = delete;
+  scope_exit& operator=(const scope_exit&) = delete;
+  scope_exit& operator=(scope_exit&&) = delete;
+  ~scope_exit() noexcept {
+    if (armed_) f_();
+  }
+  void release() noexcept { armed_ = false; }
+
+private:
+  F f_;
+  bool armed_ = true;
+};
+
+// 工厂：调用处免写类型名（C++17 下限，不依赖 CTAD）。
+template <class F>
+scope_exit<F> on_scope_exit(F f) {
+  return scope_exit<F>(std::move(f));
+}
 
 struct TaskRecord {
   std::string name;
