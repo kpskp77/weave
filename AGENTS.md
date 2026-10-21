@@ -137,6 +137,10 @@ stylua <改动的 .xmake>  # 见 .stylua.toml
   后在同一 abort_ev 上再次阻塞会被误判为取消命中，故 `backend_wait` 注入取消后必须销毁并重建
   `abort_ev`。同理，组合原语使用裸 port 事件时必须用 waiting 标志保证 trigger 必有等待者（无等待者的
   trigger 会留下未消费的 delta notification，destroy 后后端侧是未定义行为）。
+- **SV 的取消腿不能只靠标志位判定**：`weave_sv_wait` 是 `fork … join_any; disable fork;`，两腿在同一时间槽
+  触发时 `join_any` 可能在 `ab_leg` 执行前就返回，`disable fork` 随即把该腿停掉 —— 腿内 `ab_hit = 1` 来不及
+  置位，取消优先（port 契约第 4 条）就失效。故取消腿改为查 `ev_table[abort_id].ev.triggered`（与 systemc.cpp
+  的 `ab.triggered()` 判法一致）。回归：`task_semantics` case9（同槽 cancel 必须胜过事件腿）。
 - xmake-repo 的 SystemC 按 **C 链接**找 `sc_main`：入口必须 `extern "C"`（见 `tests/sc_main.cpp`）。
 - **SystemC 自检必须经 `xmake run` 跑**：`add_packages(systemc)` 不会产生 rpath（xmake 只为 shared 目标
   依赖自动补 `$ORIGIN`），运行期靠 `xmake run` 注入包带的 `LD_LIBRARY_PATH`；`os.execv(targetfile)`

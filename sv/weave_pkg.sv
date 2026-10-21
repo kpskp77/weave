@@ -72,14 +72,11 @@ package weave_pkg;
   // status: 0=事件命中  1=超时  2=被取消（同槽冲突时取消优先）
   task automatic weave_sv_wait(input int ev_id, input longint timeout_ticks, input int abort_id,
                                output int status);
-    automatic bit ev_hit = 0;
     automatic bit to_hit = 0;
-    automatic bit ab_hit = 0;
     fork
       begin : ev_leg
         if (ev_id >= 0) begin
           wait (ev_table[ev_id].ev.triggered);
-          ev_hit = 1;
         end else begin
           wait (1'b0);  // 禁用：永不返回
         end
@@ -95,16 +92,19 @@ package weave_pkg;
       begin : ab_leg
         if (abort_id >= 0) begin
           wait (ev_table[abort_id].ev.triggered);
-          ab_hit = 1;
         end else begin
           wait (1'b0);
         end
       end
     join_any
     disable fork;
-    if (ab_hit) status = 2;
+    // 同槽冲突时取消腿优先（与 src/backend/systemc.cpp 的 ab.triggered() 判法一致）。
+    // 注意不能只靠 ab_leg 置的标志：两个事件在同一时间槽触发时，join_any 可能在
+    // ab_leg 执行前就返回，disable fork 紧接着会把该腿停掉、标志来不及置位。
+    if (abort_id >= 0 && ev_table.exists(abort_id) && ev_table[abort_id].ev.triggered)
+      status = 2;
     else if (to_hit) status = 1;
-    else status = 0;
+    else status = 0;  // ev_hit：事件腿命中（唯一剩下的可能）
   endtask
 
   // 测试等待链：harness 在此挂起直至根任务结束

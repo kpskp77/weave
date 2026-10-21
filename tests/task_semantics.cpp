@@ -174,5 +174,31 @@ WEAVE_TEST(task_semantics) {
     }
   });
 
+  // case 9: 取消腿与事件腿同槽 → 取消优先（port 契约第 4 条）。
+  // set() 与 cancel() 之间没有挂起点，victim 不可能被调度，两腿必然落在同一
+  // 时间槽；后端必须让取消腿胜出，否则组合原语会把"已被取消"误判成正常放行。
+  run_case(__func__, "case9", [&] {
+    Event gate, ready;
+    auto victim = create_task("same_slot_victim", [&] {
+      ready.set();
+      try {
+        gate.wait();
+        throw std::logic_error("case9: cancel must win over the event leg");
+      } catch (const Cancelled&) {
+        throw;  // 预期路径：取消在阻塞点注入
+      }
+    });
+    ready.wait();     // victim 已阻塞在 gate.wait()
+    gate.set();       // 事件腿
+    victim.cancel();  // 同槽的取消腿
+    try {
+      victim.await();
+      throw std::logic_error("case9: await must rethrow Cancelled");
+    } catch (const Cancelled&) {
+      // 预期路径
+    }
+    if (!victim.cancelled()) throw std::logic_error("case9: victim must be CANCELLED");
+  });
+
   report(__func__);
 }
