@@ -122,5 +122,43 @@ WEAVE_TEST(taskgroup_semantics) {
     if (!late.cancelled()) throw std::logic_error("case6: pending sibling must be cancelled");
   });
 
+  // case 7: 组外 cancel()（Python 3.15+）→ 全部未完成子任务被外部取消，
+  // 不算失败、不触发兄弟链式取消；wait 正常返回
+  run_case(__func__, "case7", [&] {
+    Event block;
+    TaskGroup tg;
+    auto a = tg.create_task("tg7_a", [&] { block.wait(); });
+    auto b = tg.create_task("tg7_b", [&] { block.wait(); });
+    tg.cancel();  // 不带 msg
+    tg.wait();    // 外部取消的容忍路径：正常返回
+    if (!a.cancelled() || !b.cancelled())
+      throw std::logic_error("case7: cancel() must cancel all unfinished children");
+  });
+
+  // case 8: cancel(msg)：子任务捕获 Cancelled 时能读到 msg；已 DONE 的子任务不受影响
+  run_case(__func__, "case8", [&] {
+    Event block, ready;
+    std::string seen;
+    TaskGroup tg;
+    auto done_child = tg.create_task("tg8_done", [] {});
+    [[maybe_unused]] auto watcher = tg.create_task("tg8_watcher", [&] {
+      ready.set();  // 报告自己已推进到阻塞点之前
+      try {
+        block.wait();
+      } catch (const Cancelled& c) {
+        if (c.msg()) seen = std::string(*c.msg());
+      }
+    });
+    // 事件交接即同步屏障：ready.wait 返回保证 watcher 已阻塞在 block 上
+    // （done_child 先创建先运行，此时已 DONE）
+    ready.wait();
+    tg.cancel("shutdown");
+    tg.wait();
+    if (seen != "shutdown")
+      throw std::logic_error("case8: child must observe cancel msg from TaskGroup.cancel()");
+    if (!done_child.done() || done_child.cancelled())
+      throw std::logic_error("case8: already-DONE child must be untouched");
+  });
+
   report(__func__);
 }

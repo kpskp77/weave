@@ -124,6 +124,10 @@ AsCompleted as_completed(std::initializer_list<Task> tasks);
 // （对齐 asyncio.TaskGroup 对外部取消子任务的容忍）。
 // 偏差：无 ExceptionGroup，只重抛首个失败。
 // wait() 之后 create_task 或再次 wait 抛 std::logic_error。
+//
+// cancel()（asyncio.TaskGroup.cancel，Python 3.15+）：从组外主动取消全部未完成子任务，
+// msg 对齐 Task.cancel(msg)。被外部取消的子任务不算失败、不触发兄弟取消；wait() 之后的
+// 完成顺序与终态不受影响。
 class TaskGroup {
 public:
   TaskGroup();
@@ -134,6 +138,9 @@ public:
     static_assert(std::is_invocable_v<F&>, "weave: task body must be callable with no arguments");
     return create_task(std::move(name), std::function<void()>(std::forward<F>(body)));
   }
+
+  // 取消所有未完成的子任务；不传 msg 则级联兄弟不带消息（对齐 TaskGroup 语义）。
+  void cancel(std::string msg = {});
 
   void wait();
 

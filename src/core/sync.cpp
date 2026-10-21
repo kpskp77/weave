@@ -278,6 +278,14 @@ Task TaskGroup::create_task(std::string name, std::function<void()> body) {
   return t;
 }
 
+void TaskGroup::cancel(std::string msg) {
+  // 仅取消未完成任务；已终态的子任务不动（对齐 asyncio.TaskGroup.cancel 对
+  // finished 子任务的跳过）。各任务协作式取消，不阻塞、不等落地——落地仍在 wait()。
+  for (const Task& t : impl_->children) {
+    if (!t.done()) t.cancel(msg);
+  }
+}
+
 void TaskGroup::wait() {
   if (impl_->exited) throw std::logic_error("TaskGroup: wait called twice");
   impl_->exited = true;
