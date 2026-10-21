@@ -48,6 +48,18 @@ Weave 的用户代码运行在仿真器进程内，挂起/恢复由仿真内核�
 
 `set()` 快照当前等待者并逐个触发一次性唤醒事件，被快照即放行（即使随后 `clear()`）。这与 SV 事件触发语义一致，避免"set 后瞬间 clear 丢唤醒"的竞态。实现要点：等待返回（成功与取消**两路径**）必须先摘除再销毁自己的唤醒事件，否则后续 `set()` 会对已销毁 id 触发——该清场由单个 `detail::scope_exit` 守卫承担，顺序写在 lambda 体内。
 
+### Lock 的交接语义
+
+`release()` 在**同一个不挂起的调用内**把所有权交给队首等待者（FIFO），期间 `held` 保持 true：
+不存在"已释放但还没被接手"的窗口，`locked()` 不会在交接间隙短暂变成 false，新来的 `acquire()`
+也不会插队。每个排队者持一个一次性 `Event` 作为交接信号，所以整把锁只由 `Event` + 唯一阻塞点
+组合而成，后端零改动。
+
+取消不得让锁消失。若取消与交接落在同一个 delta（`release()` 刚把锁交给某个等待者，它紧接着被
+`cancel()`；后端取消腿优先），该等待者在 `acquire()` 内拿到的是 `Cancelled` 而非锁——此时必须
+把所有权转交给下一个等待者（见 `src/core/locks.cpp` 的 `handoff()`）。这与 asyncio 在 `acquire()`
+的 `except CancelledError` 分支里补一次 `_wake_up_first()` 等价。
+
 ### 时间与精度
 
 内部 int64 飞秒（10⁻¹⁵ s，对齐 SV 最大精度），提交后端时按 `ticks_per_sec()` 向上取整——保证"至少睡够"而不是可能睡短。`sleep(0)` 特判为 0 tick（后端零时间让出，≡ `asyncio.sleep(0)`）。
@@ -67,6 +79,7 @@ weave/config.hpp   后端选择宏（默认 SVDPI）
 weave/time.hpp     duration（int64 飞秒）+ 字面量
 weave/task.hpp     Task / create_task / sleep / Cancelled
 weave/event.hpp    Event
+weave/locks.hpp    Lock / LockGuard（通信原语，建于 Event 之上）
 weave/sync.hpp     gather / wait_for / wait / shield / as_completed / TaskGroup
 weave/test.hpp     WEAVE_TEST 注册
 weave/sc.hpp       SystemC 后端引导入口

@@ -62,6 +62,10 @@ port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md�
 - **Event edge 语义**：`set()` 快照当前等待者并逐个触发，放行后不复查 flag；`wait()` 成功与取消**两条
   路径**都必须先从 `wake_evs` 摘除再销毁唤醒事件，否则后续 `set()` 会对已销毁 id 触发。该清场现由单个
   `detail::scope_exit` 守卫承担（摘除与销毁的顺序写在 lambda 体内，不依赖析构逆序）。
+- **Lock 交接不丢所有权**：`release()` 在同一个不挂起调用内交给队首（`held` 全程为 true，不存在空闲窗口，
+  新来者也不插队）；每个排队者持一个一次性 `Event` 作为交接信号。等待者取消时若已 `granted`（取消与交接
+  同槽 → 后端取消腿优先，拿到的是 `Cancelled` 而不是锁），必须 `handoff()` 给下一个等待者，
+  否则锁随取消永久消失。
 - **`detail::on_scope_exit` 用在「帧死后仍有读者」的状态上**：`Event::wait()`（`wake_evs` 挂在共享
   `Impl` 上）、`AsCompleted::next()`（`waiting` 挂在跨调用的 `*impl_` 上）、`wait()`/`TaskGroup::wait()`
   （`WaitState`/`GroupState` 虽局部，但被未完成子任务的 done_callback 按 `shared_ptr` 持有，帧死后
@@ -140,7 +144,8 @@ stylua <改动的 .xmake>  # 见 .stylua.toml
 - **SV 的取消腿不能只靠标志位判定**：`weave_sv_wait` 是 `fork … join_any; disable fork;`，两腿在同一时间槽
   触发时 `join_any` 可能在 `ab_leg` 执行前就返回，`disable fork` 随即把该腿停掉 —— 腿内 `ab_hit = 1` 来不及
   置位，取消优先（port 契约第 4 条）就失效。故取消腿改为查 `ev_table[abort_id].ev.triggered`（与 systemc.cpp
-  的 `ab.triggered()` 判法一致）。回归：`task_semantics` case9（同槽 cancel 必须胜过事件腿）。
+  的 `ab.triggered()` 判法一致）。回归：`task_semantics` case9（同槽 cancel 必须胜过事件腿）、
+  `lock_semantics` case6（同槽取消 + 交接 → 所有权转交）。
 - xmake-repo 的 SystemC 按 **C 链接**找 `sc_main`：入口必须 `extern "C"`（见 `tests/sc_main.cpp`）。
 - **SystemC 自检必须经 `xmake run` 跑**：`add_packages(systemc)` 不会产生 rpath（xmake 只为 shared 目标
   依赖自动补 `$ORIGIN`），运行期靠 `xmake run` 注入包带的 `LD_LIBRARY_PATH`；`os.execv(targetfile)`

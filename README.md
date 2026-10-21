@@ -17,6 +17,7 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 | `task.get_name()` | `task.get_name()` | |
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 为零时间让出 |
 | `Event::wait/set/clear` | `asyncio.Event` | set/clear 竞态采用 edge 语义 |
+| `Lock::acquire/release/locked` | `asyncio.Lock` | FIFO 交接；`LockGuard` ≡ `async with lock` |
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | 默认形态（首失败即抛） |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | 返回 `vector<exception_ptr>`，不提前抛出 |
 | `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义 |
@@ -91,7 +92,7 @@ xmake examples   # 示例回归：一次跑完 systemc + svdpi
 ## 目录结构
 
 ```
-include/weave/    公共 API：weave.hpp(umbrella) + config/time/task/event/sync/test[/sc]
+include/weave/    公共 API：weave.hpp(umbrella) + config/time/task/event/locks/sync/test[/sc]
 src/core/         后端无关核心 + port.hpp 后端契约
 src/backend/      后端适配（宏二选一）：svdpi.cpp（默认）/ systemc.cpp
 sv/               SVDPI 后端协议（事件表、三腿等待、spawn、tb 骨架）
@@ -108,5 +109,6 @@ docs/             architecture.md / backends.md
 
 ## 演进方向
 
-- **通信原语**：Queue / Lock / Semaphore / Condition（新头文件 queue.hpp / locks.hpp）
+- **通信原语**：Queue / Semaphore / Condition（`Lock` 已提供，见 `include/weave/locks.hpp`；
+  其余新头文件 queue.hpp / locks.hpp）
 - **后端**：契约稳定于 `src/core/port.hpp`；SVDPI 与 SystemC 均已在各自工具链验证
