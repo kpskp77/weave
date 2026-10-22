@@ -1,4 +1,4 @@
-// 同步原语：Lock / Condition
+// 同步原语：Lock / LockGuard / Condition
 
 #include <deque>
 #include <memory>

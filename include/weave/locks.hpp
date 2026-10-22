@@ -1,6 +1,18 @@
 #pragma once
 
-// 通信原语：Lock（互斥锁）。语义对齐 asyncio.Lock：
+// 通信原语：Lock / LockGuard / Condition，语义分别对齐 asyncio.Lock、
+// `async with lock:`、asyncio.Condition。
+// 全部建于 Event + 唯一阻塞点之上（每个排队者持一个一次性 Event），后端零改动。
+// 句柄语义与 Event 一致：拷贝共享同一把锁/条件变量，不是深拷贝。
+
+#include <cstddef>
+#include <memory>
+
+namespace weave {
+
+// ── Lock（asyncio.Lock）───────────────────────────────────────────────
+//
+// 互斥锁：
 //   · acquire()：锁空闲则立即取得（不挂起、不让出），已被持有则排队等待
 //     ——唯一的阻塞点在排队上；
 //   · release()：把锁交给队首等待者（FIFO 公平），无人排队则解锁；不挂起；
@@ -12,14 +24,6 @@
 // 空闲窗口（asyncio 在该窗口里 locked() 会短暂返回 False，新来者也不插队）。
 // 等待者被取消时锁不会丢：若取消与交接同槽发生（锁已交接给它、但它拿到的是
 // Cancelled），所有权转交下一个等待者，见 src/core/locks.cpp。
-//
-// 全部建于 Event + 唯一阻塞点之上（每个排队者持一个一次性 Event），后端零改动。
-
-#include <cstddef>
-#include <memory>
-
-namespace weave {
-
 class Lock {
 public:
   Lock();
@@ -40,6 +44,8 @@ private:
   std::shared_ptr<Impl> impl_;
 };
 
+// ── LockGuard ─────────────────────────────────────────────────────────
+//
 // asyncio 的 `async with lock:` 在 C++ 侧的对应物：作用域即持锁区间。
 // 构造调用 acquire()（可能挂起；抛 Cancelled 时构造失败、不持锁），
 // 析构调用 release()（不挂起）。取消沿栈展开时同样释放，等价于靠
