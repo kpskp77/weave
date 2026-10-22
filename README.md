@@ -18,6 +18,7 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 为零时间让出 |
 | `Event::wait/set/clear` | `asyncio.Event` | set/clear 竞态采用 edge 语义 |
 | `Lock::acquire/release/locked` | `asyncio.Lock` | FIFO 交接；`LockGuard` ≡ `async with lock` |
+| `Semaphore::acquire/release/locked` | `asyncio.Semaphore` | 计数信号量；`SemaphoreGuard` ≡ `async with semaphore` |
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | 默认形态（首失败即抛） |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | 返回 `vector<exception_ptr>`，不提前抛出 |
 | `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义 |
@@ -28,7 +29,7 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 | `Cancelled` / `Timeout` | `CancelledError` / `TimeoutError` | 取消不派生 `std::exception`（对齐 `BaseException` 分层）；`Timeout` 派生 |
 | `WEAVE_TEST` + 注册表 | pytest / 各类 runner | 无对应原语；由后端引导入口运行 |
 
-规划中的扩展同样一一对齐 asyncio：`Queue` / `Lock` / `Semaphore` / `Condition`，见[演进方向](#演进方向)。
+规划中的扩展同样一一对齐 asyncio：`Queue` 等，见[演进方向](#演进方向)。
 
 ### 模型差异（相对 Python，必读）
 
@@ -109,6 +110,6 @@ docs/             architecture.md / backends.md
 
 ## 演进方向
 
-- **通信原语**：Queue / Semaphore / Condition（`Lock` 已提供，见 `include/weave/locks.hpp`；
-  其余新头文件 queue.hpp / locks.hpp）
+- **通信原语**：Queue（`Lock` / `Condition` 见 `include/weave/locks.hpp`，
+  `Semaphore` 见 `include/weave/semaphore.hpp`；其余新头文件 queue.hpp）
 - **后端**：契约稳定于 `src/core/port.hpp`；SVDPI 与 SystemC 均已在各自工具链验证
