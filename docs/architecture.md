@@ -80,7 +80,8 @@ weave/time.hpp     duration（int64 飞秒）+ 字面量
 weave/task.hpp     Task / create_task / sleep / Cancelled
 weave/event.hpp    Event
 weave/locks.hpp    Lock / LockGuard / Condition（通信原语，建于 Event 之上）
-weave/semaphore.hpp Semaphore / SemaphoreGuard（通信原语，建于 Event 之上）
+weave/semaphore.hpp Semaphore / SemaphoreGuard / BoundedSemaphore / BoundedSemaphoreGuard
+                  （通信原语，建于 Event 之上）
 weave/sync.hpp     gather / wait_for / wait / shield / as_completed / TaskGroup
 weave/test.hpp     WEAVE_TEST 注册
 weave/sc.hpp       SystemC 后端引导入口

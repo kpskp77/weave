@@ -19,6 +19,7 @@ Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyn
 | `Event::wait/set/clear` | `asyncio.Event` | set/clear 竞态采用 edge 语义 |
 | `Lock::acquire/release/locked` | `asyncio.Lock` | FIFO 交接；`LockGuard` ≡ `async with lock` |
 | `Semaphore::acquire/release/locked` | `asyncio.Semaphore` | 计数信号量；`SemaphoreGuard` ≡ `async with semaphore` |
+| `BoundedSemaphore::acquire/release/locked` | `asyncio.BoundedSemaphore` | 同 Semaphore；release 超上界抛 `std::logic_error`（≡ `ValueError`） |
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | 默认形态（首失败即抛） |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | 返回 `vector<exception_ptr>`，不提前抛出 |
 | `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义 |

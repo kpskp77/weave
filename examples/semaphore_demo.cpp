@@ -51,6 +51,21 @@ WEAVE_TEST(semaphore_demo) {
     std::printf("[semaphore_demo] counting ok: max depth == permit count\n");
   }
 
+  // ── BoundedSemaphore：超界 release 抛错（≡ asyncio 的 ValueError）──
+  {
+    BoundedSemaphore b(1);
+    b.acquire();
+    b.release();  // 计数回到上界
+    bool threw = false;
+    try {
+      b.release();  // 超出上界：未持有就放第二次
+    } catch (const std::logic_error&) {
+      threw = true;
+    }
+    if (!threw) throw std::logic_error("semaphore_demo: over-release must throw");
+    std::printf("[semaphore_demo] BoundedSemaphore over-release rejected\n");
+  }
+
   // ── 排队者被取消：许可仍留在信号量里 ──────────────────────────────────
   {
     Semaphore s(1);
