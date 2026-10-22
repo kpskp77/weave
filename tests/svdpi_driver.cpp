@@ -1,18 +1,22 @@
-// SVDPI 后端 VCS 驱动（可复用于不同 -sv_lib 载荷）。
-// 同一份驱动由两个目标各编一次，只差三个宏：载荷库名、工作目录、诊断标签：
-//   weave_smoke_svdpi_driver    → libweave_smoke_svdpi（tests/ 的断言体）
-//   weave_examples_svdpi_driver → libweave_examples_svdpi（examples/ 的示例）
-// 两者都在真实 VCS 内核上运行，覆盖 svdpi.cpp 的 DPI 粘合层：scope 切换、
-// fork...join_none 的 spawn 调度、三腿等待（join_any + disable fork）、事件表。
+// SVDPI backend VCS driver (reusable across different -sv_lib payloads).
+// The same driver is compiled once per target, differing only in three macros: payload library
+// name, work directory, and diagnostic tag:
+//   weave_smoke_svdpi_driver    → libweave_smoke_svdpi (the assertion bodies in tests/)
+//   weave_examples_svdpi_driver → libweave_examples_svdpi (the programs in examples/)
+// Both run on a real VCS kernel, covering the DPI glue in svdpi.cpp: scope switching,
+// fork...join_none spawn scheduling, the three-legged wait (join_any + disable fork), and the
+// event table.
 //
-// 流程：
-//   1. 定位 vcs（$VCS_HOME/bin/vcs 或 PATH）；找不到则打印 SKIP 并以 0 退出
-//      （无 VCS/IES 环境跳过 SVDPI 验证，见 AGENTS.md）；
-//   2. 在独立工作目录编译 sv/weave_pkg.sv + sv/weave_tb.sv；
-//   3. 运行 simv 加载 -sv_lib 指定的载荷，以输出标记 "WEAVE TEST PASSED"
-//      作为通过判据（tb 中 $fatal 失败路径退出码未必非零，故以标记为准）。
+// Flow:
+//   1. locate vcs ($VCS_HOME/bin/vcs or PATH); if not found, print SKIP and exit 0
+//      (SVDPI verification is skipped without a VCS/IES environment, see AGENTS.md);
+//   2. compile sv/weave_pkg.sv + sv/weave_tb.sv in a dedicated work directory;
+//   3. run simv with the payload given by -sv_lib, using the output marker
+//      "WEAVE TEST PASSED" as the pass criterion (the $fatal failure path in the tb does not
+//      necessarily exit non-zero, so the marker is authoritative).
 //
-// 同步完全事件驱动（delta cycle），载荷内容见对应目录。
+// Synchronisation is fully event-driven (delta cycles); payload contents live in the respective
+// directories.
 
 #include <unistd.h>
 
@@ -37,13 +41,13 @@
 
 namespace {
 constexpr char kTag[] = "[" WEAVE_SVDPI_LIB "] ";
-constexpr char kLibBase[] = WEAVE_SVDPI_LIB;   // VCS -sv_lib 用的基名（无 lib/.so）
-constexpr char kWorkDir[] = WEAVE_SVDPI_WORK;  // 每次全新编译的隔离目录
+constexpr char kLibBase[] = WEAVE_SVDPI_LIB;   // Base name for VCS -sv_lib (no lib/.so)
+constexpr char kWorkDir[] = WEAVE_SVDPI_WORK;  // Isolated dir for a fresh compile each run
 }  // namespace
 
 namespace {
 
-constexpr int kWatchdogSec = 600;  // VCS 编译 + 仿真远超此值即视为挂死
+constexpr int kWatchdogSec = 600;  // VCS compile + simulation well past this counts as hung
 
 void on_alarm(int) {
   const char msg[] = "[svdpi_driver] watchdog timeout, aborting\n";
@@ -107,8 +111,8 @@ int main() {
     return 2;
   }
 
-  // 每次全新编译，避免陈旧 simv 造成假阳性。全部路径取绝对路径后切工作目录
-  // （VCS 在 CWD 落 simv）。
+  // A fresh compile every run, so a stale simv cannot cause a false positive. All paths are made
+  // absolute before switching the working directory (VCS drops simv in the CWD).
   const std::string work = self + "/" + kWorkDir;
   std::error_code ec;
   std::filesystem::remove_all(work, ec);
@@ -129,8 +133,8 @@ int main() {
   }
 
   const std::string log = work + "/simv.log";
-  const int simv_rc = run("\"./simv\" -sv_root \"" + self +
-                          "/\" -sv_lib " + kLibBase + " > \"" + log + "\" 2>&1");
+  const int simv_rc =
+      run("\"./simv\" -sv_root \"" + self + "/\" -sv_lib " + kLibBase + " > \"" + log + "\" 2>&1");
 
   std::ifstream in(log);
   const std::string output((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -138,8 +142,7 @@ int main() {
 
   constexpr char kPassMarker[] = "WEAVE TEST PASSED";
   if (simv_rc != 0 || output.find(kPassMarker) == std::string::npos) {
-    std::cerr << kTag << "FAILED (simv exit " << simv_rc << ", log: " << log << ")"
-              << std::endl;
+    std::cerr << kTag << "FAILED (simv exit " << simv_rc << ", log: " << log << ")" << std::endl;
     return 1;
   }
   std::cout << kTag << "PASSED" << std::endl;

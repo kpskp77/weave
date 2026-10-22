@@ -1,5 +1,5 @@
-// 任务簿记：TaskRecord 存储、唯一阻塞点、任务分派入口。
-// 后端无关——所有后端交互都经由 port 契约（port.hpp）。
+// Task bookkeeping: TaskRecord storage, the single blocking point, the task dispatch entry point.
+// Backend-agnostic — every backend interaction goes through the port contract (port.hpp).
 
 #include <algorithm>
 #include <stdexcept>
@@ -17,7 +17,8 @@ int g_current = -1;
 int g_root = -1;
 
 TaskRecord& record(int id) {
-  // 索引 = id - 1：id 从 1 单调递增且从不回收，直接下标即可，无哈希查找
+  // Index = id - 1: ids increase monotonically from 1 and are never recycled, so a direct
+  // subscript suffices, with no hash lookup
   if (id < 1 || static_cast<std::size_t>(id) > g_tasks.size())
     throw std::logic_error("weave: invalid task handle");
   return g_tasks[static_cast<std::size_t>(id - 1)];
@@ -29,22 +30,24 @@ TaskRecord& current() {
 }
 
 int backend_wait(int ev_id, std::int64_t timeout_ticks) {
-  TaskRecord& me = current();  // 被挂起者恒为当前任务（只能挂起自身）
-  if (me.cancel_armed) {       // 挂起的取消在下一个阻塞点注入
+  TaskRecord& me = current();  // The suspended party is always the current task (only itself)
+  if (me.cancel_armed) {       // A cancellation issued while suspended is injected at the next
+                               // blocking point
     me.cancel_armed = false;
     throw cancelled_with_msg(me.cancel_msg);
   }
   me.state = TaskState::WAITING;
-  const int saved = g_current;  // 挂起期间其他任务的切片会改写 g_current
+  const int saved = g_current;  // Slices of other tasks overwrite g_current while we are suspended
   int status = 0;
-  port::wait(ev_id, timeout_ticks, me.abort_ev, &status);  // ← 唯一挂起点
-  g_current = saved;                                       // 恢复本切片的任务身份
+  port::wait(ev_id, timeout_ticks, me.abort_ev, &status);  // ← the only suspension point
+  g_current = saved;                                       // Restore this slice's task identity
   me.state = TaskState::RUNNING;
   if (status == WS_ABORTED) {
     me.cancel_armed = false;
-    // 重建 abort 事件：已触发事件的"triggered"状态在后端会滞留
-    // （SystemC 的 change_stamp 判等、SV 的同槽 triggered 标志），
-    // 任务捕获 Cancelled 后在同一 abort_ev 上再次阻塞会被误判为取消命中。
+    // Recreate the abort event: the "triggered" state of an already triggered event lingers on the
+    // backend (SystemC compares via change_stamp, SV via a same-slot triggered flag), so a task
+    // that catches Cancelled and blocks on the same abort_ev again would be misdetected as a
+    // cancellation hit.
     port::destroy_event(me.abort_ev);
     me.abort_ev = port::create_event();
     throw cancelled_with_msg(me.cancel_msg);
@@ -54,15 +57,15 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
 
 void dispatch_completed(TaskRecord& r) {
   if (r.state == TaskState::FAILED) std::rethrow_exception(r.eptr);
-  // CANCELLED 终态重投带原 msg 的 Cancelled（对齐 asyncio：await 取消任务者收到
-  // 同一 CancelledError(msg)）
+  // Rethrow a Cancelled carrying the original msg for the CANCELLED terminal state (as in
+  // asyncio: whoever awaits a cancelled task receives the same CancelledError(msg))
   if (r.state == TaskState::CANCELLED) throw cancelled_with_msg(r.cancel_msg);
 }
 
 void add_done_callback(int id, std::function<void()> cb) {
   auto& r = record(id);
   if (terminal(r.state))
-    cb();  // 已终结：立即调用
+    cb();  // Already terminal: call immediately
   else
     r.done_callbacks.push_back(std::move(cb));
 }
@@ -95,13 +98,15 @@ bool Task::cancelled() const {
 
 void Task::cancel(std::string msg) const {
   auto& r = detail::record(id_);
-  if (!r.cancel_armed) r.cancel_msg = std::move(msg);  // 首个取消者的 msg 生效（对齐 asyncio）
+  if (!r.cancel_armed)
+    r.cancel_msg = std::move(msg);  // The first canceller's msg wins (as in
+                                    // asyncio)
   switch (r.state) {
-    case detail::TaskState::PENDING:  // body 永不执行（任务入口拦截）
-    case detail::TaskState::RUNNING:  // 下一个阻塞点注入
+    case detail::TaskState::PENDING:  // The body never runs (intercepted at the task entry)
+    case detail::TaskState::RUNNING:  // Injected at the next blocking point
       r.cancel_armed = true;
       break;
-    case detail::TaskState::WAITING:  // 立即唤醒并在阻塞点注入
+    case detail::TaskState::WAITING:  // Woken immediately and injected at the blocking point
       r.cancel_armed = true;
       port::trigger(r.abort_ev);
       break;
@@ -115,15 +120,16 @@ const std::string& Task::get_name() const {
 }
 
 Task create_task(std::string name, std::function<void()> body) {
-  // id 由簿记长度推导（从 1 起），保证 index = id - 1 在下方任何一步抛异常时
-  // 都不会错位（用独立计数器的话，create_event 失败会白白消费一个 id）。
+  // The id is derived from the bookkeeping size (starting at 1), guaranteeing index = id - 1 stays
+  // aligned even if any step below throws (with a separate counter, a failed create_event would
+  // needlessly consume an id).
   const int id = static_cast<int>(detail::g_tasks.size()) + 1;
   detail::TaskRecord r;
   r.name = std::move(name);
   r.body = std::move(body);
   r.abort_ev = port::create_event();
   r.done_ev = port::create_event();
-  detail::g_tasks.push_back(std::move(r));  // 索引 = id - 1
+  detail::g_tasks.push_back(std::move(r));  // Index = id - 1
   port::spawn(id);
   return Task(id);
 }
@@ -132,10 +138,12 @@ void sleep(duration t) {
   detail::backend_wait(-1, detail::to_ticks(t));
 }
 
-// Cancelled::what() 的外联定义。
-// 这个定义（而非声明）坐在库里，是本类型的 key function：vtable 与 typeinfo 只在
-// 这一个 TU 生成，下游 TU 只留未定义引用、经动态链接解析到同一份。消息视图恒来自
-// std::string::c_str()，故 data() 保证以 NUL 结尾，可直接当 C 串返回。
+// Out-of-line definition of Cancelled::what().
+// This definition (not the declaration) lives in the library and is the key function of the type:
+// the vtable and typeinfo are emitted only in this TU, and downstream TUs keep undefined
+// references that the dynamic linker resolves to the same copy. The message view always comes from
+// std::string::c_str(), so data() is guaranteed NUL-terminated and can be returned directly as a C
+// string.
 const char* Cancelled::what() const noexcept {
   return msg_ ? msg_->data() : "weave::Cancelled";
 }
@@ -144,9 +152,10 @@ namespace detail {
 
 Cancelled cancelled_with_msg(std::string_view msg) noexcept {
   Cancelled c;
-  // msg 是 TaskRecord::cancel_msg 的视图，由簿记所有；视图仅在本次 throw
-  // 及沿途捕获的生命周期内有效（TaskRecord 在任务终结前不销毁）。
-  // 空串视为无 msg（对齐 asyncio 的 None），Cancelled::msg() 返回 nullopt。
+  // msg is a view of TaskRecord::cancel_msg, owned by the bookkeeping; the view is valid only for
+  // this throw and the catches along the way (a TaskRecord is not destroyed before its task is
+  // terminal). An empty string counts as no msg (as in asyncio's None), and Cancelled::msg()
+  // returns nullopt.
   if (!msg.empty()) c.msg_ = msg;
   return c;
 }
@@ -155,21 +164,21 @@ Cancelled cancelled_with_msg(std::string_view msg) noexcept {
 
 }  // namespace weave
 
-// ── 任务分派入口（由各后端进程调用）────────────────────────────────────
+// ── Task dispatch entry (called by each backend's processes) ────────────────────────────────────
 
 extern "C" void weave_task_main(int task_id) {
   auto& r = weave::detail::record(task_id);
   const int saved = weave::detail::g_current;
   weave::detail::g_current = task_id;
   if (r.cancel_armed) {
-    // 取消发生在 body 首次调度之前：body 永不执行
+    // The cancellation happened before the body was first scheduled: the body never runs
     r.cancel_armed = false;
     r.state = weave::detail::TaskState::CANCELLED;
   } else {
     r.state = weave::detail::TaskState::RUNNING;
     try {
       r.body();
-      r.state = weave::detail::TaskState::DONE;  // 吞掉 Cancelled 后正常返回 → DONE
+      r.state = weave::detail::TaskState::DONE;  // Swallowing Cancelled and returning → DONE
     } catch (const weave::Cancelled&) {
       r.state = weave::detail::TaskState::CANCELLED;
     } catch (...) {
@@ -179,6 +188,6 @@ extern "C" void weave_task_main(int task_id) {
   }
   weave::detail::g_current = saved;
   auto cbs = std::exchange(r.done_callbacks, {});
-  for (auto& cb : cbs) cb();        // gather 计数等（无任务上下文执行）
-  weave::port::trigger(r.done_ev);  // 唤醒 await 者 / 测试等待链
+  for (auto& cb : cbs) cb();        // e.g. gather counting (runs with no task context)
+  weave::port::trigger(r.done_ev);  // Wakes awaiters / the test wait chain
 }

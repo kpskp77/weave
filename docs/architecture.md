@@ -1,141 +1,217 @@
-# Weave 架构
+# Weave architecture
 
-面向需要理解或修改 Weave 实现的人。操作层面的不变量清单见 [AGENTS.md](../AGENTS.md)，后端接入见 [backends.md](backends.md)。
+For people who need to understand or modify the Weave implementation. The operational invariant
+checklist lives in [AGENTS.md](../AGENTS.md); backend integration is covered in
+[backends.md](backends.md).
 
-## 核心/后端分离
+## Core/backend separation
 
-Weave 分两层，中间是稳定的端口契约：
+Weave has two layers, with a stable port contract in between:
 
 ```
-C++ 测试逻辑（WEAVE_TEST）
-        │  公共 API（include/weave/）
+C++ test logic (WEAVE_TEST)
+        │  public API (include/weave/)
         ▼
-核心簿记（src/core/）── 任务/事件/同步/时间/注册表
-        │  唯一依赖：port.hpp（7 个原语）
+core bookkeeping (src/core/) ── task/event/sync/time/registry
+        │  only dependency: port.hpp (7 primitives)
         ▼
-后端适配（src/backend/）── svdpi.cpp（默认）/ systemc.cpp
+backend adapters (src/backend/) ── svdpi.cpp (default) / systemc.cpp
         │
         ▼
-仿真内核（VCS/IES/Xcelium 或 SystemC）
+simulation kernel (VCS/IES/Xcelium, or SystemC)
 ```
 
-- 核心层**只允许**依赖 `src/core/port.hpp` 声明的原语，不得直接引用 DPI / SystemC / 线程 API。
-- 新增后端 = 实现 port 契约 + 提供引导入口，核心代码零改动。
-- 后端选择的唯一开关是编译期宏（`include/weave/config.hpp`，互斥，默认 SVDPI）；xmake 的 `--backend=` 只是定义宏。
+- The core layer may **only** depend on the primitives declared in `src/core/port.hpp`, and must
+  never reference DPI / SystemC / thread APIs directly.
+- A new backend = implement the port contract + provide a bootstrap entry point, with zero changes
+  to core code.
+- The only switch for backend selection is a compile-time macro (`include/weave/config.hpp`,
+  mutually exclusive, SVDPI by default); xmake's `--backend=` merely defines that macro.
 
-## port 契约
+## The port contract
 
-`src/core/port.hpp` 头注释是契约的完整描述，四条保证摘要：
+The header comment of `src/core/port.hpp` is the complete description of the contract; the four
+guarantees in summary:
 
-1. **进程模型**：`spawn(id)` 创建执行 `weave_task_main(id)` 的仿真进程；子进程在父进程碰到下一个挂起点（或结束）后才运行——≡ asyncio `create_task` 的"调度而非立即执行"。
-2. **单一活动进程**：任一时刻至多一个进程执行 C++ 簿记（核心靠此维护全局状态，`g_current` 等无锁）。
-3. **一次性事件**：`create/trigger/destroy`；`trigger` 不得作用于已 `destroy` 的 id。
-4. **唯一挂起点** `wait(ev, timeout, abort, status)`：三腿竞速（事件/超时/取消），同槽冲突**取消腿优先**；负 id 禁用对应腿。
+1. **Process model**: `spawn(id)` creates a simulation process that executes `weave_task_main(id)`;
+   the child runs only after the parent hits its next suspension point (or finishes) — ≡ asyncio's
+   `create_task` "scheduled, not run immediately".
+2. **Single active process**: at any instant at most one process executes C++ bookkeeping (the core
+   relies on this to maintain global state, so `g_current` and friends need no locks).
+3. **One-shot events**: `create/trigger/destroy`; `trigger` must never target an already destroyed
+   id.
+4. **Single suspension point** `wait(ev, timeout, abort, status)`: a three-legged race
+   (event/timeout/cancel), with the **cancel leg winning** same-slot conflicts; a negative id
+   disables the corresponding leg.
 
-## 关键设计决策
+## Key design decisions
 
-### 为什么不用 C++20 coroutine
+### Why not C++20 coroutines
 
-Weave 的用户代码运行在仿真器进程内，挂起/恢复由仿真内核调度（SV 进程、SystemC SC_THREAD 挂起时整个 C++ 调用栈冻结）。用 coroutine 反而需要自建调度器，且与仿真时间/事件模型各说各话。阻塞式 API + 后端进程承载挂起，是与仿真内核最自然的契合。
+Weave user code runs inside the simulator process, where suspension/resumption is scheduled by the
+simulation kernel (when an SV process or a SystemC SC_THREAD suspends, the entire C++ call stack
+freezes). Coroutines would force us to build our own scheduler that then disagrees with the
+simulation time/event model. A blocking API whose suspension is carried by backend processes is the
+most natural fit for a simulation kernel.
 
-### 为什么取消是协作式
+### Why cancellation is cooperative
 
-`cancel()` 只置标志 + 唤醒，在阻塞点注入 `Cancelled` 异常。禁用 SV `disable` / `process::kill()`：强杀会在任意点撕裂 C++ 调用栈，RAII 不展开、资源泄漏、簿记状态错乱。这与 asyncio 的协作式取消（`CancelledError` 在 await 点抛出、可捕获拒绝）同构。`cancel(msg)` 对齐 asyncio 3.9+ 的 `Task.cancel(msg)`：msg 存入任务簿记，在阻塞点注入的 `Cancelled` 与后续 `await`/`gather` 重投处保留同一 msg；组合原语级联取消兄弟任务时传空 msg（msg 属于取消发起方上下文）。
+`cancel()` only sets a flag and wakes the task, injecting a `Cancelled` exception at the blocking
+point. SV `disable` / `process::kill()` are banned: killing at an arbitrary point tears the C++
+call stack apart, RAII does not unwind, resources leak, and bookkeeping state is corrupted. This is
+isomorphic to asyncio's cooperative cancellation (`CancelledError` raised at await points, catchable
+and refusable). `cancel(msg)` matches asyncio 3.9+'s `Task.cancel(msg)`: msg is stored in the task
+bookkeeping, and the same msg is preserved both in the `Cancelled` injected at the blocking point
+and where later `await`/`gather` rethrow it; when a combinator cascade-cancels sibling tasks it
+passes an empty msg (msg belongs to the context of whoever initiated the cancellation).
 
-取消信号的类型分层同样对齐 asyncio：`Cancelled` **刻意不派生 `std::exception`**（对应 Python 3.8 起 `CancelledError` 属于 `BaseException`），使惯用的 `catch (const std::exception&)` 兜底不会静默吞掉取消——吞掉会让任务错误地以 DONE 结束，破坏 gather / TaskGroup / wait_for 对 CANCELLED 终态的判定；`Timeout` 则**派生 `std::exception`**（对应 `TimeoutError` 属于普通 `Exception`），超时是可由通用日志/兜底代码处理的普通失败路径。
+The type hierarchy of the cancellation signals also follows asyncio: `Cancelled` **deliberately does
+not derive from `std::exception`** (matching Python 3.8+, where `CancelledError` is a
+`BaseException`), so the idiomatic `catch (const std::exception&)` backstop cannot silently swallow
+cancellation — swallowing it would make the task wrongly finish as DONE and break gather / TaskGroup
+/ wait_for's judgement of the CANCELLED terminal state; `Timeout`, by contrast, **does derive from
+`std::exception`** (matching `TimeoutError` being an ordinary `Exception`), because a timeout is a
+normal failure path that generic logging/backstop code may handle.
 
-### Event 的 edge 语义
+### Edge semantics of Event
 
-`set()` 快照当前等待者并逐个触发一次性唤醒事件，被快照即放行（即使随后 `clear()`）。这与 SV 事件触发语义一致，避免"set 后瞬间 clear 丢唤醒"的竞态。实现要点：等待返回（成功与取消**两路径**）必须先摘除再销毁自己的唤醒事件，否则后续 `set()` 会对已销毁 id 触发——该清场由单个 `detail::scope_exit` 守卫承担，顺序写在 lambda 体内。
+`set()` snapshots the current waiters and triggers each one-shot wake event; being snapshotted means
+you are released (even if a `clear()` follows immediately). This matches SV event trigger semantics
+and avoids the "set then instantly clear loses the wakeup" race. Implementation detail: on return
+from the wait (on **both** paths, success and cancellation) a waiter must first unlink and then
+destroy its own wake event, otherwise a later `set()` would trigger an already destroyed id — that
+cleanup is carried by a single `detail::scope_exit` guard, with the ordering written inside the
+lambda body.
 
-### Lock 的交接语义
+### Hand-off semantics of Lock
 
-`release()` 在**同一个不挂起的调用内**把所有权交给队首等待者（FIFO），期间 `held` 保持 true：
-不存在"已释放但还没被接手"的窗口，`locked()` 不会在交接间隙短暂变成 false，新来的 `acquire()`
-也不会插队。每个排队者持一个一次性 `Event` 作为交接信号，所以整把锁只由 `Event` + 唯一阻塞点
-组合而成，后端零改动。
+`release()` hands ownership to the head waiter (FIFO) **within the same non-suspending call**, with
+`held` staying true throughout: there is no "released but not yet taken over" window, `locked()`
+never briefly turns false in the hand-off gap, and a newcomer `acquire()` cannot jump the queue.
+Each queued waiter holds a one-shot `Event` as the hand-off signal, so the whole lock is composed of
+`Event` plus the single blocking point, with zero backend changes.
 
-取消不得让锁消失。若取消与交接落在同一个 delta（`release()` 刚把锁交给某个等待者，它紧接着被
-`cancel()`；后端取消腿优先），该等待者在 `acquire()` 内拿到的是 `Cancelled` 而非锁——此时必须
-把所有权转交给下一个等待者（见 `src/core/locks.cpp` 的 `handoff()`）。这与 asyncio 在 `acquire()`
-的 `except CancelledError` 分支里补一次 `_wake_up_first()` 等价。
+Cancellation must not make the lock vanish. If cancellation and hand-off land in the same delta
+(`release()` has just handed the lock to some waiter, which is immediately `cancel()`ed; the backend
+cancel leg wins), that waiter receives `Cancelled` rather than the lock inside `acquire()` — in that
+case ownership must be handed on to the next waiter (see `handoff()` in `src/core/locks.cpp`). This
+is equivalent to asyncio doing an extra `_wake_up_first()` in `acquire()`'s `except
+CancelledError` branch.
 
-### 时间与精度
+### Time and precision
 
-内部 int64 飞秒（10⁻¹⁵ s，对齐 SV 最大精度），提交后端时按 `ticks_per_sec()` 向上取整——保证"至少睡够"而不是可能睡短。`sleep(0)` 特判为 0 tick（后端零时间让出，≡ `asyncio.sleep(0)`）。
+Internally int64 femtoseconds (10⁻¹⁵ s, matching SV's maximum precision); values are rounded up by
+`ticks_per_sec()` when submitted to the backend — guaranteeing "sleep at least this long" rather
+than possibly too short. `sleep(0)` is special-cased to 0 ticks (a zero-time yield in the backend,
+≡ `asyncio.sleep(0)`).
 
-**算术**：`duration` 支持 `+ - * /`（含 `k * d`、`d * k`、`d += …` 等复合赋值，以及 `duration / duration` 的整数倍数），以便用运行期变量算时延（`rounds * 100_ns`）。三条约束：
+**Arithmetic**: `duration` supports `+ - * /` (including `k * d`, `d * k`, `d += …` and other
+compound assignments, plus `duration / duration` yielding an integer multiple), so that delays can
+be computed from runtime variables (`rounds * 100_ns`). Three constraints:
 
-1. **越界不静默回绕**：与字面量越界的编译期守卫同一原则，运行期算术越界抛 `std::overflow_error`、除零抛 `std::domain_error`。这不是风格问题——int64 飞秒回绕会变成负 tick，而负 tick 在 port 线格式里表示"无超时腿"，漏下去就是永久阻塞。
-2. **有符号量 + 非正时长夹到 0**：`d1 - d2` 可为负（差值/偏置是合法值），但非正时长交给 `sleep` / `wait_for` 时一律按 0 tick 处理（≡ asyncio 的 `delay <= 0` 只让出一次；`wait_for` 因此立即超时并取消任务）。夹紧点在 `to_ticks()`，是负 tick 进入后端的唯一关口。
-3. **只用整数缩放**：不提供浮点乘除，仿真时间必须可复现——浮点比例会在两端引入舍入差异；需要比例时先在整数域换算（`n * d / 8`）。浮点操作数用 `= delete` 的模板**编译期拒绝**（`d * 1.5` 若隷式转成 int64_t 会静默变成 `d * 1`，与内建类型结果不同且毫无提示）；除以整数向零截断。
+1. **No silent wrapping on overflow**: same principle as the compile-time guard on out-of-range
+   literals — runtime arithmetic overflow throws `std::overflow_error` and division by zero throws
+   `std::domain_error`. This is not a matter of style: an int64 femtosecond wrap becomes a negative
+   tick, and a negative tick means "no timeout leg" in the port wire format, so letting it through
+   would block forever.
+2. **Signed quantity, non-positive durations clamped to 0**: `d1 - d2` may be negative
+   (differences/offsets are legitimate values), but a non-positive duration handed to `sleep` /
+   `wait_for` is always treated as 0 ticks (≡ asyncio's `delay <= 0`, which yields once; `wait_for`
+   therefore times out immediately and cancels the task). The clamp point is `to_ticks()`, the sole
+   gate through which a negative tick could reach the backend.
+3. **Integer scaling only**: no floating-point multiply/divide, because simulation time must be
+   reproducible — a floating-point ratio introduces rounding differences on both ends; when a ratio
+   is needed, convert in the integer domain first (`n * d / 8`). Floating-point operands are
+   **rejected at compile time** by a `= delete`d template (`d * 1.5` would otherwise silently become
+   `d * 1` after an implicit conversion to int64_t, differing from the built-in types with no hint
+   at all); division by an integer truncates toward zero.
 
-## 头文件分层
+## Header layering
 
-依赖方向自上而下，每个公共头必须可独立编译：
+Dependencies point downwards, and every public header must compile standalone:
 
 ```
-weave/config.hpp   后端选择宏（默认 SVDPI）
-weave/time.hpp     duration（int64 飞秒）+ 字面量
+weave/config.hpp    backend selection macro (SVDPI by default)
+weave/time.hpp     duration (int64 femtoseconds) + literals
 weave/task.hpp     Task / create_task / sleep / Cancelled
 weave/event.hpp    Event
-weave/locks.hpp    Lock / LockGuard / Condition（通信原语，建于 Event 之上）
+weave/locks.hpp    Lock / LockGuard / Condition (communication primitive, built on Event)
 weave/semaphore.hpp Semaphore / SemaphoreGuard / BoundedSemaphore / BoundedSemaphoreGuard
-                  （通信原语，建于 Event 之上）
+                  (communication primitive, built on Event)
 weave/sync.hpp     gather / wait_for / wait / shield / as_completed / TaskGroup
-weave/test.hpp     WEAVE_TEST 注册
-weave/sc.hpp       SystemC 后端引导入口
-weave.hpp          umbrella：只依赖本文件即获得全部公共 API
+weave/test.hpp     WEAVE_TEST registration
+weave/sc.hpp       SystemC backend bootstrap entry point
+weave.hpp          umbrella: including this file alone yields the whole public API
 ```
 
-核心内部状态只放 `src/core/*_internal.hpp`（不进公共头，不跨出 src/）。
+Core internal state lives only in `src/core/*_internal.hpp` (never in public headers, never outside
+src/).
 
-## 语言基线：C++17 起
+## Language baseline: C++17 and up
 
-**C++17 是最低要求，不是上限。** 库自身以 C++17 构建（`set_languages("c++17")` 是唯一开关），且所有
-公开能力必须在 C++17 下功能完备——这一点由回归保证。同时公共头必须能让使用**更高标准**的调用方直接
-include：不依赖随标准版本改变含义、已被弃用或已移除的写法，在 `-std=c++20` / `c++23` 下与 C++17 下
-一样 `-Wall -Wextra -Werror` 干净。
+**C++17 is the floor, not a ceiling.** The library itself is built as C++17 (`set_languages("c++17")`
+is the only switch), and every public capability must be complete under C++17 — this is guaranteed by
+the regression run. At the same time the public headers must be directly includable by callers using
+a **newer standard**: they avoid constructs whose meaning changes across standards or that are
+deprecated/removed, so under `-std=c++20` / `c++23` they are as `-Wall -Wextra -Werror` clean as
+under C++17.
 
-选 17 作为下限，是因为所需特性集（`std::optional` / `std::string_view` / `inline` 变量 / if-init /
-`[[nodiscard]]` / 结构化绑定 / 放宽的 `constexpr`）已齐备。**不把 C++20+ 特性当作必需**（concepts、
-ranges、coroutine、`std::format`、`std::span`、designated initializers、`std::move_only_function`）：
-既为了 VCS DPI 侧宿主编译器与 SystemC 3.x 两条工具链，也为了让调用方自选的 `-std=` 都能编译；不用
-coroutine 则是设计决定（见上）。
+17 was chosen as the floor because the needed feature set (`std::optional` / `std::string_view` /
+`inline` variables / if-init / `[[nodiscard]]` / structured bindings / relaxed `constexpr`) is all
+available. **C++20+ features are never required** (concepts, ranges, coroutines, `std::format`,
+`std::span`, designated initializers, `std::move_only_function`): partly for the VCS DPI-side host
+compiler and the SystemC 3.x toolchain, partly so that whatever `-std=` the caller picks still
+compiles; not using coroutines is a design decision (see above).
 
-- **抬升最低标准**（例如把 `set_languages` 改成 c++20）属跨后端改动：影响两个后端与 `-sv_lib` 边界，
-  需在两种 `--backend` 下各跑一次 `xmake smoke`。
-- **调用方用更新的标准**不需任何改动，也不改变构建配置。
-- 校验方式：每个公共头各以一个只含 `#include <weave/X.hpp>` 的 TU，在 `-std=c++17` / `c++20` / `c++23`
-  下以 `-Wall -Wextra -Werror -fsyntax-only` 编译一次（`sc.hpp` 需加 SystemC include 路径与
-  `WEAVE_BACKEND_SYSTEMC`）。
+- **Raising the floor** (e.g. changing `set_languages` to c++20) counts as a cross-backend change: it
+  affects both backends and the `-sv_lib` boundary, and requires one `xmake smoke` run under each
+  `--backend`.
+- **Callers using a newer standard** need no changes and require no build-config changes.
+- How it is verified: each public header gets a TU containing only `#include <weave/X.hpp>`, compiled
+  once under `-std=c++17` / `c++20` / `c++23` with `-Wall -Wextra -Werror -fsyntax-only` (`sc.hpp`
+  additionally needs the SystemC include path and `WEAVE_BACKEND_SYSTEMC`).
 
-已在用、新代码沿用的惯用法：`std::optional`（`Cancelled::msg()`、`wait` 的 timeout）、`std::string_view`、
-`[[nodiscard]]`（纯查询与资源获取）、`[[maybe_unused]]`、`inline constexpr`、结构化绑定、`std::exchange`、
-`unique_ptr`（后端事件表）、`static_assert` + `std::is_invocable_v` / `std::is_nothrow_copy_constructible_v`。
+Idioms already in use and to be kept by new code: `std::optional` (`Cancelled::msg()`, the `wait`
+timeout), `std::string_view`, `[[nodiscard]]` (pure queries and resource acquisition),
+`[[maybe_unused]]`, `inline constexpr`, structured bindings, `std::exchange`, `unique_ptr` (backend
+event table), `static_assert` + `std::is_invocable_v` / `std::is_nothrow_copy_constructible_v`.
 
-几条已评估、不要再越的边界：
+A few boundaries that have been evaluated — do not cross them again:
 
-1. **所有权参数仍用 `std::string`**：`create_task(name)`、`TaskGroup::create_task`、`Task::cancel(msg)`、
-   `register_test(name)`。`Cancelled::msg_` 是借用视图，指向 `TaskRecord::cancel_msg`，且 `what()` 依赖
-   `std::string` 的 NUL 结尾。`Cancelled` 不得带堆成员、拷贝须 nothrow（跨 `-sv_lib` 边界抛出）；
-   带消息的构造只经 `detail::cancelled_with_msg` 这一条路。**它不再是 trivially copyable**：
-   `what()` 是库里外联定义的 key function，使 typeinfo 单库唯一（多态类按标准不平凡拷贝），
-   以 catch 正确性换取该类型特征，详见 [backends.md](backends.md)「ABI 提示」。
-   同理，**不要把 `Cancelled::what()` / `Timeout::what()` 改回内联定义**。
-2. **`std::optional` 不进 port 契约的线格式**：`ev_id < 0`、`timeout_ticks < 0`、`abort_id < 0` 是与 SV
-   DPI 的约定，改它要同时动 `sv/weave_pkg.sv` 与两个后端。
-3. **没有按类型分支就不加 `if constexpr`**；`if-init` 同理——`record()` / `event_by_id()` 的 `find` 之后
-   都要继续用迭代器，硬套反而更难读。
-4. **`constexpr` 也用作编译期守卫**：时间字面量越界（`10000_s`）是编译错误而非静默回绕
-   （`include/weave/time.hpp` 的 `detail::fs_scaled`）；对应的运行期算术守卫
-   （`detail::checked_add/sub/mul/div`）刻意用除法判界、不用 `__int128`，让公共头保持对
-   编译器扩展零依赖。
+1. **Owning parameters stay `std::string`**: `create_task(name)`, `TaskGroup::create_task`,
+   `Task::cancel(msg)`, `register_test(name)`. `Cancelled::msg_` is a borrowed view pointing at
+   `TaskRecord::cancel_msg`, and `what()` relies on `std::string`'s NUL termination. `Cancelled` must
+   have no heap members and must copy nothrow (it is thrown across the `-sv_lib` boundary); the
+   message-carrying construction goes through exactly one path, `detail::cancelled_with_msg`. **It is
+   no longer trivially copyable**: `what()` is the key function, defined out-of-line in the library,
+   which keeps the typeinfo unique per library (polymorphic classes are not trivially copyable per
+   the standard) — that trait is traded for catch correctness, see the "ABI notes" section of
+   [backends.md](backends.md). Likewise, **do not move `Cancelled::what()` / `Timeout::what()` back
+   to inline definitions**.
+2. **`std::optional` never enters the port wire format**: `ev_id < 0`, `timeout_ticks < 0`,
+   `abort_id < 0` are the convention with the SV DPI; changing it means touching
+   `sv/weave_pkg.sv` and both backends together.
+3. **No `if constexpr` without a type-dependent branch**; same for `if-init` — the iterators after
+   the `find` in `record()` / `event_by_id()` are needed afterwards, so forcing the idiom in only
+   makes it harder to read.
+4. **`constexpr` is also used as a compile-time guard**: an out-of-range time literal (`10000_s`) is a
+   compile error rather than a silent wrap (`detail::fs_scaled` in `include/weave/time.hpp`); the
+   corresponding runtime arithmetic guards (`detail::checked_add/sub/mul/div`) deliberately bound
+   via division instead of `__int128`, keeping the public headers free of any compiler extensions.
 
-## 边界
+## Scope
 
-Weave 专注并发行为编排，不覆盖 EDA 验证的全部功能。**不提供**：DUT signal-level 读写；总线 driver/monitor；UVM component hierarchy；transaction 与 coverage；SystemC TLM 建模；仿真内核本身；C++ 线程与 coroutine 调度。这些由 SystemVerilog、UVM、cocotb、SystemC 等既有工具提供——Weave 把 C++ 测试行为以统一接口接入它们。
+Weave focuses on concurrency orchestration and does not cover all of EDA verification. **Not
+provided**: DUT signal-level access; bus drivers/monitors; the UVM component hierarchy; transactions
+and coverage; SystemC TLM modelling; the simulation kernel itself; C++ threads and coroutine
+scheduling. Those come from existing tools such as SystemVerilog, UVM, cocotb, and SystemC — Weave
+plugs C++ test behaviour into them behind a uniform interface.
 
-## 面向大模型的设计理念
+## Design philosophy for large language models
 
-Weave 假设大模型熟悉 asyncio 模式，但不假设其理解硬件语义，因此把问题分两层：Weave 提供**小而稳定**的任务/事件/同步编排接口（见 README 的映射表），协议、模型和测试约束由用户与专用验证组件提供。对 AI 辅助验证，Weave 提供的是更适合生成与反馈修正的仿真控制接口，而非"自动理解硬件"的能力。
+Weave assumes an LLM is familiar with asyncio patterns, but does not assume it understands hardware
+semantics, so the problem is split into two layers: Weave provides a **small and stable**
+task/event/sync orchestration interface (see the mapping table in the README), while protocols,
+models, and test constraints are supplied by the user and by dedicated verification components. For
+AI-assisted verification, Weave offers a simulation control interface that is better suited to
+generation and feedback-driven correction, not a capacity to "understand hardware automatically".

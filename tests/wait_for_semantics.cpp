@@ -1,11 +1,13 @@
-// wait_for 语义自检（asyncio.wait_for，3.12+ 超时语义）：
-// 超时 → 取消任务并等取消完成 → 抛 Timeout；任务先完成 → 正常返回；
-// 调用时任务已失败 → 同步路径立即重抛；任务拒绝取消 → Timeout 照抛。
-// 时序仍完全事件驱动（ready 锁交接保证被测任务已阻塞），
-// 超时时长只是被测机制本身的输入，不用于表达用例间次序。
-// 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
-// 与 gather_semantics.cpp 共用同一断言体风格，由 weave_smoke_sc /
-// weave_smoke_svdpi 两个后端回归。
+// wait_for semantic self-check (asyncio.wait_for, 3.12+ timeout semantics):
+// timeout → cancel the task, wait for the cancellation to complete, then throw Timeout; the task
+// finishing first → returns normally; a task already failed at call time → the synchronous path
+// rethrows immediately; a task refusing cancellation → Timeout is still thrown.
+// Timing stays fully event-driven (the ready hand-off guarantees the task under test is blocked);
+// the timeout duration is merely an input to the mechanism under test, never a way to express
+// ordering between cases.
+// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
+// case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp and is regressed
+// by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
 #include <stdexcept>
 #include <string>
@@ -19,20 +21,21 @@ using weave_test::report;
 using weave_test::run_case;
 
 WEAVE_TEST(wait_for_semantics) {
-  // case 1: 任务在超时前完成 → 正常返回，任务 DONE，不抛 Timeout
+  // case 1: the task finishes before the timeout → returns normally, task is DONE, no Timeout
   run_case(__func__, "case1", [&] {
     Event ready, gate;
     auto t = create_task("fast1", [&] {
       ready.set();
       gate.wait();
     });
-    ready.wait();  // t 已阻塞在 gate.wait()
+    ready.wait();  // t is now blocked in gate.wait()
     gate.set();
     wait_for(t, 1_s);
     if (!t.done() || t.cancelled()) throw std::logic_error("case1: task state wrong");
   });
 
-  // case 2: 超时 → 抛 Timeout；任务已被取消且取消已走完（await 直接给终态）
+  // case 2: timeout → throws Timeout; the task is cancelled and the cancellation has completed
+  // (await immediately yields a terminal state)
   run_case(__func__, "case2", [&] {
     Event ready;
     auto slow = create_task("slow2", [&] {
@@ -40,12 +43,12 @@ WEAVE_TEST(wait_for_semantics) {
       Event never;
       never.wait();
     });
-    ready.wait();  // slow 已阻塞，超时必先于其自身完成
+    ready.wait();  // slow is blocked, so the timeout necessarily fires before it finishes
     try {
       wait_for(slow, 1_ns);
       throw std::logic_error("case2: wait_for must throw Timeout");
     } catch (const Timeout&) {
-      // 预期路径
+      // Expected path
     }
     if (!slow.done() || !slow.cancelled())
       throw std::logic_error("case2: timed-out task must be cancelled after wait_for returns");
@@ -53,18 +56,19 @@ WEAVE_TEST(wait_for_semantics) {
       slow.await();
       throw std::logic_error("case2: await on timed-out task must throw");
     } catch (const Cancelled&) {
-      // 预期路径：取消已传播完成
+      // Expected path: the cancellation has propagated and completed
     }
   });
 
-  // case 3: 调用时任务已失败 → 同步路径立即重抛原异常，不涉及时长
+  // case 3: the task was already failed at call time → the synchronous path rethrows the original
+  // exception immediately, regardless of duration
   run_case(__func__, "case3", [&] {
     auto bad = create_task("bad3", [] { throw std::runtime_error("pre3"); });
     try {
       bad.await();
       throw std::logic_error("case3: await should rethrow");
     } catch (const std::runtime_error&) {
-      // 消费异常，使 bad 进入 FAILED 终态
+      // Consume the exception so bad reaches its FAILED terminal state
     }
     try {
       wait_for(bad, 1_s);
@@ -75,8 +79,9 @@ WEAVE_TEST(wait_for_semantics) {
     }
   });
 
-  // case 4: 任务拒绝取消（吞掉 Cancelled）→ wait_for 仍抛 Timeout，
-  // 但任务自身跑完 body → DONE（asyncio 3.12+：超时不因取消被拒而失效）
+  // case 4: the task refuses cancellation (swallows Cancelled) → wait_for still throws Timeout,
+  // but the task itself runs its body to the end → DONE (asyncio 3.12+: a timeout is not voided by
+  // cancellation being refused)
   run_case(__func__, "case4", [&] {
     Event ready, finished;
     auto stubborn = create_task("stubborn4", [&] {
@@ -85,7 +90,7 @@ WEAVE_TEST(wait_for_semantics) {
         Event never;
         never.wait();
       } catch (const Cancelled&) {
-        // 吞掉取消
+        // Swallow the cancellation
       }
       finished.set();
     });
@@ -94,17 +99,19 @@ WEAVE_TEST(wait_for_semantics) {
       wait_for(stubborn, 1_ns);
       throw std::logic_error("case4: wait_for must throw Timeout even if cancel is resisted");
     } catch (const Timeout&) {
-      // 预期路径
+      // Expected path
     }
-    finished.wait();  // 拒绝取消后 body 仍跑完
+    finished.wait();  // The body still runs to completion after refusing cancellation
     stubborn.await();
     if (!stubborn.done() || stubborn.cancelled())
       throw std::logic_error("case4: resisted-cancel task must end DONE");
   });
 
-  // case 5: 非正 timeout（duration 算术可为负）→ 立即超时，不走"无超时腿"：
-  // to_ticks 把非正时长夹到 0 tick，否则负 tick 在 port 线格式里表示无超时腿，
-  // wait_for 会一直等到任务自己完成。语义同 asyncio 3.12+（timeout<=0 立即取消）。
+  // case 5: a non-positive timeout (duration arithmetic may go negative) → times out immediately
+  // instead of taking the "no timeout leg" path: to_ticks clamps non-positive durations to 0 ticks,
+  // since a negative tick means no timeout leg in the port wire format, and wait_for would then
+  // wait until the task finishes on its own. Same semantics as asyncio 3.12+ (timeout<=0 cancels
+  // immediately).
   run_case(__func__, "case5", [&] {
     Event ready;
     auto slow = create_task("slow5", [&] {
@@ -112,12 +119,12 @@ WEAVE_TEST(wait_for_semantics) {
       Event never;
       never.wait();
     });
-    ready.wait();  // slow 已阻塞：非正 timeout 必先到点
+    ready.wait();  // slow is blocked: a non-positive timeout necessarily fires first
     try {
       wait_for(slow, duration{} - 1_ns);
       throw std::logic_error("case5: non-positive timeout must throw Timeout");
     } catch (const Timeout&) {
-      // 预期路径
+      // Expected path
     }
     if (!slow.done() || !slow.cancelled())
       throw std::logic_error("case5: timed-out task must be cancelled after wait_for returns");

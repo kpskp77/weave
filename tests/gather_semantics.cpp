@@ -1,7 +1,9 @@
-// Weave C++ 簿记层自检：在真实 SystemC 内核上（weave_smoke_sc）验证 gather 的
-// asyncio 语义。同步完全事件驱动（纯 delta cycle），不依赖真实时钟。
-// 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
-// 根任务正常结束即 PASSED（见 tests/sc_main.cpp 的汇报进程）。
+// Weave C++ bookkeeping self-check: verifies gather's asyncio semantics on a real SystemC kernel
+// (weave_smoke_sc). Synchronisation is fully event-driven (pure delta cycles) and does not depend
+// on a real clock.
+// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
+// case_runner.hpp). The root task finishing normally means PASSED (see the reporting process in
+// tests/sc_main.cpp).
 
 #include <cstdio>
 #include <cstdlib>
@@ -16,10 +18,10 @@ using weave_test::report;
 using weave_test::run_case;
 
 WEAVE_TEST(gather_semantics) {
-  // case 1: 全部成功 → gather 正常返回
+  // case 1: everything succeeds → gather returns normally
   run_case(__func__, "case1", [&] {
-    Event sa, sb, sc;  // 任务已就位
-    Event ga, gb, gc;  // 放行
+    Event sa, sb, sc;  // Tasks in place
+    Event ga, gb, gc;  // Release
     auto a = create_task("ok_a", [&] {
       sa.set();
       ga.wait();
@@ -34,7 +36,7 @@ WEAVE_TEST(gather_semantics) {
     });
     sa.wait();
     sb.wait();
-    sc.wait();  // 三个任务都已在各自的 ga/gb/gc 上阻塞
+    sc.wait();  // All three tasks are blocked on their own ga/gb/gc
     ga.set();
     gb.set();
     gc.set();
@@ -43,7 +45,8 @@ WEAVE_TEST(gather_semantics) {
       throw std::logic_error("case1: gather returned before all peers done");
   });
 
-  // case 2: 首个失败（按完成顺序）立即重抛；不等慢任务，不取消/拖走兄弟
+  // case 2: the first failure (in completion order) is rethrown immediately; slow tasks are not
+  // awaited and siblings are neither cancelled nor dragged down
   run_case(__func__, "case2", [&] {
     Event go_fast, go_slow;
     auto fast = create_task("fail_fast", [&] {
@@ -54,7 +57,7 @@ WEAVE_TEST(gather_semantics) {
       go_slow.wait();
       throw std::runtime_error("slow");
     });
-    go_fast.set();  // 快任务先行失败；慢任务仍阻塞在 go_slow 上
+    go_fast.set();  // The fast task fails first; the slow one is still blocked on go_slow
     try {
       gather(fast, slow);
       throw std::logic_error("case2: gather should rethrow");
@@ -66,8 +69,8 @@ WEAVE_TEST(gather_semantics) {
       throw std::logic_error("case2: gather must return at first failure, not wait for peers");
     if (slow.cancelled())
       throw std::logic_error("case2: sibling must not be cancelled on peer failure");
-    // 兄弟任务晚到的失败仅留在任务簿记中（无 unretrieved 告警，MVP 接受）；
-    // 同时覆盖"gather 提前返回后 Event 再次被 set()"的路径
+    // A sibling's late failure stays only in the task bookkeeping (no unretrieved warning, which
+    // the MVP accepts); this also covers "an Event is set() again after gather returned early"
     go_slow.set();
     try {
       slow.await();
@@ -77,7 +80,8 @@ WEAVE_TEST(gather_semantics) {
     }
   });
 
-  // case 3: gather 因失败提前返回后，兄弟任务继续运行至自然完成
+  // case 3: after gather returns early due to a failure, the sibling keeps running to natural
+  // completion
   run_case(__func__, "case3", [&] {
     Event go_failer, go_peer;
     auto failer = create_task("failer3", [&] {
@@ -90,7 +94,7 @@ WEAVE_TEST(gather_semantics) {
       gather(failer, peer);
       throw std::logic_error("case3: gather should rethrow");
     } catch (const std::runtime_error&) {
-      // 预期路径
+      // Expected path
     }
     if (peer.done() || peer.cancelled())
       throw std::logic_error("case3: peer must keep running after gather failure");
@@ -100,7 +104,7 @@ WEAVE_TEST(gather_semantics) {
       throw std::logic_error("case3: peer should finish on its own");
   });
 
-  // case 4: 子任务被取消视为失败 → gather 抛 Cancelled
+  // case 4: a cancelled child task counts as a failure → gather throws Cancelled
   run_case(__func__, "case4", [&] {
     Event block;
     auto victim = create_task("victim4", [&] { block.wait(); });
@@ -109,13 +113,14 @@ WEAVE_TEST(gather_semantics) {
       gather(victim);
       throw std::logic_error("case4: gather should throw Cancelled");
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (!victim.cancelled()) throw std::logic_error("case4: victim should be cancelled");
   });
 
-  // case 5: gather 自身被取消 → 先取消所有未完成任务，再传播 Cancelled。
-  // 锁交接即同步：grp_ready.wait 返回时，grp 必然已注册回调并阻塞在 gather 内。
+  // case 5: gather itself is cancelled → cancel all unfinished tasks first, then propagate
+  // Cancelled. The hand-off itself synchronises: when grp_ready.wait returns, grp has necessarily
+  // registered its callbacks and is blocked inside gather.
   run_case(__func__, "case5", [&] {
     Event block;
     Event grp_ready;
@@ -126,7 +131,7 @@ WEAVE_TEST(gather_semantics) {
         gather(child);
         throw std::logic_error("case5: unreachable");
       } catch (const Cancelled&) {
-        // 预期路径：外层取消经 gather 传播
+        // Expected path: the outer cancellation propagates through gather
       }
     });
     grp_ready.wait();
@@ -136,7 +141,7 @@ WEAVE_TEST(gather_semantics) {
       child.await();
       throw std::logic_error("case5: child should throw Cancelled");
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (!child.cancelled())
       throw std::logic_error("case5: outer cancel of gather must cancel pending children");
@@ -144,14 +149,15 @@ WEAVE_TEST(gather_semantics) {
       throw std::logic_error("case5: gatherer swallowed Cancelled and finished DONE");
   });
 
-  // case 6: gather 调用时已有任务失败 → 同步回调路径立即重抛
+  // case 6: a task was already failed when gather is called → the synchronous callback path
+  // rethrows immediately
   run_case(__func__, "case6", [&] {
     auto bad = create_task("bad6", [] { throw std::runtime_error("pre"); });
     try {
       bad.await();
       throw std::logic_error("case6: await should rethrow");
     } catch (const std::runtime_error&) {
-      // 消费异常，使 bad 进入 FAILED 终态
+      // Consume the exception so bad reaches its FAILED terminal state
     }
     Event started, go;
     auto good = create_task("good6", [&] {
@@ -165,16 +171,17 @@ WEAVE_TEST(gather_semantics) {
       if (std::string(e.what()) != "pre")
         throw std::logic_error("case6: wrong exception from pre-failed task");
     }
-    started.wait();  // good 尚未启动（gather 走同步路径未开过启动门）
+    started.wait();  // good has not started yet (gather took the synchronous path, no start gate
+                     // was opened)
     go.set();
     good.await();
     if (!good.done()) throw std::logic_error("case6: good should finish on its own");
   });
 
-  // case 7: 空任务组 → 立即返回
+  // case 7: empty task group → returns immediately
   run_case(__func__, "case7", [&] { gather(); });
 
-  // case 8: return_exceptions 形态：全部成功 → 全 nullptr
+  // case 8: return_exceptions form: everything succeeds → all nullptr
   run_case(__func__, "case8", [&] {
     auto a = create_task("re8_a", [] {});
     auto b = create_task("re8_b", [] {});
@@ -183,15 +190,16 @@ WEAVE_TEST(gather_semantics) {
     if (res[0] || res[1]) throw std::logic_error("case8: all-success results must be nullptr");
   });
 
-  // case 9: return_exceptions 形态：混合终态全部落地后才返回，按输入顺序映射
-  //   DONE → nullptr；FAILED → 其异常；CANCELLED → 包装 Cancelled
+  // case 9: return_exceptions form: mixed terminal states, returning only after everything has
+  // landed, mapped in input order
+  //   DONE → nullptr; FAILED → its exception; CANCELLED → a wrapped Cancelled
   run_case(__func__, "case9", [&] {
     Event block;
     auto ok = create_task("re9_ok", [] {});
     auto bad = create_task("re9_bad", [] { throw std::runtime_error("re9_fail"); });
     auto victim = create_task("re9_victim", [&] { block.wait(); });
     auto killer = create_task("re9_killer", [&] { victim.cancel(); });
-    auto res = gather({ok, bad, victim}, return_exceptions);  // 不提前抛出
+    auto res = gather({ok, bad, victim}, return_exceptions);  // No early throw
     if (res.size() != 3) throw std::logic_error("case9: result count mismatch");
     if (res[0]) throw std::logic_error("case9: DONE must map to nullptr");
     if (!res[1]) throw std::logic_error("case9: FAILED must map to its exception");
@@ -206,15 +214,15 @@ WEAVE_TEST(gather_semantics) {
       std::rethrow_exception(res[2]);
       throw std::logic_error("case9: unreachable");
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
-    // 全部落地才返回：victim 已终态
+    // Returns only once everything has landed: victim is already terminal
     if (!victim.cancelled()) throw std::logic_error("case9: victim should be settled");
     killer.await();
   });
 
-  // case 10: return_exceptions 形态自身被取消 → 取消未完成任务并传播
-  // （与默认形态一致，不收集进结果向量）
+  // case 10: the return_exceptions form itself is cancelled → cancel the unfinished tasks and
+  // propagate (same as the default form; nothing is collected into the result vector)
   run_case(__func__, "case10", [&] {
     Event block;
     Event grp_ready;
@@ -222,10 +230,10 @@ WEAVE_TEST(gather_semantics) {
     auto grp = create_task("re10_grp", [&] {
       grp_ready.set();
       try {
-        (void)gather({child}, return_exceptions);  // 期望抛出：结果无意义
+        (void)gather({child}, return_exceptions);  // Expected to throw: the result is meaningless
         throw std::logic_error("case10: unreachable");
       } catch (const Cancelled&) {
-        // 预期路径
+        // Expected path
       }
     });
     grp_ready.wait();
@@ -235,7 +243,7 @@ WEAVE_TEST(gather_semantics) {
       child.await();
       throw std::logic_error("case10: child should throw Cancelled");
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (!child.cancelled())
       throw std::logic_error("case10: outer cancel must cancel pending children");

@@ -1,16 +1,17 @@
 #pragma once
 
-// 用例级结果打印（仅测试侧使用，不进公共头/核心 API）。
+// Per-case result printing (test side only; never part of the public headers or core API).
 //
 //   WEAVE_TEST(my_semantics) {
-//     run_case(__func__, "case1", [&] { ...用例体... });
+//     run_case(__func__, "case1", [&] { ...case body... });
 //     ...
-//     report(__func__);   // 末尾汇总，并重置计数供下一个测试使用
+//     report(__func__);   // Summarises at the end and resets the counters for the next test
 //   }
 //
-// 用例体正常返回 → 打印 [PASS]；抛出（约定 throw std::logic_error("caseN: ...")）
-// → 打印 [FAIL] 并原样重抛，由后端汇报进程把整个测试判为 FAILED。
-// 本助手只做打印与计数，不引入任何等待：时序仍完全事件驱动。
+// The case body returning normally → prints [PASS]; throwing (by convention
+// throw std::logic_error("caseN: ...")) → prints [FAIL] and rethrows as-is, so the backend
+// reporting process judges the whole test FAILED.
+// This helper only prints and counts; it introduces no waiting: timing stays fully event-driven.
 
 #include <cstdio>
 #include <exception>
@@ -28,14 +29,16 @@ inline int& failed_count() {
   return n;
 }
 
-// 运行单个用例并打印结果；失败时先打印再重抛，保留原有失败传播路径。
+// Runs a single case and prints its result; on failure it prints first, then rethrows, keeping the
+// original failure-propagation path.
 template <typename F>
 void run_case(const char* test, const char* name, F&& body) {
   try {
     body();
   } catch (const weave::Cancelled& e) {
-    // Cancelled 刻意不派生 std::exception（见 include/weave/task.hpp），
-    // 必须在 std::exception 之前单独接住，否则只会落到 catch (...)。
+    // Cancelled deliberately does not derive from std::exception (see include/weave/task.hpp), so
+    // it must be caught separately before std::exception; otherwise it would only reach catch
+    // (...).
     ++failed_count();
     std::printf("[FAIL] %s::%s: %s\n", test, name, e.what());
     std::fflush(stdout);
@@ -56,7 +59,8 @@ void run_case(const char* test, const char* name, F&& body) {
   std::fflush(stdout);
 }
 
-// 测试末尾汇总，并重置计数（测试串行运行，计数即本测试的通过/失败数）。
+// Summarises at the end of a test and resets the counters (tests run serially, so the counters are
+// exactly this test's pass/fail counts).
 inline void report(const char* test) {
   std::printf("== %s: %d passed, %d failed ==\n", test, passed_count(), failed_count());
   std::fflush(stdout);

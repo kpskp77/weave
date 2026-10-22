@@ -1,8 +1,9 @@
 #pragma once
 
-// 任务原语：Task / create_task / sleep / Cancelled。语义对齐 asyncio.Task。
-// create_task 只调度不立即运行：子任务等父任务碰到下一个阻塞点
-// （或结束）后才获得调度，由后端进程语义保证。
+// Task primitives: Task / create_task / sleep / Cancelled. Semantics follow asyncio.Task.
+// create_task only schedules, it does not run immediately: a child task is scheduled only after
+// the parent reaches its next blocking point (or finishes), which the backend process semantics
+// guarantee.
 
 #include <functional>
 #include <initializer_list>
@@ -18,41 +19,49 @@ class Task;
 struct Cancelled;
 
 namespace detail {
-struct TaskRecord;  // 核心簿记（定义于 src/core/core_internal.hpp）
+struct TaskRecord;  // core bookkeeping (defined in src/core/core_internal.hpp)
 
-// 构造带消息的 Cancelled（msg 由 TaskRecord 所有，视图在 throw 生命周期内有效）。
-// 传视图而非 const char*：视图不拥有数据，与 Cancelled::msg_ 的借用语义一致，
-// 且调用方（均为 std::string 成员）传整串时无需 strlen。
-// 不变量：视图必须源自 std::string 的完整内容（尾部紧跟 NUL），
-// 因为 Cancelled::what() 直接返回 data() 当 C 串用。
-// 暴露给 detail:: 以便 sync.cpp 的 dispatch 路径保留原消息。
+// Constructs a Cancelled carrying a message (msg is owned by a TaskRecord; the view stays valid
+// for the lifetime of the throw). Takes a view rather than a const char*: a view does not own
+// data, consistent with the borrowed semantics of Cancelled::msg_, and callers (always
+// std::string members) can pass the whole string without a strlen.
+// Invariant: the view must come from a std::string's full contents (NUL immediately after),
+// because Cancelled::what() returns data() directly and uses it as a C string.
+// Exposed to detail:: so the dispatch path in sync.cpp can preserve the original message.
 Cancelled cancelled_with_msg(std::string_view msg) noexcept;
 }  // namespace detail
 
-// 取消信号。对应 asyncio.CancelledError，在任务阻塞点注入。
-// 刻意不派生 std::exception：对齐 asyncio 3.8 起 CancelledError 归入 BaseException
-// 的分层——用户惯用的 catch (const std::exception&) 兜底不得静默吞掉取消（吞掉会使
-// 任务错误地以 DONE 结束，破坏 gather / TaskGroup / wait_for 对 CANCELLED 终态的
-// 判定）。捕获请显式写 catch (const weave::Cancelled&) 或 catch (...)。
+// Cancellation signal. Corresponds to asyncio.CancelledError, injected at a task's blocking
+// point. Deliberately does not derive from std::exception: matching the hierarchy where
+// CancelledError belongs to BaseException since asyncio 3.8 — the idiomatic
+// catch (const std::exception&) backstop must not silently swallow cancellation (swallowing it
+// would make the task wrongly finish as DONE and break gather / TaskGroup / wait_for's judgement
+// of the CANCELLED terminal state). To catch it, write catch (const weave::Cancelled&) or
+// catch (...) explicitly.
 //
-// 消息对齐 asyncio Task.cancel(msg)（Python 3.9+）：msg 为取消者可选传入的说明，
-// 未传消息（普通取消）对应 asyncio 的 msg=None，用 nullopt 表达。
-// msg() 返回的视图指向 TaskRecord::cancel_msg，仅在捕获该异常的同一 throw
-// 生命周期内有效。
+// The message matches asyncio Task.cancel(msg) (Python 3.9+): msg is an optional description
+// passed by the canceller; no message (plain cancellation) corresponds to asyncio's msg=None and
+// is expressed as nullopt. The view returned by msg() points at TaskRecord::cancel_msg and is
+// valid only for the lifetime of the same throw that carried the exception.
 //
-// what() 是**虚函数**且**外联定义**（src/core/task.cpp），仅作诊断。这两点都是刻意
-// 的：外联的虚函数充当 key function，使 vtable/typeinfo 只在库内生成一份，消费方
-// 的 TU 只留未定义引用，跨 DSO 的 catch 才对得上（libc++abi 按指针比较 type_info；
-// 类型若保持非多态，typeinfo 会退化成每个 TU 一份的 weak 定义，catch 在隐藏可见性
-// 的构建下静默失配）。代价是多态类不再平凡可拷贝（标准规定含虚函数的类拷贝构造
-// 不平凡）——这里选择 catch 正确性，断言改成盯真正关心的性质（见下方 static_assert）。
+// what() is a **virtual function** with an **out-of-line definition** (src/core/task.cpp) and is
+// diagnostics only. Both facts are deliberate: an out-of-line virtual function acts as the key
+// function, so the vtable/typeinfo is emitted exactly once, inside the library, while consumer
+// TUs keep only undefined references; only then does a cross-DSO catch match (libc++abi compares
+// type_info by pointer; if the type stayed non-polymorphic, typeinfo would degrade into one weak
+// definition per TU and catch would silently mismatch under hidden-visibility builds). The cost
+// is that a polymorphic class is no longer trivially copyable (the standard makes the copy
+// constructor of a class with virtual functions non-trivial) — catch correctness is chosen here,
+// and the assertions instead watch the properties that really matter (see the static_assert
+// below).
 struct Cancelled {
-  // 多态类型必须声明虚析构：Cancelled 会经 std::make_exception_ptr 等路径
-  // 在堆上构造/销毁（gather(return_exceptions)），非虚析构会触发
-  // -Wdelete-non-abstract-non-virtual-dtor（-Werror 下直接编译失败）。
+  // A polymorphic type must declare a virtual destructor: Cancelled is constructed/destroyed on
+  // the heap through paths such as std::make_exception_ptr (gather(return_exceptions)), and a
+  // non-virtual destructor triggers -Wdelete-non-abstract-non-virtual-dtor (a hard compile
+  // failure under -Werror).
   virtual ~Cancelled() = default;
   virtual const char* what() const noexcept;
-  // msg=None → nullopt（不再用 nullptr 哨兵）
+  // msg=None → nullopt (no longer a nullptr sentinel)
   std::optional<std::string_view> msg() const noexcept { return msg_; }
 
 private:
@@ -60,10 +69,12 @@ private:
   friend Cancelled detail::cancelled_with_msg(std::string_view msg) noexcept;
 };
 
-// 异常对象 = "一个可空视图 + 判别"，不含堆成员、拷贝不抛：跳异常路径不额外分配。
-// 注意不能要求 trivially_copyable：what() 是库内唯一生成的 key function（见上），
-// 而标准规定多态类的拷贝构造不平凡——RTTI 跨 DSO 单份（catch 正确性）优先于这个
-// 类型特征。这里改盯真正想要的两件事：拷贝/析构 nothrow，且无任何堆成员。
+// The exception object = "a nullable view + a discriminant", with no heap members and a nothrow
+// copy: taking the exception path allocates nothing extra. Note that trivially_copyable cannot be
+// required: what() is the key function emitted only in the library (see above), and the standard
+// makes the copy constructor of a polymorphic class non-trivial — RTTI being unique across DSOs
+// (catch correctness) takes priority over that trait. What is watched here instead are the two
+// things actually wanted: nothrow copy/destruction, and no heap members at all.
 static_assert(std::is_nothrow_copy_constructible_v<Cancelled> &&
                   std::is_nothrow_destructible_v<Cancelled>,
               "Cancelled must be cheap to throw: nothrow copy, no heap members");
@@ -71,12 +82,12 @@ static_assert(std::is_nothrow_copy_constructible_v<Cancelled> &&
 class Task;
 
 namespace detail {
-// 组合原语入口（定义于 src/core/sync.cpp）；此处声明仅供 Task 友元引用。
+// Combinator entry points (defined in src/core/sync.cpp); declared here only for Task's friends.
 void gather_impl(std::initializer_list<Task> tasks);
-// 组合原语内部的句柄/id 互转（定义于 src/core/task.cpp）。
+// Handle/id conversion inside combinators (defined in src/core/task.cpp).
 int task_id(const Task& t);
 Task task_from_id(int id);
-// 后端引导入口（定义于 src/core/registry.cpp）；仅供后端适配层使用。
+// Backend bootstrap entry (defined in src/core/registry.cpp); only for the backend adapter layer.
 int run_registered_test();
 }  // namespace detail
 
@@ -84,22 +95,25 @@ class Task {
 public:
   Task() = default;
 
-  // 等待任务完成。FAILED 任务重抛其异常；CANCELLED 任务抛 Cancelled。
-  // 必须在任务上下文内调用（阻塞原语）。
+  // Waits for the task to finish. A FAILED task rethrows its exception; a CANCELLED task throws
+  // Cancelled. Must be called inside a task context (it is a blocking primitive).
   void await();
 
-  // 到达任一终态（DONE / FAILED / CANCELLED），对齐 asyncio.Task.done()
+  // Reached any terminal state (DONE / FAILED / CANCELLED), matching asyncio.Task.done()
   [[nodiscard]] bool done() const;
   [[nodiscard]] bool cancelled() const;
   [[nodiscard]] bool valid() const noexcept { return id_ >= 0; }
-  const std::string& get_name() const;  // 对齐 asyncio.Task.get_name()
+  const std::string& get_name() const;  // Matches asyncio.Task.get_name()
 
-  // 协作式取消（对齐 asyncio Task.cancel(msg)，Python 3.9+）：
-  // PENDING → body 不执行；RUNNING → 下一个阻塞点抛 Cancelled(msg)；
-  // WAITING → 立即唤醒并在阻塞点抛 Cancelled(msg)。任务可捕获 Cancelled 拒绝取消。
-  // msg 为可选的取消原因说明，空串表示普通取消；await 该任务者会看到带同一 msg 的 Cancelled。
-  // const：Task 是句柄，取消改的是被引用任务的簿记状态而非句柄本身（同 shared_ptr 的
-  // operator* const 语义），因此允许经由 const Task& 发起取消（如 gather 的级联取消）。
+  // Cooperative cancellation (matching asyncio Task.cancel(msg), Python 3.9+):
+  // PENDING → the body does not run; RUNNING → Cancelled(msg) is thrown at the next blocking
+  // point; WAITING → woken immediately and Cancelled(msg) thrown at the blocking point. A task
+  // may catch Cancelled to refuse cancellation.
+  // msg is an optional cancellation reason; an empty string means a plain cancellation; whoever
+  // awaits this task sees a Cancelled carrying the same msg.
+  // const: Task is a handle, and cancelling changes the bookkeeping state of the referenced task,
+  // not the handle itself (same semantics as shared_ptr's const operator*), so cancellation may
+  // be initiated through a const Task& (e.g. gather's cascade cancellation).
   void cancel(std::string msg = {}) const;
 
 private:
@@ -113,8 +127,8 @@ private:
   friend int detail::run_registered_test();
 };
 
-// 创建任务。与 asyncio 一致：新任务不会立即运行，
-// 等当前任务碰到下一个阻塞点后才被调度（由后端进程语义保证）。
+// Creates a task. As in asyncio: the new task does not run immediately, it is scheduled only after
+// the current task reaches its next blocking point (guaranteed by backend process semantics).
 Task create_task(std::string name, std::function<void()> body);
 
 template <typename F>
@@ -123,8 +137,8 @@ Task create_task(std::string name, F&& body) {
   return create_task(std::move(name), std::function<void()>(std::forward<F>(body)));
 }
 
-// ── 时间等待 ──────────────────────────────────────────────────────────
-// sleep(0) 特判为零时间让出（对应 asyncio.sleep(0)）。
+// ── Time waits ──────────────────────────────────────────────────────────
+// sleep(0) is special-cased to a zero-time yield (corresponding to asyncio.sleep(0)).
 void sleep(duration t);
 
 }  // namespace weave

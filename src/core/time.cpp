@@ -1,5 +1,6 @@
-// 时间换算：飞秒 → 后端 tick（向上取整，保证至少睡够；非正时长保持 0 tick）。
-// tick 率来自 port 契约，后端无关。
+// Time conversion: femtoseconds → backend ticks (rounded up, guaranteeing at least the requested
+// duration; non-positive durations stay at 0 ticks). The tick rate comes from the port contract
+// and is backend-agnostic.
 
 #include <cstdint>
 #include <weave/time.hpp>
@@ -15,8 +16,9 @@ std::int64_t ticks_per_sec() {
 }
 
 std::int64_t to_ticks(duration d) {
-  // 非正时长 → 0 tick（≡ asyncio：delay <= 0 只是让出一次）。必须显式夹住：
-  // port 线格式里负 tick 表示"无超时腿"，漏下去会让 sleep 变成永久阻塞。
+  // Non-positive duration → 0 ticks (≡ asyncio: delay <= 0 merely yields once). This must be
+  // clamped explicitly: a negative tick means "no timeout leg" in the port wire format, and
+  // letting it through turns sleep into a permanent block.
   if (d.count() <= 0) return 0;
   constexpr __int128 kFsPerSec = static_cast<__int128>(1000000000000000LL);
   const __int128 num = static_cast<__int128>(d.count()) * ticks_per_sec();

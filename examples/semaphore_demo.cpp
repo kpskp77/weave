@@ -1,8 +1,10 @@
-// 通信原语常见用法：Semaphore（计数信号量）。
-//   · SemaphoreGuard：作用域即持许可区间（≡ Python 的 `async with semaphore:`）
-//   · 计数互斥：2 个许可允许两个任务同时进入临界区，第三个排队
-//   · 排队者被取消：许可不跟着走，仍在信号量里
-// 同步完全靠事件传递，不假设任何"睡多久之后应该发生什么"。
+// Common communication-primitive usage: Semaphore (a counting semaphore).
+//   · SemaphoreGuard: the scope is the held-permit interval (≡ Python's `async with semaphore:`)
+//   · counting exclusion: 2 permits let two tasks enter the critical section at once, and the
+//     third queues
+//   · a queued waiter is cancelled: the permit does not go with it, it stays in the semaphore
+// Synchronisation relies entirely on event passing, and nothing assumes "what should happen after
+// sleeping this long".
 
 #include <cstdio>
 #include <stdexcept>
@@ -12,7 +14,7 @@ using namespace weave;
 using namespace weave::literals;
 
 WEAVE_TEST(semaphore_demo) {
-  // ── SemaphoreGuard：离开作用域自动归还许可 ────────────────────────────
+  // ── SemaphoreGuard: returns the permit automatically on scope exit ────
   {
     Semaphore s;
     {
@@ -24,7 +26,8 @@ WEAVE_TEST(semaphore_demo) {
     std::printf("[semaphore_demo] SemaphoreGuard released at scope exit\n");
   }
 
-  // ── 计数互斥：a、b 同时持有（2 个许可），c 排队等其中一个归还 ─────────
+  // ── counting exclusion: a and b hold permits simultaneously (2 permits),
+  // while c queues until one is returned ───────────────────────────────
   {
     Semaphore s(2);
     int depth = 0;
@@ -36,7 +39,7 @@ WEAVE_TEST(semaphore_demo) {
       ++depth;
       max_depth = depth > max_depth ? depth : max_depth;
       std::printf("[semaphore_demo] %s in critical section (depth=%d)\n", name, depth);
-      sleep(0_fs);  // 让出：给其它任务竞争的机会
+      sleep(0_fs);  // Yield: give other tasks a chance to compete
       --depth;
       s.release();
     };
@@ -51,14 +54,14 @@ WEAVE_TEST(semaphore_demo) {
     std::printf("[semaphore_demo] counting ok: max depth == permit count\n");
   }
 
-  // ── BoundedSemaphore：超界 release 抛错（≡ asyncio 的 ValueError）──
+  // ── BoundedSemaphore: an over-bound release throws (≡ asyncio's ValueError) ──
   {
     BoundedSemaphore b(1);
     b.acquire();
-    b.release();  // 计数回到上界
+    b.release();  // The count is back at the bound
     bool threw = false;
     try {
-      b.release();  // 超出上界：未持有就放第二次
+      b.release();  // Past the bound: a second release without holding anything
     } catch (const std::logic_error&) {
       threw = true;
     }
@@ -66,10 +69,10 @@ WEAVE_TEST(semaphore_demo) {
     std::printf("[semaphore_demo] BoundedSemaphore over-release rejected\n");
   }
 
-  // ── 排队者被取消：许可仍留在信号量里 ──────────────────────────────────
+  // ── a queued waiter is cancelled: the permit stays in the semaphore ───
   {
     Semaphore s(1);
-    s.acquire();  // 主任务持有唯一许可
+    s.acquire();  // The main task holds the only permit
     Event queued;
     auto waiter = create_task("sem_waiter", [&] {
       queued.set();
@@ -77,19 +80,19 @@ WEAVE_TEST(semaphore_demo) {
         s.acquire();
       } catch (const Cancelled&) {
         std::printf("[semaphore_demo] waiter cancelled while queued\n");
-        throw;  // 取消继续向上传播（吞掉会让任务错误地以 DONE 结束）
+        throw;  // Keep propagating (swallowing it would wrongly end the task as DONE)
       }
     });
-    queued.wait();    // waiter 已入队
-    waiter.cancel();  // 队列中的等待者被取消
+    queued.wait();    // waiter is now queued
+    waiter.cancel();  // Cancel a waiter that is sitting in the queue
     try {
       waiter.await();
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (!s.locked())
       throw std::logic_error("semaphore_demo: permit must not leak with the cancelled waiter");
-    s.release();  // 许可仍在：释放后信号量回到空闲
+    s.release();  // The permit is still there: releasing makes the semaphore idle again
     std::printf("[semaphore_demo] cancel while queued keeps the permit in the semaphore\n");
   }
 }

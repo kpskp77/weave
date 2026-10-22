@@ -1,8 +1,11 @@
-// duration 算术语义自检：+ - * / 与整数缩放、复合赋值、越界/除零守卫、
-// 负时长（含交给 sleep / wait_for 时的 0 tick 语义）。
-// 前六个用例是纯值运算；后两个用例用事件传递确认算出来的时延确实能被后端
-// 承载（不挂死、不被当成"无超时腿"），同步仍完全事件驱动。
-// 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
+// duration arithmetic semantic self-check: + - * / with integer scaling, compound assignment, the
+// overflow/division-by-zero guards, and negative durations (including the 0-tick semantics when
+// handed to sleep / wait_for).
+// The first six cases are pure value arithmetic; the last two use event passing to confirm that a
+// computed delay is really carried by the backend (no deadlock, not mistaken for "no timeout leg"),
+// while synchronisation stays fully event-driven.
+// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
+// case_runner.hpp).
 
 #include <cstdint>
 #include <stdexcept>
@@ -17,7 +20,8 @@ using weave_test::report;
 using weave_test::run_case;
 
 WEAVE_TEST(duration_semantics) {
-  // case 1: 加减与复合赋值——两段时长拼接/相减，累加变量时延
+  // case 1: addition/subtraction and compound assignment — concatenating/differencing two spans,
+  // accumulating a variable delay
   run_case(__func__, "case1", [&] {
     if ((2_ns + 3_ns).count() != (5_ns).count())
       throw std::logic_error("case1: duration + duration wrong");
@@ -25,7 +29,7 @@ WEAVE_TEST(duration_semantics) {
       throw std::logic_error("case1: duration - duration wrong");
     if ((1_s + 500_ms).count() != (1500_ms).count())
       throw std::logic_error("case1: large durations must add exactly");
-    duration total;  // 默认 0
+    duration total;  // 0 by default
     total += 100_ns;
     total += 50_ns + 50_ns;
     total -= 50_ns;
@@ -33,9 +37,10 @@ WEAVE_TEST(duration_semantics) {
       throw std::logic_error("case1: compound assignment must accumulate");
   });
 
-  // case 2: 整数缩放——k * d 与 d * k 等价，是变量时延的主要写法
+  // case 2: integer scaling — k * d and d * k are equivalent, the main way to build variable
+  // delays
   run_case(__func__, "case2", [&] {
-    const int rounds = 7;  // 运行期变量，而非字面量
+    const int rounds = 7;  // A runtime variable, not a literal
     if ((rounds * 100_ns).count() != (700_ns).count())
       throw std::logic_error("case2: int * duration wrong");
     if ((100_ns * rounds).count() != (rounds * 100_ns).count())
@@ -46,7 +51,8 @@ WEAVE_TEST(duration_semantics) {
     if (d.count() != (30_ns).count()) throw std::logic_error("case2: operator*= wrong");
   });
 
-  // case 3: 除法——duration/整数 向零截断，duration/duration 给整数倍数
+  // case 3: division — duration/int truncates toward zero, duration/duration yields an integer
+  // multiple
   run_case(__func__, "case3", [&] {
     if ((1_us / 4).count() != (250_ns).count())
       throw std::logic_error("case3: duration / int wrong");
@@ -60,7 +66,7 @@ WEAVE_TEST(duration_semantics) {
     if (d.count() != (250_ns).count()) throw std::logic_error("case3: operator/= wrong");
   });
 
-  // case 4: duration 是有符号量——差值可为负，一元取负可还原
+  // case 4: duration is signed — a difference may be negative, and unary minus restores it
   run_case(__func__, "case4", [&] {
     const duration back = 3_ns - 5_ns;
     if (back.count() != -(2_ns).count())
@@ -70,7 +76,7 @@ WEAVE_TEST(duration_semantics) {
       throw std::logic_error("case4: negative duration must add back");
   });
 
-  // case 5: 越界不静默回绕——加/减/乘/除/取负都抛 std::overflow_error
+  // case 5: overflow never wraps silently — add/sub/mul/div/negate all throw std::overflow_error
   run_case(__func__, "case5", [&] {
     const duration max = duration(INT64_MAX);
     const duration min = duration(INT64_MIN);
@@ -92,7 +98,8 @@ WEAVE_TEST(duration_semantics) {
       duration d = max;
       d += 1_fs;
     });
-    // 边界值本身仍可用：不得因守卫把合法运算判成越界
+    // The boundary values themselves remain usable: the guards must not flag legal operations as
+    // overflow
     if ((max + duration{}).count() != INT64_MAX)
       throw std::logic_error("case5: max + 0 must stay exact");
     if ((max - max).count() != 0) throw std::logic_error("case5: max - max must be 0");
@@ -100,7 +107,7 @@ WEAVE_TEST(duration_semantics) {
       throw std::logic_error("case5: min + 0 must stay exact");
   });
 
-  // case 6: 除零（含 duration/duration）抛 std::domain_error
+  // case 6: division by zero (including duration/duration) throws std::domain_error
   run_case(__func__, "case6", [&] {
     const auto expect_domain_error = [](const char* what, auto&& f) {
       try {
@@ -118,9 +125,10 @@ WEAVE_TEST(duration_semantics) {
     expect_domain_error("d / zero duration", [&] { (void)(1_ns / duration{}); });
   });
 
-  // case 7: 非正时长交给 sleep → 0 tick 让出（≡ asyncio：delay <= 0 只让出一次）。
-  // 关键点：负值不得作为负 tick 漏进 port（负 tick 在线格式里是"无超时腿"，
-  // 会让 sleep 变成永久阻塞）。
+  // case 7: a non-positive duration handed to sleep → a 0-tick yield (≡ asyncio: delay <= 0 yields
+  // once).
+  // Key point: a negative value must not leak into the port as a negative tick (a negative tick
+  // means "no timeout leg" in the wire format, which would turn sleep into a permanent block).
   run_case(__func__, "case7", [&] {
     Event finished;
     auto t = create_task("non_positive_sleep", [&] {
@@ -136,17 +144,18 @@ WEAVE_TEST(duration_semantics) {
       throw std::logic_error("case7: non-positive delay must yield once, not block");
   });
 
-  // case 8: 用变量算出的时延真正驱动一次后端挂起（算数结果必须能落到 port）
+  // case 8: a delay computed from variables really drives a backend suspension (the arithmetic
+  // result must reach the port)
   run_case(__func__, "case8", [&] {
     Event started, finished;
     const int rounds = 3;
     const duration step = 20_ns;
     auto t = create_task("var_delay", [&] {
       started.set();
-      sleep(rounds * step);  // 3 * 20ns，运行期算出
+      sleep(rounds * step);  // 3 * 20ns, computed at runtime
       finished.set();
     });
-    started.wait();  // t 已阻塞在算出来的时延上
+    started.wait();  // t is now blocked on the computed delay
     finished.wait();
     t.await();
     if (!t.done()) throw std::logic_error("case8: computed delay must complete");

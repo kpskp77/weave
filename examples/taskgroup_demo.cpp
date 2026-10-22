@@ -1,5 +1,6 @@
-// TaskGroup 常见用法：结构化并发——组内任务全部完成才返回；首个失败（按
-// 完成顺序）取消其余兄弟，等全部落地后再重抛；外层取消则级联取消全部子任务。
+// Common TaskGroup usage: structured concurrency — it returns only once every task in the group
+// has finished; the first failure (in completion order) cancels the remaining siblings and is
+// rethrown after all of them have landed; an outer cancellation cascade-cancels every child.
 
 #include <cstdio>
 #include <stdexcept>
@@ -10,16 +11,17 @@ using namespace weave;
 using namespace weave::literals;
 
 WEAVE_TEST(taskgroup_demo) {
-  // ── 正常路径：wait() 阻塞到组内全部任务完成 ────────────────────────────
+  // ── normal path: wait() blocks until every task in the group finishes ──
   {
     TaskGroup tg;
     tg.create_task("tg_fast", [] { sleep(10_ns); });
     tg.create_task("tg_slow", [] { sleep(20_ns); });
-    tg.wait();  // 两个都完成才返回
+    tg.wait();  // Returns only after both have finished
     std::printf("[taskgroup_demo] all children done\n");
   }
 
-  // ── 失败路径：首个失败取消兄弟，wait() 等全部落地后重抛该异常 ──────────
+  // ── failure path: the first failure cancels siblings, and wait()
+  // rethrows that exception after everything has landed ─────────────────
   {
     TaskGroup tg;
     Event block;
@@ -37,7 +39,8 @@ WEAVE_TEST(taskgroup_demo) {
     std::printf("[taskgroup_demo] failure cascaded to siblings\n");
   }
 
-  // ── 外层取消：wait() 的调用者被取消 → 级联取消全部子任务 ──────────────
+  // ── outer cancellation: the caller of wait() is cancelled → cascade
+  // cancels every child task ───────────────────────────────────────────
   {
     TaskGroup tg;
     Event block;
@@ -47,14 +50,15 @@ WEAVE_TEST(taskgroup_demo) {
       try {
         tg.wait();
       } catch (const Cancelled&) {
-        // 预期：wait_for 超时取消了 runner，TaskGroup 已级联取消子任务
+        // Expected: wait_for timed out and cancelled runner, so TaskGroup already
+        // cascade-cancelled the children
       }
     });
     try {
       wait_for(runner, 1_ns);
       throw std::logic_error("taskgroup_demo: wait_for must time out");
     } catch (const Timeout&) {
-      // 预期路径
+      // Expected path
     }
     if (!a.cancelled() || !b.cancelled())
       throw std::logic_error("taskgroup_demo: outer cancel must cascade to all children");

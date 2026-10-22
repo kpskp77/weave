@@ -1,9 +1,10 @@
-// 组合原语：gather（两种形态）/ wait_for / wait / shield / as_completed /
-// TaskGroup。仅依赖核心簿记与 port，后端无关。
+// Combinators: gather (both forms) / wait_for / wait / shield / as_completed /
+// TaskGroup. Depends only on core bookkeeping and the port, hence backend-agnostic.
 //
-// 裸 port 事件的使用约定（wait / TaskGroup）：trigger 只在确有等待者时发出
-// （waiting 标志守卫）——无等待者的 trigger 会留下未消费的唤醒，
-// destroy 一个仍挂着 delta notification 的事件在后端侧是未定义行为。
+// Convention for raw port events (wait / TaskGroup): trigger is only issued when a waiter really
+// exists (guarded by a waiting flag) — a trigger with no waiter leaves an unconsumed wakeup, and
+// destroying an event that still has a pending delta notification is undefined behaviour on the
+// backend side.
 
 #include <deque>
 #include <memory>
@@ -17,31 +18,33 @@
 
 namespace weave {
 
-// Timeout::what() 的外联定义。
-// 定义放在库里（而非内联回头文件），使它成为本类型的 key function：vtable 与
-// typeinfo 只在这一个 TU 生成一份，消费方 TU 只留未定义引用、经动态链接解析到同一份。
-// 若改回内联，typeinfo 会退化成每个 TU 一份的 weak 定义，libc++abi 按指针比较
-// type_info，跨 DSO 的 catch 会静默失配。
+// Out-of-line definition of Timeout::what().
+// Keeping the definition in the library (rather than inline in the header) makes it the key
+// function of this type: the vtable and typeinfo are emitted exactly once, in this TU, and consumer
+// TUs keep only undefined references that the dynamic linker resolves to the same copy. Written
+// back inline, typeinfo would degrade into one weak definition per TU, and since libc++abi compares
+// type_info by pointer, catch across DSOs would silently mismatch.
 const char* Timeout::what() const noexcept {
   return "weave::Timeout";
 }
 
 namespace detail {
 
-// 语义对齐 asyncio.gather(return_exceptions=False)：
-//   · 任一任务到达 FAILED/CANCELLED 终态 → 立即按完成顺序重抛其异常，
-//     不等其余任务（asyncio 不因此取消兄弟任务——那是 TaskGroup 语义）
-//   · 全部正常完成 → 返回
-//   · gather 自身被取消 → 先取消所有未完成任务（asyncio：gather 被取消时
-//     未完成的子任务一并取消），再传播 Cancelled
+// Semantics follow asyncio.gather(return_exceptions=False):
+//   · any task reaching FAILED/CANCELLED → rethrow its exception immediately, in completion order,
+//     without waiting for the others (asyncio does not cancel siblings because of it — that is
+//     TaskGroup's semantics)
+//   · all complete normally → return
+//   · gather itself is cancelled → cancel all unfinished tasks first (asyncio: when gather is
+//     cancelled, its unfinished child tasks are cancelled too), then propagate Cancelled
 void gather_impl(std::initializer_list<Task> tasks) {
   if (tasks.size() == 0) return;
 
   struct GatherState {
     long remaining;
     bool failed = false;
-    int first_failed_id = -1;  // 按完成顺序记录的首个失败
-    Event wake;                // 首个失败 或 全部完成 时置位
+    int first_failed_id = -1;  // The first failure, in completion order
+    Event wake;                // Set on the first failure or when everything has completed
   };
   auto st = std::make_shared<GatherState>();
   st->remaining = static_cast<long>(tasks.size());
@@ -53,7 +56,7 @@ void gather_impl(std::initializer_list<Task> tasks) {
       if (!st->failed && (r.state == TaskState::FAILED || r.state == TaskState::CANCELLED)) {
         st->failed = true;
         st->first_failed_id = id;
-        st->wake.set();  // 首个失败：立即唤醒，不等其余任务
+        st->wake.set();  // First failure: wake up immediately, without waiting for the rest
       }
       if (--st->remaining == 0) st->wake.set();
     });
@@ -62,9 +65,10 @@ void gather_impl(std::initializer_list<Task> tasks) {
   try {
     st->wake.wait();
   } catch (const Cancelled&) {
-    // gather 被取消：取消所有未完成任务后传播（asyncio 语义）。
-    // 级联取消的兄弟任务不携带 gather 调用者的 msg（那是父任务的上下文，
-    // 兄弟任务是被连带取消，msg 属于取消发起方），故传空串。
+    // gather was cancelled: cancel all unfinished tasks and then propagate (asyncio semantics).
+    // The cascade-cancelled sibling tasks do not carry the gather caller's msg (that is the parent
+    // task's context; the siblings were cancelled alongside it and the msg belongs to whoever
+    // initiated the cancellation), so an empty string is passed.
     for (const Task& t : tasks) {
       if (!t.done()) t.cancel();
     }
@@ -75,14 +79,15 @@ void gather_impl(std::initializer_list<Task> tasks) {
 
 }  // namespace detail
 
-// ── gather：return_exceptions 形态 ────────────────────────────────────
+// ── gather: the return_exceptions form ────────────────────────────────────
 
 std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return_exceptions_t) {
   if (tasks.size() == 0) return {};
 
   struct GatherState {
     long remaining;
-    Event wake;  // 全部落地时置位（Event 可安全重复 set：等待者返回后已摘除）
+    Event wake;  // Set once everything has landed (Event may safely be set repeatedly: waiters
+                 // unlink themselves before returning)
     std::vector<std::exception_ptr> results;
   };
   auto st = std::make_shared<GatherState>();
@@ -97,8 +102,9 @@ std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return
       if (r.state == detail::TaskState::FAILED)
         st->results[i] = r.eptr;
       else if (r.state == detail::TaskState::CANCELLED)
-        // return_exceptions 形态的 CANCELLED 映射：重投带原 msg 的 Cancelled，
-        // 对齐 asyncio.gather(*aws, return_exceptions=True) 对 CancelledError(msg) 的保留
+        // CANCELLED mapping for the return_exceptions form: rethrow a Cancelled carrying the
+        // original msg, matching how asyncio.gather(*aws, return_exceptions=True) preserves
+        // CancelledError(msg)
         st->results[i] = std::make_exception_ptr(detail::cancelled_with_msg(r.cancel_msg));
       if (--st->remaining == 0) st->wake.set();
     });
@@ -108,7 +114,8 @@ std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return
   try {
     st->wake.wait();
   } catch (const Cancelled&) {
-    // gather 被取消：取消所有未完成任务后传播（与默认形态一致）
+    // gather was cancelled: cancel all unfinished tasks and then propagate (same as the default
+    // form)
     for (const Task& t : tasks) {
       if (!t.done()) t.cancel();
     }
@@ -130,8 +137,9 @@ void wait_for(const Task& task, duration timeout) {
     detail::dispatch_completed(r);
     return;
   }
-  // 超时：取消并等待取消完成（asyncio 语义），随后抛 Timeout。
-  // 取消带 msg 标明原因是 wait_for 超时（对齐 asyncio 3.12+：超时的内部取消会标记来源）。
+  // Timeout: cancel and wait for the cancellation to complete (asyncio semantics), then throw
+  // Timeout. The cancellation carries a msg stating the reason (matching asyncio 3.12+: the
+  // internal cancellation on timeout is tagged with its origin).
   task.cancel("wait_for timeout");
   detail::backend_wait(r.done_ev, -1);
   throw Timeout{};
@@ -148,17 +156,18 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
     ReturnWhen when;
     long remaining;
     int wake_ev = -1;
-    bool waiting = false;    // 等待方正阻塞在 wake_ev 上（trigger 必有等待者）
-    bool signalled = false;  // 唤醒条件已满足（只需唤醒一次）
+    bool waiting = false;    // The waiter is blocked on wake_ev (so trigger always has a waiter)
+    bool signalled = false;  // The wakeup condition is met (waking once is enough)
   };
   auto st = std::make_shared<WaitState>();
   st->when = return_when;
   st->remaining = static_cast<long>(tasks.size());
   st->wake_ev = port::create_event();
 
-  // 覆盖异常与正常路径。销毁前必须先落下 waiting：晚到的完成只在 waiting 为真时
-  // trigger，标志滞留为 true 就会对已销毁 id 触发（走不到 catch 的清场，所以两件事
-  // 必须在同一个 lambda 里成对完成）。
+  // Covers both the exception and the normal path. waiting must be cleared before destroying:
+  // a late completion triggers only while waiting is true, but a flag left behind as true would
+  // trigger an already destroyed id (the cleanup on the catch path would not be reached, hence both
+  // things must happen as a pair inside the same lambda).
   auto destroy_wake = detail::on_scope_exit([&st] {
     st->waiting = false;
     port::destroy_event(st->wake_ev);
@@ -167,10 +176,12 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
   for (const Task& t : tasks) {
     const int id = detail::task_id(t);
     detail::add_done_callback(id, [st, id]() {
-      if (st->signalled) return;  // 只需唤醒一次；亦挡住等待方返回后的晚到完成
+      if (st->signalled)
+        return;  // Waking once is enough; this also blocks late completions after
+                 // the waiter has returned
       const auto state = detail::record(id).state;
       --st->remaining;
-      // FIRST_EXCEPTION 仅 FAILED 触发（CANCELLED 不算，对齐 CPython）
+      // FIRST_EXCEPTION is triggered by FAILED only (CANCELLED does not count, matching CPython)
       if (st->remaining == 0 || st->when == ReturnWhen::FIRST_COMPLETED ||
           (st->when == ReturnWhen::FIRST_EXCEPTION && state == detail::TaskState::FAILED)) {
         st->signalled = true;
@@ -179,9 +190,10 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
     });
   }
 
-  // nullopt = 无超时；非正时长（duration{0} 及负值）特判为直接快照（对齐
-  // asyncio.wait(timeout=0) 的立即返回），不做零时间让出——否则结果依赖
-  // delta 调度顺序，不确定。
+  // nullopt = no timeout; a non-positive duration (duration{0} and negative values) is
+  // special-cased to a direct snapshot (matching asyncio.wait(timeout=0)'s immediate return),
+  // without a zero-time yield — otherwise the result would depend on delta scheduling order and be
+  // nondeterministic.
   const bool snapshot_only = timeout.has_value() && timeout->count() <= 0;
   if (!st->signalled && !snapshot_only) {
     st->waiting = true;
@@ -198,28 +210,29 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
   return res;
 }
 
-// ── shield（asyncio.shield）────────────────────────────────────────────
+// ── shield (asyncio.shield) ────────────────────────────────────────────
 
 Task shield(Task& inner) {
-  // 代理任务原样等待 inner：Task::await 本就不向被等任务传播取消，
-  // 因此对代理的 cancel / 超时 / 级联取消只停在代理层，inner 继续运行；
-  // 代理经 await 镜像 inner 的终态与异常。按值捕获（句柄即 id），
-  // 不引用调用方栈帧。
+  // The proxy task waits on inner as-is: Task::await never propagates cancellation to the task
+  // being awaited anyway, so cancelling the proxy / a timeout / a cascade cancellation stops at the
+  // proxy layer and inner keeps running; the proxy mirrors inner's terminal state and exception
+  // through await. Captured by value (a handle is just an id), so no reference to the caller's
+  // stack frame.
   return create_task(inner.get_name() + "/shield", [inner]() mutable { inner.await(); });
 }
 
-// ── as_completed（asyncio.as_completed）────────────────────────────────
+// ── as_completed (asyncio.as_completed) ────────────────────────────────
 
 struct AsCompleted::Impl {
   long total = 0;
-  long produced = 0;      // 已交付消费者的个数
-  std::deque<int> queue;  // 已完成待交付（完成顺序）
+  long produced = 0;      // Number already delivered to the consumer
+  std::deque<int> queue;  // Completed, awaiting delivery (in completion order)
   int wake_ev = -1;
-  bool waiting = false;  // 消费者正阻塞在 wake_ev 上（trigger 必有等待者）
+  bool waiting = false;  // The consumer is blocked on wake_ev (so trigger has a waiter)
 
   ~Impl() {
-    // Impl 由回调持有的 shared_ptr 保活至全部任务完成；waiting 守卫保证
-    // 此时不存在未消费的唤醒。
+    // The shared_ptr held by the callbacks keeps Impl alive until every task has completed; the
+    // waiting guard guarantees there is no unconsumed wakeup left at this point.
     if (wake_ev >= 0) port::destroy_event(wake_ev);
   }
 };
@@ -241,10 +254,11 @@ Task AsCompleted::next() {
     }
     if (st.produced >= st.total) throw std::logic_error("as_completed: no more tasks");
     st.waiting = true;
-    // 这里必须异常安全：st 是 *impl_，跨 next() 调用存活——标志若留在 true，后续 completion
-    // 就会对无等待者的 wake_ev 触发。
+    // This must be exception-safe: st is *impl_ and outlives each next() call — if the flag stayed
+    // true, a later completion would trigger wake_ev with no waiter.
     auto clear_waiting = detail::on_scope_exit([&st] { st.waiting = false; });
-    detail::backend_wait(st.wake_ev, -1);  // 取消只中断 next() 本身，队列与子任务不受影响
+    detail::backend_wait(st.wake_ev, -1);  // Cancellation only interrupts next() itself; the queue
+                                           // and the child tasks are unaffected
   }
 }
 
@@ -262,11 +276,11 @@ AsCompleted as_completed(std::initializer_list<Task> tasks) {
   return AsCompleted(std::move(impl));
 }
 
-// ── TaskGroup（asyncio.TaskGroup）──────────────────────────────────────
+// ── TaskGroup (asyncio.TaskGroup) ──────────────────────────────────────
 
 struct TaskGroup::Impl {
   std::vector<Task> children;
-  bool exited = false;  // wait() 已调用
+  bool exited = false;  // wait() has been called
 };
 
 TaskGroup::TaskGroup() : impl_(std::make_shared<Impl>()) {}
@@ -279,8 +293,9 @@ Task TaskGroup::create_task(std::string name, std::function<void()> body) {
 }
 
 void TaskGroup::cancel(std::string msg) {
-  // 仅取消未完成任务；已终态的子任务不动（对齐 asyncio.TaskGroup.cancel 对
-  // finished 子任务的跳过）。各任务协作式取消，不阻塞、不等落地——落地仍在 wait()。
+  // Only unfinished tasks are cancelled; child tasks already in a terminal state are left alone
+  // (matching asyncio.TaskGroup.cancel skipping finished child tasks). Each task is cancelled
+  // cooperatively: no blocking, no waiting for landing — landing still happens in wait().
   for (const Task& t : impl_->children) {
     if (!t.done()) t.cancel(msg);
   }
@@ -295,20 +310,21 @@ void TaskGroup::wait() {
   struct GroupState {
     long remaining;
     bool failed = false;
-    int first_failed = -1;  // 按完成顺序记录的首个 FAILED
-    int wake_ev = -1;       // 阶段一：首个失败 或 全部完成
-    int drain_ev = -1;      // 阶段二：取消兄弟后等待全部落地
-    bool waiting = false;   // 阻塞在 wake_ev 上
-    bool draining = false;  // 阻塞在 drain_ev 上
+    int first_failed = -1;  // The first FAILED, in completion order
+    int wake_ev = -1;       // Phase one: first failure or everything completed
+    int drain_ev = -1;      // Phase two: wait for everything to land after cancelling siblings
+    bool waiting = false;   // Blocked on wake_ev
+    bool draining = false;  // Blocked on drain_ev
   };
   auto st = std::make_shared<GroupState>();
   st->remaining = static_cast<long>(children.size());
   st->wake_ev = port::create_event();
   st->drain_ev = port::create_event();
 
-  // 两个裸事件由守卫在作用域退出时销毁。不必像 wait() 那样在守卫里复位标志：Cancelled 就地捕获
-  // 并 drain 完兄弟后才外抛，能逸出的只剩 current()/record() 的不变量违例（已是 bug 路径），
-  // 原实现同样不为它们复位 st。
+  // The guard destroys both raw events on scope exit. There is no need to reset flags inside the
+  // guard as wait() does: Cancelled is caught in place and only rethrown after the siblings have
+  // drained, so the only things that can escape are invariant violations of current()/record()
+  // (already bug paths), and the original implementation did not reset st for those either.
   auto destroy_events = detail::on_scope_exit([&st] {
     port::destroy_event(st->wake_ev);
     port::destroy_event(st->drain_ev);
@@ -319,8 +335,8 @@ void TaskGroup::wait() {
     detail::add_done_callback(id, [st, id]() {
       const auto state = detail::record(id).state;
       --st->remaining;
-      // CANCELLED 容忍（对齐 asyncio.TaskGroup 对外部取消子任务的处理）：
-      // 仅真正的 FAILED 触发兄弟取消
+      // CANCELLED tolerance (matching asyncio.TaskGroup's handling of externally cancelled child
+      // tasks): only a genuine FAILED triggers sibling cancellation
       const bool first_failure = state == detail::TaskState::FAILED && !st->failed;
       if (first_failure) {
         st->failed = true;
@@ -332,39 +348,43 @@ void TaskGroup::wait() {
   }
 
   bool cancelled = false;
-  if (!st->failed && st->remaining > 0) {  // 注册期间未满足唤醒条件才阻塞
+  if (!st->failed && st->remaining > 0) {  // Block only if the wakeup condition was not met during
+                                           // registration
     st->waiting = true;
     try {
       detail::backend_wait(st->wake_ev, -1);
     } catch (const Cancelled&) {
-      cancelled = true;  // 等待者被取消：级联取消全部未完成子任务
+      cancelled = true;  // The waiter was cancelled: cascade-cancel all unfinished child tasks
     }
     st->waiting = false;
   }
 
   if (cancelled || st->failed) {
-    // 首个 FAILED 或等待者被取消：取消所有未完成兄弟（对齐 asyncio TaskGroup）。
-    // 级联取消的兄弟不携带调用者的 msg（msg 属于取消发起方的上下文）。
+    // First FAILED or the waiter was cancelled: cancel all unfinished siblings (matching asyncio
+    // TaskGroup). The cascade-cancelled siblings do not carry the caller's msg (msg belongs to the
+    // context of whoever initiated the cancellation).
     for (const Task& t : children) {
       if (!t.done()) t.cancel();
     }
-    // 等所有子任务落地后才抛出：子任务可能引用本栈帧的对象，绝不能让它们
-    // 在 wait 返回后继续运行。落地期间的二次取消一并吞掉，
-    // 最终以首个取消/失败为准。
+    // Only throw after every child task has landed: child tasks may reference objects of this
+    // stack frame, and they must never keep running after wait returns. A second cancellation
+    // during the drain is swallowed too; the first cancellation/failure is what counts in the
+    // end.
     while (st->remaining > 0) {
       st->draining = true;
       try {
         detail::backend_wait(st->drain_ev, -1);
       } catch (const Cancelled&) {
-        // 二次取消：继续等落地
+        // Second cancellation: keep waiting for landing
       }
       st->draining = false;
     }
   }
 
   if (cancelled) {
-    // TaskGroup 等待者被取消：抛出携带调用者当前任务 cancel_msg 的 Cancelled，
-    // 让 await 本任务的更外层能看到外层取消原因（对齐 asyncio 的 CancelledError(msg) 传播）。
+    // The TaskGroup waiter was cancelled: throw a Cancelled carrying the calling task's current
+    // cancel_msg, so that an outer layer awaiting this task sees the outer cancellation reason
+    // (matching the propagation of asyncio's CancelledError(msg)).
     throw detail::cancelled_with_msg(detail::current().cancel_msg);
   }
   if (st->failed) detail::dispatch_completed(detail::record(st->first_failed));

@@ -1,6 +1,8 @@
-// Weave C++ 簿记层自检：在真实 SystemC 内核上（weave_smoke_sc）验证 TaskGroup
-// 的 asyncio.TaskGroup 语义。同步完全事件驱动（纯 delta cycle），不依赖真实时钟。
-// 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
+// Weave C++ bookkeeping self-check: verifies TaskGroup's asyncio.TaskGroup semantics on a real
+// SystemC kernel (weave_smoke_sc). Synchronisation is fully event-driven (pure delta cycles) and
+// does not depend on a real clock.
+// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
+// case_runner.hpp).
 
 #include <stdexcept>
 #include <string>
@@ -13,7 +15,7 @@ using weave_test::report;
 using weave_test::run_case;
 
 WEAVE_TEST(taskgroup_semantics) {
-  // case 1: 全部成功 → wait 正常返回，子任务均完成
+  // case 1: everything succeeds → wait returns normally and every child is finished
   run_case(__func__, "case1", [&] {
     Event ga, gb;
     TaskGroup tg;
@@ -26,7 +28,8 @@ WEAVE_TEST(taskgroup_semantics) {
       throw std::logic_error("case1: all children must finish DONE");
   });
 
-  // case 2: 首个失败 → 取消兄弟，等全部落地后重抛首个异常
+  // case 2: first failure → cancel siblings and rethrow the first exception after all have
+  // landed
   run_case(__func__, "case2", [&] {
     Event block;
     TaskGroup tg;
@@ -45,25 +48,28 @@ WEAVE_TEST(taskgroup_semantics) {
       throw std::logic_error("case2: siblings must be settled before wait returns");
   });
 
-  // case 3: 子任务被外部取消 → 容忍，不触发兄弟取消，wait 正常返回
+  // case 3: a child cancelled externally → tolerated, no sibling cancellation, wait returns
+  // normally
   run_case(__func__, "case3", [&] {
     Event block, go;
     TaskGroup tg;
     auto victim = tg.create_task("tg3_victim", [&] { block.wait(); });
     auto good = tg.create_task("tg3_good", [&] { go.wait(); });
-    auto killer = create_task("tg3_killer", [&] { victim.cancel(); });  // 组外任务
+    auto killer = create_task("tg3_killer", [&] { victim.cancel(); });  // A task outside the group
     go.set();
-    tg.wait();  // victim 被取消不算失败：正常返回
+    tg.wait();  // victim being cancelled is not a failure: returns normally
     if (!victim.cancelled()) throw std::logic_error("case3: victim should be cancelled");
     if (!good.done() || good.cancelled())
       throw std::logic_error("case3: external cancel must not abort siblings");
     killer.await();
   });
 
-  // case 4: wait 调用者被取消 → 级联取消全部子任务，等落地后抛 Cancelled
+  // case 4: the caller of wait is cancelled → cascade-cancel every child and throw Cancelled once
+  // they have landed
   run_case(__func__, "case4", [&] {
     Event block, ready;
-    TaskGroup tg;  // waiter 引用本栈帧的 tg/block；waiter.await() 保证其先完成
+    TaskGroup tg;  // waiter references tg/block from this frame; waiter.await() guarantees it
+                   // finishes first
     auto c1 = tg.create_task("tg4_c1", [&] { block.wait(); });
     auto c2 = tg.create_task("tg4_c2", [&] { block.wait(); });
     auto waiter = create_task("tg4_waiter", [&] {
@@ -72,10 +78,10 @@ WEAVE_TEST(taskgroup_semantics) {
         tg.wait();
         throw std::logic_error("case4: unreachable");
       } catch (const Cancelled&) {
-        // 预期路径：级联取消后传播
+        // Expected path: propagate after the cascade cancellation
       }
     });
-    ready.wait();  // waiter 已阻塞在 tg.wait() 内（锁交接即同步）
+    ready.wait();  // waiter is now blocked inside tg.wait() (the hand-off itself synchronises)
     waiter.cancel();
     waiter.await();
     if (waiter.cancelled())
@@ -84,10 +90,11 @@ WEAVE_TEST(taskgroup_semantics) {
       throw std::logic_error("case4: outer cancel must cascade to all children");
   });
 
-  // case 5: wait 之后 create_task / 再次 wait → logic_error；空组立即返回
+  // case 5: create_task after wait / a second wait → logic_error; an empty group returns
+  // immediately
   run_case(__func__, "case5", [&] {
     TaskGroup tg;
-    tg.wait();  // 空组：不阻塞，正常返回
+    tg.wait();  // Empty group: does not block, returns normally
     try {
       tg.create_task("tg5_x", [] {});
       throw std::logic_error("case5: unreachable");
@@ -102,7 +109,8 @@ WEAVE_TEST(taskgroup_semantics) {
     }
   });
 
-  // case 6: 失败按完成顺序而非创建顺序：晚创建先失败的任务胜出
+  // case 6: failures follow completion order, not creation order: a later-created task that fails
+  // earlier wins
   run_case(__func__, "case6", [&] {
     Event gate;
     TaskGroup tg;
@@ -122,35 +130,37 @@ WEAVE_TEST(taskgroup_semantics) {
     if (!late.cancelled()) throw std::logic_error("case6: pending sibling must be cancelled");
   });
 
-  // case 7: 组外 cancel()（Python 3.15+）→ 全部未完成子任务被外部取消，
-  // 不算失败、不触发兄弟链式取消；wait 正常返回
+  // case 7: cancel() from outside the group (Python 3.15+) → all unfinished children are cancelled
+  // externally, which is not a failure and does not trigger chain sibling cancellation; wait
+  // returns normally
   run_case(__func__, "case7", [&] {
     Event block;
     TaskGroup tg;
     auto a = tg.create_task("tg7_a", [&] { block.wait(); });
     auto b = tg.create_task("tg7_b", [&] { block.wait(); });
-    tg.cancel();  // 不带 msg
-    tg.wait();    // 外部取消的容忍路径：正常返回
+    tg.cancel();  // Without a msg
+    tg.wait();    // The external-cancellation tolerance path: returns normally
     if (!a.cancelled() || !b.cancelled())
       throw std::logic_error("case7: cancel() must cancel all unfinished children");
   });
 
-  // case 8: cancel(msg)：子任务捕获 Cancelled 时能读到 msg；已 DONE 的子任务不受影响
+  // case 8: cancel(msg): a child catching Cancelled can read the msg; already-DONE children are
+  // unaffected
   run_case(__func__, "case8", [&] {
     Event block, ready;
     std::string seen;
     TaskGroup tg;
     auto done_child = tg.create_task("tg8_done", [] {});
     [[maybe_unused]] auto watcher = tg.create_task("tg8_watcher", [&] {
-      ready.set();  // 报告自己已推进到阻塞点之前
+      ready.set();  // Reports having advanced to just before the blocking point
       try {
         block.wait();
       } catch (const Cancelled& c) {
         if (c.msg()) seen = std::string(*c.msg());
       }
     });
-    // 事件交接即同步屏障：ready.wait 返回保证 watcher 已阻塞在 block 上
-    // （done_child 先创建先运行，此时已 DONE）
+    // The event hand-off is a synchronisation barrier: ready.wait returning guarantees watcher is
+    // blocked on block (done_child was created first, ran first, and is already DONE)
     ready.wait();
     tg.cancel("shutdown");
     tg.wait();

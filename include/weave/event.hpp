@@ -1,7 +1,8 @@
 #pragma once
 
-// 事件原语。语义对齐 asyncio.Event，set/clear 竞态采用 edge 语义：
-// set() 时所有当前等待者即被判定唤醒，即使随后立即 clear() 也照样放行。
+// Event primitive. Semantics follow asyncio.Event; set/clear races use edge semantics:
+// every waiter present at set() time counts as woken, and is released even if clear()
+// follows immediately.
 
 #include <memory>
 
@@ -11,9 +12,9 @@ class Event {
 public:
   Event();
 
-  void wait();            // 阻塞直到 set()；已置位则立即返回
-  void set();             // 置位并唤醒所有当前等待者
-  void clear() noexcept;  // 复位标志（不影响已被 set 判定唤醒的等待者）
+  void wait();            // Blocks until set(); returns immediately if already set
+  void set();             // Sets the flag and wakes all current waiters
+  void clear() noexcept;  // Clears the flag (does not affect waiters already woken by set)
   [[nodiscard]] bool is_set() const noexcept;
 
 private:

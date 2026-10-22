@@ -1,8 +1,11 @@
-// 通信原语常见用法：Lock（互斥锁）。
-//   · LockGuard：作用域即临界区（≡ Python 的 `async with lock:`）
-//   · 互斥 + FIFO 交接：排队者按 acquire() 顺序依次进入临界区
-//   · 排队者被取消：锁仍归持有者，取消者不持有、也不算失败
-// 同步完全靠事件传递，不假设任何"睡多久之后应该发生什么"。
+// Common communication-primitive usage: Lock (a mutex).
+//   · LockGuard: the scope is the critical section (≡ Python's `async with lock:`)
+//   · mutual exclusion + FIFO hand-off: queued waiters enter the critical section in acquire()
+//     order
+//   · a queued waiter is cancelled: the lock stays with its holder, and the cancelled task holds
+//     nothing and does not count as a failure
+// Synchronisation relies entirely on event passing, and nothing assumes "what should happen after
+// sleeping this long".
 
 #include <cstdio>
 #include <stdexcept>
@@ -12,7 +15,7 @@ using namespace weave;
 using namespace weave::literals;
 
 WEAVE_TEST(locks_demo) {
-  // ── LockGuard：离开作用域自动释放 ─────────────────────────────────────
+  // ── LockGuard: releases automatically on scope exit ───────────────────
   {
     Lock l;
     {
@@ -24,10 +27,10 @@ WEAVE_TEST(locks_demo) {
     std::printf("[locks_demo] LockGuard released at scope exit\n");
   }
 
-  // ── 互斥 + FIFO：a 先排队，b 在 a 释放后接手 ──────────────────────────
+  // ── mutual exclusion + FIFO: a queues first, b takes over after a releases ──
   {
     Lock l;
-    l.acquire();  // 主任务先占住，让两个任务排队
+    l.acquire();  // The main task grabs it first so the two tasks have to queue
     Event queued_a, queued_b, done_b;
     auto a = create_task("lock_a", [&] {
       queued_a.set();
@@ -36,7 +39,7 @@ WEAVE_TEST(locks_demo) {
       l.release();
     });
     auto b = create_task("lock_b", [&] {
-      queued_a.wait();  // a 先入队，b 才起身（事件驱动，不靠睡眠时长）
+      queued_a.wait();  // b only sets off after a queued (event-driven, no sleep durations)
       queued_b.set();
       l.acquire();
       std::printf("[locks_demo] b in critical section\n");
@@ -44,17 +47,17 @@ WEAVE_TEST(locks_demo) {
       l.release();
     });
     queued_a.wait();
-    queued_b.wait();  // a、b 都已按顺序排队
-    l.release();      // 交接给 a；a 释放后 b 接手
+    queued_b.wait();  // Both a and b are now queued in order
+    l.release();      // Hands off to a; after a releases, b takes over
     gather(a, b);
     if (!done_b.is_set()) throw std::logic_error("locks_demo: b must run after a");
     std::printf("[locks_demo] FIFO handoff ok\n");
   }
 
-  // ── 排队者被取消：锁不跟着走 ──────────────────────────────────────────
+  // ── a queued waiter is cancelled: the lock does not go with it ────────
   {
     Lock l;
-    l.acquire();  // 主任务持有
+    l.acquire();  // Held by the main task
     Event queued;
     auto waiter = create_task("lock_waiter", [&] {
       queued.set();
@@ -62,15 +65,15 @@ WEAVE_TEST(locks_demo) {
         l.acquire();
       } catch (const Cancelled&) {
         std::printf("[locks_demo] waiter cancelled while queued\n");
-        throw;  // 取消继续向上传播（吞掉会让任务错误地以 DONE 结束）
+        throw;  // Keep propagating (swallowing it would wrongly end the task as DONE)
       }
     });
-    queued.wait();    // waiter 已入队
-    waiter.cancel();  // 队列中的等待者被取消
+    queued.wait();    // waiter is now queued
+    waiter.cancel();  // Cancel a waiter that is sitting in the queue
     try {
       waiter.await();
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (!l.locked()) throw std::logic_error("locks_demo: lock must stay with its owner");
     l.release();

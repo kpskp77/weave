@@ -1,57 +1,65 @@
 #pragma once
 
-// 通信原语：Lock / LockGuard / Condition，语义分别对齐 asyncio.Lock、
-// `async with lock:`、asyncio.Condition。
-// 全部建于 Event + 唯一阻塞点之上（每个排队者持一个一次性 Event），后端零改动。
-// 句柄语义与 Event 一致：拷贝共享同一把锁/条件变量，不是深拷贝。
+// Communication primitives: Lock / LockGuard / Condition, whose semantics match asyncio.Lock,
+// `async with lock:`, and asyncio.Condition respectively.
+// All of them are built on Event + the single blocking point (each queued waiter holds a one-shot
+// Event), with zero backend changes.
+// Handle semantics match Event: copies share the same lock/condition variable, they are not deep
+// copies.
 
 #include <cstddef>
 #include <memory>
 
 namespace weave {
 
-// ── Lock（asyncio.Lock）───────────────────────────────────────────────
+// ── Lock (asyncio.Lock) ───────────────────────────────────────────────────
 //
-// 互斥锁：
-//   · acquire()：锁空闲则立即取得（不挂起、不让出），已被持有则排队等待
-//     ——唯一的阻塞点在排队上；
-//   · release()：把锁交给队首等待者（FIFO 公平），无人排队则解锁；不挂起；
-//   · locked()：当前是否被持有。
-// 与 asyncio 一致，锁不记录持有者、不可重入：同一任务重复 acquire() 会等自己
-// 释放（自锁），任意任务都可以 release()。
+// A mutex:
+//   · acquire(): if the lock is free it is taken immediately (no suspension, no yield); if it is
+//     already held, queue and wait — the only blocking point is the queueing;
+//   · release(): hand the lock to the queue head (FIFO fairness), or unlock if nobody is queued;
+//     no suspension;
+//   · locked(): whether it is currently held.
+// As in asyncio, the lock does not record an owner and is not reentrant: acquiring it twice from
+// the same task waits for itself to release (self-deadlock), and any task may call release().
 //
-// 交接在 release() 内完成、held 全程为 true：不存在"已释放但还没被接手"的
-// 空闲窗口（asyncio 在该窗口里 locked() 会短暂返回 False，新来者也不插队）。
-// 等待者被取消时锁不会丢：若取消与交接同槽发生（锁已交接给它、但它拿到的是
-// Cancelled），所有权转交下一个等待者，见 src/core/locks.cpp。
+// The hand-off happens inside release() with held staying true throughout: there is no
+// "released but not yet taken over" idle window (in asyncio locked() briefly returns False in
+// that window, and newcomers do not jump the queue either). The lock is not lost when a waiter is
+// cancelled: if cancellation and hand-off land in the same slot (the lock was already handed to
+// it but what it receives is Cancelled), ownership is transferred to the next waiter — see
+// src/core/locks.cpp.
 class Lock {
 public:
   Lock();
 
-  // 取得锁；已被持有时挂起至交接给自己。排队期间被取消 → 抛 Cancelled，
-  // 此时不持有锁（取消在阻塞点注入，是协作式取消的常规形态）。
+  // Acquires the lock; if already held, suspends until it is handed over. Cancelled while queued →
+  // throws Cancelled, and in that case the lock is not held (the cancellation is injected at the
+  // blocking point, which is the normal shape of cooperative cancellation).
   void acquire();
 
-  // 释放并交接：唤醒队首等待者，队列空则真正解锁。未持有时抛
-  // std::logic_error（对应 asyncio 的 RuntimeError("Lock is not acquired.")）。
+  // Releases and hands off: wakes the queue head, or actually unlocks when the queue is empty.
+  // Throws std::logic_error when not held (corresponding to asyncio's
+  // RuntimeError("Lock is not acquired.")).
   void release();
 
   [[nodiscard]] bool locked() const noexcept;
 
 private:
   struct Impl;
-  // 句柄语义与 Event 一致：拷贝共享同一把锁，不是深拷贝。
+  // Handle semantics match Event: copies share the same lock, they are not deep copies.
   std::shared_ptr<Impl> impl_;
 };
 
-// ── LockGuard ─────────────────────────────────────────────────────────
+// ── LockGuard ─────────────────────────────────────────────────────────────
 //
-// asyncio 的 `async with lock:` 在 C++ 侧的对应物：作用域即持锁区间。
-// 构造调用 acquire()（可能挂起；抛 Cancelled 时构造失败、不持锁），
-// 析构调用 release()（不挂起）。取消沿栈展开时同样释放，等价于靠
-// __aexit__ 释放。
-// 持有句柄副本（Lock 可拷贝、共享同一把锁），不依赖调用方句柄的寿命。
-// 误用（例如手工 release() 之后再析构）按 noexcept 语义 terminate。
+// The C++ counterpart of asyncio's `async with lock:`: the scope is the held interval.
+// Construction calls acquire() (it may suspend; if it throws Cancelled the construction fails and
+// nothing is held), destruction calls release() (no suspension). Cancellation during stack
+// unwinding therefore releases too, equivalent to releasing through __aexit__.
+// It holds its own copy of the handle (Lock is copyable and shares the same lock) and does not
+// depend on the lifetime of the caller's handle.
+// Misuse (e.g. a manual release() followed by destruction) terminates per noexcept semantics.
 class LockGuard {
 public:
   explicit LockGuard(Lock& lock);
@@ -64,46 +72,51 @@ private:
   Lock lock_;
 };
 
-// ── Condition（asyncio.Condition）──────────────────────────────────────
+// ── Condition (asyncio.Condition) ─────────────────────────────────────────
 
-// 条件变量，语义对齐 asyncio.Condition：
-//   · 构造即持有一把底层 Lock（可传入已有 Lock 复用，对齐 asyncio.Condition(lock)）；
-//   · acquire()/release()/locked() 委托底层锁（≡ `async with cond:` 的进入/退出，
-//     持锁区间也可用 LockGuard guard(cond.mutex()) 表达）；
-//   · wait()：要求已持锁。原子地「入队 → 放锁 → 阻塞」，被 notify 唤醒后
-//     **重新取得锁**才返回（与 asyncio 一致：wait 返回时谓词检查所依赖的
-//     临界区仍然成立）。等待期间被取消 → 先从队列摘除、重新取锁、再抛
-//     Cancelled（锁不随取消泄漏，对齐 asyncio 3.13+ 的「先 re-acquire 再传播
-//     取消」）；
-//   · wait_for(pred)：反复 wait() 直到 pred() 为真（对齐 asyncio 的
-//     `while not predicate(): await cond.wait()`）；
-//   · notify(n=1)/notify_all()：唤醒队首 n 个/全部等待者，要求已持锁
-//     （≡ asyncio 的 RuntimeError("cannot notify on un-acquired lock")）。
-//     唤醒只是放行：被唤醒者仍要按 Lock 的 FIFO 排队重新取锁，notify 不交接锁。
+// Condition variable whose semantics match asyncio.Condition:
+//   · construction takes an underlying Lock (an existing Lock may be passed in for reuse,
+//     matching asyncio.Condition(lock));
+//   · acquire()/release()/locked() delegate to the underlying lock (≡ entering/leaving
+//     `async with cond:`; the held interval can also be expressed as LockGuard
+//     guard(cond.mutex()));
+//   · wait(): requires the lock to be held. Atomically "enqueue → drop the lock → block", and after
+//     being woken by notify it **re-acquires the lock** before returning (as in asyncio: when wait
+//     returns, the critical section the predicate check relies on holds again). Cancelled while
+//     waiting → first unlink from the queue, re-acquire the lock, then throw Cancelled (the lock
+//     does not leak with the cancellation, matching asyncio 3.13+'s "re-acquire first, then
+//     propagate the cancellation");
+//   · wait_for(pred): calls wait() repeatedly until pred() is true (matching asyncio's
+//     `while not predicate(): await cond.wait()`);
+//   · notify(n=1)/notify_all(): wake the first n/all waiters, requires the lock to be held
+//     (≡ asyncio's RuntimeError("cannot notify on un-acquired lock")). Waking is only a release:
+//     the woken waiters still re-acquire the lock through the Lock's FIFO queue, notify does not
+//     hand over the lock.
 //
-// 全部建于 Lock + Event + 唯一阻塞点之上，后端零改动。
-// 句柄语义与 Lock/Event 一致：拷贝共享同一个条件变量。
+// Everything is built on Lock + Event + the single blocking point, with zero backend changes.
+// Handle semantics match Lock/Event: copies share the same condition variable.
 class Condition {
 public:
   Condition();
-  explicit Condition(Lock lock);  // 复用已有锁，对齐 asyncio.Condition(lock)
+  explicit Condition(Lock lock);  // Reuses an existing lock, matching asyncio.Condition(lock)
 
-  void acquire();  // 取得底层锁（可能挂起）
-  void release();  // 释放底层锁
+  void acquire();  // Acquires the underlying lock (may suspend)
+  void release();  // Releases the underlying lock
   [[nodiscard]] bool locked() const noexcept;
-  [[nodiscard]] Lock& mutex() noexcept;  // 底层锁句柄（asyncio 的 .lock 属性）
+  [[nodiscard]] Lock& mutex() noexcept;  // Underlying lock handle (asyncio's .lock attribute)
 
-  // 要求已持锁；返回时锁已被重新取得。见类注释的取消语义。
+  // Requires the lock to be held; the lock is re-acquired by the time it returns. See the class
+  // comment for the cancellation semantics.
   void wait();
 
-  // 反复 wait() 直至 pred() 为真；返回时锁已持有。
+  // Calls wait() repeatedly until pred() is true; the lock is held when it returns.
   template <typename Pred>
   void wait_for(Pred pred) {
     while (!pred()) wait();
   }
 
-  void notify(std::size_t n = 1);  // 唤醒队首至多 n 个等待者；要求已持锁
-  void notify_all();               // 唤醒全部等待者；要求已持锁
+  void notify(std::size_t n = 1);  // Wakes at most n waiters from the head; requires the lock
+  void notify_all();               // Wakes all waiters; requires the lock
 
 private:
   struct Impl;

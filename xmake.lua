@@ -1,11 +1,13 @@
--- Weave: C++ 测试逻辑与 EDA 仿真内核之间的行为编排层
--- 构建产物为仿真器加载的共享库（或自检二进制）+ 后端协议
+-- Weave: a behaviour orchestration layer between C++ test logic and EDA simulation kernels
+-- The build produces the shared libraries the simulator loads (or self-check binaries) plus the
+-- backend protocol
 --
--- 目标分组（同类相邻，勿交错）：
---   weave                                     核心库（按 --backend 选择后端）
---   smoke 载荷  weave_smoke_sc / weave_smoke_svdpi / weave_smoke_svdpi_driver
---   examples 载荷 weave_examples_sc（systemc）/ weave_examples_svdpi（svdpi）
--- 回归入口：xmake smoke（tests/ 语义自检）、xmake examples（examples/ 示例），两者独立。
+-- Target grouping (keep same-kind targets adjacent, do not interleave):
+--   weave           core library (backend chosen by --backend)
+--   smoke payloads  weave_smoke_sc / weave_smoke_svdpi / weave_smoke_svdpi_driver
+--   examples        weave_examples_sc (systemc) / weave_examples_svdpi (svdpi)
+-- Regression entries: xmake smoke (tests/ semantic self-checks), xmake examples (examples/
+-- programs); the two are independent.
 
 set_project("weave")
 set_version("0.1.0")
@@ -13,14 +15,14 @@ set_version("0.1.0")
 add_rules("mode.debug", "mode.release")
 set_languages("c++17")
 
--- SystemC 后端依赖（xmake-repo 包；若使用本地安装请改为
--- add_includedirs/add_linkdirs/add_links 指向安装路径）
+-- SystemC backend dependency (an xmake-repo package; for a local install, replace this with
+-- add_includedirs/add_linkdirs/add_links pointing at the installation)
 add_requires("systemc", { configs = { shared = true } })
 add_requires("svdpi")
 
--- 后端选择：svdpi（默认）/ systemc。
--- 对应宏 WEAVE_BACKEND_SVDPI / WEAVE_BACKEND_SYSTEMC 由目标定义；
--- 不定义任何宏时 include/weave/config.hpp 默认 SVDPI。
+-- Backend selection: svdpi (default) / systemc.
+-- The matching macros WEAVE_BACKEND_SVDPI / WEAVE_BACKEND_SYSTEMC are defined by the targets;
+-- with no macro defined, include/weave/config.hpp defaults to SVDPI.
 option("backend", function()
   set_showmenu(true)
   set_default("svdpi")
@@ -28,12 +30,13 @@ option("backend", function()
   set_description("Simulation backend")
 end)
 
--- 编译告警策略：所有目标统一 -Wall -Wextra 且警告即错误（set_warnings 的 error
--- 级别映射为 -Werror）。第三方包头文件由 add_packages 以 -isystem 引入，不受影响。
+-- Warning policy: every target uses -Wall -Wextra with warnings as errors (set_warnings' error
+-- level maps to -Werror). Third-party package headers are pulled in via -isystem by add_packages
+-- and are unaffected.
 
--- ── 核心库 ────────────────────────────────────────────────────────────
+-- ── core library ─────────────────────────────────────────────────────────────
 
--- src/core 后端无关簿记 + src/backend 宏选择的后端适配
+-- src/core backend-agnostic bookkeeping + the backend adapter selected by macro in src/backend
 target("weave", function()
   set_kind("shared")
   set_warnings("all", "extra", "error")
@@ -48,12 +51,15 @@ target("weave", function()
   end
 end)
 
--- ── smoke 载荷（tests/，xmake smoke 运行）──────────────────────────────
+-- ── smoke payloads (tests/; run by xmake smoke) ──────────────────────────────
 
--- SystemC 自检：在真实 SystemC 内核上运行核心语义断言。
--- SystemC 由 xmake-repo 提供（add_requires("systemc")，构建任意目标前会自动安装）。
---   xmake build weave_smoke_sc && xmake run weave_smoke_sc   -- 必须经 xmake run（注入包运行环境）
--- 示例不编入本载荷：示例按用户用法单独编译并链接 libweave，见下方 examples 载荷。
+-- SystemC self-check: runs the core semantic assertions on a real SystemC kernel.
+-- SystemC comes from xmake-repo (add_requires("systemc"), installed automatically before building
+-- any target).
+--   xmake build weave_smoke_sc && xmake run weave_smoke_sc   -- must go through xmake run (injects
+--                                                            the package runtime environment)
+-- Examples are not compiled into this payload: they are built the way a user would and link
+-- libweave, see the examples payloads below.
 target("weave_smoke_sc", function()
   set_warnings("all", "extra", "error")
   set_kind("binary")
@@ -78,17 +84,17 @@ target("weave_smoke_sc", function()
   add_packages("systemc")
 end)
 
--- SVDPI 自检库：与 weave_smoke_sc 共用同一组断言体（tests/*_semantics.cpp），
--- 编成仿真器 -sv_lib 加载的共享库。后端宏显式固定为 SVDPI，与 --backend 配置无关，
--- 两种配置下都回归 DPI 路径。
+-- SVDPI self-check library: shares the same set of assertion bodies (tests/*_semantics.cpp) with
+-- weave_smoke_sc, built as a shared library the simulator loads via -sv_lib. The backend macro is
+-- pinned to SVDPI explicitly, independently of the --backend configuration, so the DPI path is
+-- regressed under both configurations.
 target("weave_smoke_svdpi", function()
   set_warnings("all", "extra", "error")
   set_kind("shared")
   add_includedirs("include")
   add_defines("WEAVE_BACKEND_SVDPI")
   add_files(
-    "src/core/*.cpp",
-    "src/backend/*.cpp",
+    "src/**.cpp",
     "tests/as_completed_semantics.cpp",
     "tests/condition_semantics.cpp",
     "tests/duration_semantics.cpp",
@@ -105,14 +111,17 @@ target("weave_smoke_svdpi", function()
   add_packages("svdpi")
 end)
 
--- SVDPI VCS 驱动（tests/svdpi_driver.cpp）被编成多个目标，只差载荷参数；
--- 都定位 VCS → 编译 sv/ 骨架 → simv 加载 -sv_lib 载荷 → 以输出标记判 Pass，
--- 无 VCS/IES 时打印 SKIP 并以 0 退出（见 AGENTS.md）。
+-- The SVDPI VCS driver (tests/svdpi_driver.cpp) is compiled into several targets that differ only
+-- in their payload parameters; each locates VCS → compiles the sv/ skeleton → runs simv with the
+-- -sv_lib payload → judges Pass by the output marker, and prints SKIP and exits 0 when VCS/IES is
+-- unavailable (see AGENTS.md).
 --
--- 本目标为「自检」载荷（binary 且名字以 weave_smoke_ 开头，被 xmake smoke 纳入）。
--- 不对载荷建任何依赖：载荷库一旦被链进驱动，动态加载器会在 main() 运行前就因库内未定义的
--- DPI 符号（svGetScope 等，本应由 VCS 的 simv 运行时提供）拒绝加载，SKIP 分支根本到不了。
--- 驱动运行期按自身目录查找载荷（WEAVE_SVDPI_LIB），构建顺序由 xmake smoke 的构建列表保证。
+-- This target is the "self-check" payload (a binary whose name starts with weave_smoke_, so xmake
+-- smoke picks it up). No dependency on the payload is declared: once the payload library is linked
+-- into the driver, the dynamic loader refuses to load it before main() runs, because of the
+-- undefined DPI symbols inside it (svGetScope and friends, which only VCS's simv is supposed to
+-- provide) — the SKIP branch would be unreachable. At run time the driver looks for the payload
+-- next to itself (WEAVE_SVDPI_LIB); the build order is guaranteed by xmake smoke's build list.
 target("weave_smoke_svdpi_driver", function()
   set_warnings("all", "extra", "error")
   set_kind("binary")
@@ -124,14 +133,16 @@ target("weave_smoke_svdpi_driver", function()
   )
 end)
 
--- ── examples 载荷（examples/，xmake examples 运行）─────────────────────
+-- ── examples payloads (examples/; run by xmake examples) ─────────────────────
 
--- 示例回归按**用户用法**编译：只编 examples/*.cpp，示例代码只能用 include/weave/ 的
--- 公共 API，并通过 add_deps("weave") 链接 libweave.so（不内联核心源码），因此真实跨过
--- DSO 边界。两种形态常驻定义（不按 --backend 门控）：xmake examples 会在同一次调用里
--- 切换配置把两者各跑一遍，任务进程需要能查到两个目标。
---   weave_examples_sc    systemc → 可执行文件，本地运行
---   weave_examples_svdpi svdpi   → 共享库，-sv_lib 进 VCS 运行
+-- The example regression is built the way a **user** would: only examples/*.cpp are compiled, the
+-- example code may use nothing but the public API in include/weave/, and it links libweave.so via
+-- add_deps("weave") (never inlining core sources), so it genuinely crosses the DSO boundary. Both
+-- forms are always defined (not gated on --backend): xmake examples switches configurations within
+-- a single invocation and runs each of them, so the task process must be able to look up both
+-- targets.
+--   weave_examples_sc    systemc → an executable, run locally
+--   weave_examples_svdpi svdpi   → a shared library, loaded into VCS via -sv_lib
 
 target("weave_examples_sc", function()
   set_warnings("all", "extra", "error")
@@ -142,9 +153,9 @@ target("weave_examples_sc", function()
   add_packages("systemc")
 end)
 
--- SVDPI 共享库形态：与 libweave.so 一起经 -sv_lib 加载进 VCS，由 sv/weave_tb.sv
--- 的 weave_run/weave_sv_wait_done 引导。这也是 VCS 侧示例回归的载体，
--- 同时是文档里 VCS 手工运行示例所加载的那份库。
+-- SVDPI shared-library form: loaded into VCS together with libweave.so via -sv_lib, bootstrapped
+-- by weave_run/weave_sv_wait_done in sv/weave_tb.sv. This is also the payload for the VCS-side
+-- example regression, and the very library the manual VCS run in the docs loads.
 target("weave_examples_svdpi", function()
   set_warnings("all", "extra", "error")
   set_kind("shared")
@@ -153,13 +164,15 @@ target("weave_examples_svdpi", function()
   add_files("examples/*.cpp")
 end)
 
--- 示例的 VCS 驱动：与 weave_smoke_svdpi_driver 同一份 tests/svdpi_driver.cpp，只是载荷
--- 换成 libweave_examples_svdpi。不叫 weave_smoke_* —— 示例回归独立于 xmake smoke。
--- **不建立任何依赖**：{links = false} / {order = true} 都会经载荷把 libweave.so 的
--- 链接依赖带进来（载荷本身 add_deps("weave")），而 libweave.so 的 DPI 符号只有 VCS
--- 的 simv 能提供 —— 驱动会在加载阶段就以 "cannot locate symbol svGetScope" 失败，
--- SKIP 分支根本到不了。驱动只在运行时按路径找载荷，故无需构建期依赖；
--- xmake examples 会显式先建载荷再建驱动。
+-- The VCS driver for the examples: the same tests/svdpi_driver.cpp as weave_smoke_svdpi_driver,
+-- with the payload swapped for libweave_examples_svdpi. It is not named weave_smoke_* — the
+-- example regression is independent of xmake smoke.
+-- **No dependency is declared**: {links = false} / {order = true} would both drag in libweave.so's
+-- link dependencies through the payload (which itself has add_deps("weave")), and libweave.so's
+-- DPI symbols can only be provided by VCS's simv — the driver would fail at load time with
+-- "cannot locate symbol svGetScope", never reaching the SKIP branch. The driver only looks for the
+-- payload by path at run time, so no build-time dependency is needed; xmake examples explicitly
+-- builds the payload before the driver.
 target("weave_examples_svdpi_driver", function()
   set_warnings("all", "extra", "error")
   set_kind("binary")
@@ -171,11 +184,13 @@ target("weave_examples_svdpi_driver", function()
   )
 end)
 
--- ── 回归任务 ──────────────────────────────────────────────────────────
+-- ── regression tasks ─────────────────────────────────────────────────────────
 
--- 回归入口：构建三个 smoke 载荷，再逐个 `xmake run` 运行 weave_smoke_* 可执行自检。
--- 新增自检目标：名字以 weave_smoke_ 开头（且是 binary）才会被本任务运行，同时要把它
--- 加进下面的构建列表（xmake run 负责注入 package 的 LD_LIBRARY_PATH，systemc 无 rpath）。
+-- Regression entry: build the three smoke payloads, then run each weave_smoke_* self-check
+-- binary with `xmake run`.
+-- A new self-check target is run by this task only if its name starts with weave_smoke_ (and it
+-- is a binary), and it must also be added to the build list below (xmake run injects the
+-- package's LD_LIBRARY_PATH, since systemc has no rpath).
 task("smoke", function()
   set_menu({
     usage = "xmake smoke",
@@ -201,7 +216,7 @@ task("smoke", function()
   end)
 end)
 
--- 示例回归入口（与 xmake smoke 相互独立，载荷见上）。
+-- Example regression entry (independent of xmake smoke; payloads described above).
 task("examples", function()
   set_menu({
     usage = "xmake examples",
@@ -211,11 +226,12 @@ task("examples", function()
     import("core.project.config")
     import("core.project.project")
     config.load()
-    -- 双后端各跑一遍：示例目标常驻定义，切换 --backend 只是让 `weave` 库
-    -- （以及 weave_examples_* 链接的那份）按对应后端重建。结束后还原配置。
+    -- Run both backends: the example targets are always defined, and switching --backend only
+    -- makes the `weave` library (the one weave_examples_* links) rebuild for the chosen backend.
+    -- The configuration is restored afterwards.
     local saved = config.get("backend")
 
-    -- SystemC：可执行文件，本地真实内核运行。
+    -- SystemC: an executable, run locally on a real kernel.
     os.execv("xmake", { "f", "--backend=systemc" })
     os.execv("xmake", { "build", "weave_examples_sc" })
     print("==> [systemc] weave_examples_sc")
@@ -225,8 +241,8 @@ task("examples", function()
       os.raise("weave_examples_sc failed (exit " .. tostring(code) .. ")")
     end
 
-    -- SVDPI：共享库 + VCS 驱动。驱动自身会在无 VCS 时打印 SKIP 并返回 0，
-    --    因此"不支持 SVDPI"时本步等价于只做编译验证。
+    -- SVDPI: shared library + VCS driver. The driver itself prints SKIP and returns 0 when VCS is
+    --     unavailable, so without SVDPI support this step amounts to a compile-only check.
     os.execv("xmake", { "f", "--backend=svdpi" })
     os.execv("xmake", { "build", "weave_examples_svdpi", "weave_examples_svdpi_driver" })
     print("==> [svdpi] weave_examples_svdpi + driver")

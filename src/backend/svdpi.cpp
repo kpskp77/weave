@@ -2,14 +2,14 @@
 
 #if defined(WEAVE_BACKEND_SVDPI)
 
-// SVDPI 后端（默认）：把 port 契约映射到 sv/weave_pkg.sv 导出的 DPI 原语，
-// 并提供 SV 测试骨架（sv/weave_tb.sv）需要的引导入口。
+// SVDPI backend (default): maps the port contract onto the DPI primitives exported by
+// sv/weave_pkg.sv, and provides the bootstrap entries the SV test skeleton (sv/weave_tb.sv) needs.
 //
-// DPI 边界：
-//   import（SV 提供）   : weave_sv_* —— 事件表、三腿等待、spawn
-//   export（本文件）   : weave_run / weave_test_status —— tb 引导
-//   export（core）     : weave_task_main —— 任务分派，SV 经 weave_sv_spawn
-//                         的 fork 进程间接触发
+// DPI boundary:
+//   imports (provided by SV): weave_sv_* — event table, three-legged wait, spawn
+//   exports (this file)     : weave_run / weave_test_status — tb bootstrap
+//   exports (core)          : weave_task_main — task dispatch, reached indirectly by SV through
+//                             weave_sv_spawn's forked process
 
 #include <svdpi.h>
 
@@ -18,7 +18,7 @@
 #include "../core/registry_internal.hpp"
 
 extern "C" {
-// DPI imports（实现在 sv/weave_pkg.sv，由 SV 侧提供）
+// DPI imports (implemented in sv/weave_pkg.sv, provided by the SV side)
 void weave_sv_spawn(int task_id);
 void weave_sv_trigger(int ev_id);
 int weave_sv_create_event();
@@ -73,7 +73,7 @@ void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
 }  // namespace port
 }  // namespace weave
 
-// ── DPI exports（由 SV 侧调用）────────────────────────────────────────
+// ── DPI exports (called by the SV side) ────────────────────────────────────────
 
 extern "C" void weave_run() {
   const int done_ev = weave::detail::run_registered_test();

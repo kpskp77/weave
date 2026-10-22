@@ -1,12 +1,13 @@
-// 通信原语自检：Semaphore / BoundedSemaphore 的 asyncio 语义——计数取得
-// （不挂起、不让出）、计数耗尽后 FIFO 排队、N 个许可允许 N 个并发持有者、
-// release 逐个放行等待者、排队者取消（含取消与放行同槽时许可不丢失）、
-// BoundedSemaphore 上界检查（含 handoff 回流路径不误判）、句柄拷贝共享、
-// Guard 作用域释放与取消展开释放。
-// 同步完全事件驱动（纯 delta cycle），不依赖真实时钟。
-// 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）；
-// 与其它 *_semantics.cpp 共用断言体，由 weave_smoke_sc / weave_smoke_svdpi
-// 两个后端回归。
+// Communication-primitive self-check: the asyncio semantics of Semaphore / BoundedSemaphore —
+// taking a permit (no suspension, no yield), FIFO queueing once the count is exhausted, N permits
+// allowing N concurrent holders, release waking waiters one at a time, waiter cancellation
+// (including not losing the permit when cancellation and release share a slot), BoundedSemaphore's
+// bound check (including not misjudging the handoff return path), handle copies sharing state, and
+// the guard releasing on scope exit and on cancellation unwinding.
+// Synchronisation is fully event-driven (pure delta cycles) and does not depend on a real clock.
+// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
+// case_runner.hpp); it shares the assertion bodies with the other *_semantics.cpp files and is
+// regressed by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
 #include <stdexcept>
 #include <vector>
@@ -20,12 +21,12 @@ using weave_test::report;
 using weave_test::run_case;
 
 WEAVE_TEST(semaphore_semantics) {
-  // case 1: 计数取得——默认 1 个许可，显式构造 N 个；有空闲计数时 acquire
-  // 同步取得（不挂起、不让出），locked() 跟随剩余计数
+  // case 1: taking a permit — 1 by default, N constructed explicitly; with a free count, acquire
+  // takes it synchronously (no suspension, no yield), and locked() follows the remaining count
   run_case(__func__, "case1", [&] {
-    Semaphore dflt;  // 默认 1 个许可
+    Semaphore dflt;  // 1 permit by default
     if (dflt.locked()) throw std::logic_error("case1: fresh Semaphore must be unlocked");
-    Semaphore zero(0);  // 0 许可合法：首个 acquire 必须排队
+    Semaphore zero(0);  // 0 permits is legal: the first acquire must queue
     if (!zero.locked()) throw std::logic_error("case1: Semaphore(0) must start locked");
     Semaphore s(2);
     Event started;
@@ -34,12 +35,12 @@ WEAVE_TEST(semaphore_semantics) {
     if (started.is_set()) throw std::logic_error("case1: acquire with permits must not yield");
     s.acquire();
     if (!s.locked()) throw std::logic_error("case1: locked() must reflect exhausted permits");
-    probe.await();  // probe 此刻才获得调度
+    probe.await();  // Only now does probe get scheduled
     if (!started.is_set()) throw std::logic_error("case1: probe must run after yield");
   });
 
-  // case 2: 计数互斥——2 个许可允许两个任务同时在临界区，第三个必须等放行，
-  // 临界区进入深度恒为 2
+  // case 2: counting exclusion — 2 permits let two tasks be in the critical section at once, and
+  // the third must wait to be released, so the entry depth stays 2
   run_case(__func__, "case2", [&] {
     Semaphore s(2);
     int depth = 0;
@@ -50,7 +51,7 @@ WEAVE_TEST(semaphore_semantics) {
       ++depth;
       max_depth = depth > max_depth ? depth : max_depth;
       a_in.set();
-      sleep(0_fs);  // 主动让出：给竞争者尝试 acquire 的机会
+      sleep(0_fs);  // Yield on purpose: give the competitor a chance to try acquire
       --depth;
       s.release();
     });
@@ -65,7 +66,7 @@ WEAVE_TEST(semaphore_semantics) {
     });
     auto c = create_task("c2_c", [&] {
       a_in.wait();
-      s.acquire();  // a、b 各占一个许可 → 阻塞至其中一个 release
+      s.acquire();  // a and b each hold a permit → blocks until one of them releases
       ++depth;
       max_depth = depth > max_depth ? depth : max_depth;
       --depth;
@@ -75,12 +76,13 @@ WEAVE_TEST(semaphore_semantics) {
     if (max_depth != 2) throw std::logic_error("case2: three tasks entered with only two permits");
   });
 
-  // case 3: FIFO 公平——等待者按 acquire() 调用顺序获得许可
-  // 队列次序靠"前一个等待者先入队、后一个才开始"的链式事件确定：
-  // r1.set() 在 acquire 之前，故 r1.wait() 返回时 t1 必然已排队。
+  // case 3: FIFO fairness — waiters acquire permits in acquire() call order.
+  // The queue order is fixed by chained events ("the previous waiter queues before the next one
+  // starts"): r1.set() happens before acquire, so when r1.wait() returns t1 has necessarily
+  // queued.
   run_case(__func__, "case3", [&] {
     Semaphore s(1);
-    s.acquire();  // 主任务持有唯一许可，制造排队
+    s.acquire();  // The main task holds the only permit to create a queue
     std::vector<int> order;
     Event r1, r2, r3;
     auto t1 = create_task("c3_1", [&] {
@@ -103,52 +105,52 @@ WEAVE_TEST(semaphore_semantics) {
       order.push_back(3);
       s.release();
     });
-    r1.wait();    // t1 已在队列首
-    r2.wait();    // t2 排在其后
-    r3.wait();    // t3 排在队尾
-    s.release();  // 逐个放行
+    r1.wait();    // t1 is at the head of the queue
+    r2.wait();    // t2 is right behind it
+    r3.wait();    // t3 is at the tail
+    s.release();  // Release one by one
     gather(t1, t2, t3);
     if (order != std::vector<int>({1, 2, 3}))
       throw std::logic_error("case3: waiters must be served in FIFO order");
     if (s.locked()) throw std::logic_error("case3: semaphore must be free after last release");
   });
 
-  // case 4: 每个 release 恰好放行一个等待者——放行后等待者尚未自行 release 时，
-  // 下一个等待者不会被唤醒（用 proceed 事件把 t1 卡在「已取得、未释放」区间，
-  // 使该检查在事件驱动下确定）
+  // case 4: every release wakes exactly one waiter — after being released and before it releases
+  // on its own, the next waiter is not woken (the proceed event pins t1 in the "acquired but not
+  // released" interval, making the check deterministic under event-driven synchronisation)
   run_case(__func__, "case4", [&] {
     Semaphore s(1);
-    s.acquire();  // 主任务持有唯一许可
+    s.acquire();  // The main task holds the only permit
     Event r1, r2, got1, got2, proceed;
     auto t1 = create_task("c4_1", [&] {
       r1.set();
-      s.acquire();  // 被主任务的 release 放行
+      s.acquire();  // Released by the main task's release
       got1.set();
-      proceed.wait();  // 卡住：已取得许可但暂不 release
+      proceed.wait();  // Pinned here: the permit is acquired but not released yet
       s.release();
     });
     auto t2 = create_task("c4_2", [&] {
       r1.wait();
       r2.set();
-      s.acquire();  // 排在 t1 之后
+      s.acquire();  // Queues behind t1
       got2.set();
       s.release();
     });
-    r1.wait();  // t1 已排队
-    r2.wait();  // t2 排在 t1 之后
+    r1.wait();  // t1 has queued
+    r2.wait();  // t2 has queued behind t1
     s.release();
-    got1.wait();  // t1 已取得许可
+    got1.wait();  // t1 has acquired the permit
     if (got2.is_set()) throw std::logic_error("case4: one release must wake exactly one waiter");
-    proceed.set();  // 允许 t1 release → 接力放行 t2
+    proceed.set();  // Let t1 release → which releases t2 in turn
     got2.wait();
     gather(t1, t2);
   });
 
-  // case 5: 排队者被取消 → 抛 Cancelled、不持有许可，许可仍随主任务的 release
-  // 交给其余等待者
+  // case 5: a queued waiter is cancelled → it throws Cancelled and holds no permit; the permit is
+  // still handed to the remaining waiters by the main task's release
   run_case(__func__, "case5", [&] {
     Semaphore s(1);
-    s.acquire();  // 主任务持有唯一许可
+    s.acquire();  // The main task holds the only permit
     Event r1, r2, caught, got;
     auto victim = create_task("c5_victim", [&] {
       r1.set();
@@ -163,29 +165,30 @@ WEAVE_TEST(semaphore_semantics) {
     auto peer = create_task("c5_peer", [&] {
       r1.wait();
       r2.set();
-      s.acquire();  // 排在 victim 之后
+      s.acquire();  // Queues behind victim
       got.set();
       s.release();
     });
-    r1.wait();        // victim 已排队
-    r2.wait();        // peer 排在 victim 之后
-    victim.cancel();  // 只取消 victim，此时尚未放行
+    r1.wait();        // victim has queued
+    r2.wait();        // peer has queued behind victim
+    victim.cancel();  // Cancel only victim, before any release has happened
     caught.wait();
     try {
       victim.await();
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (got.is_set()) throw std::logic_error("case5: cancel must not release a permit");
-    s.release();  // 摘除 victim 后，队列首是 peer
+    s.release();  // With victim unlinked, peer is at the head of the queue
     got.wait();
     peer.await();
     if (s.locked()) throw std::logic_error("case5: peer must have released the permit");
   });
 
-  // case 6: 取消与放行同槽——release() 已把许可交给 victim，紧接着的
-  // cancel() 让它在阻塞点拿到 Cancelled（后端取消腿优先）。许可不得丢失，
-  // 必须转交给下一个等待者。
+  // case 6: cancellation and release in the same slot — release() has already handed the permit to
+  // victim, and the immediately following cancel() makes it receive Cancelled at the blocking point
+  // (the backend cancel leg wins). The permit must not be lost: it has to be handed to the next
+  // waiter.
   run_case(__func__, "case6", [&] {
     Semaphore s(1);
     s.acquire();
@@ -209,32 +212,35 @@ WEAVE_TEST(semaphore_semantics) {
     });
     r1.wait();
     r2.wait();
-    // release() 与 cancel() 之间没有挂起点，victim 在两者之间不可能被调度：
-    // 它必然处于"已放行但拿到的是取消"的竞态形态（两后端均取消腿优先）。
+    // There is no suspension point between release() and cancel(), so victim cannot be scheduled
+    // between them: it is necessarily in the "already released but receiving a cancellation" race
+    // shape (both backends give the cancel leg precedence).
     s.release();
     victim.cancel();
     caught.wait();
     try {
       victim.await();
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
-    got.wait();  // 关键：许可已转交给 peer，没有随取消消失
+    got.wait();  // The point: the permit was transferred to peer instead of vanishing with the
+                 // cancellation
     peer.await();
     if (s.locked()) throw std::logic_error("case6: peer must have released after handoff");
   });
 
-  // case 7: 句柄语义——拷贝共享同一个信号量（与 Event 一致）
+  // case 7: handle semantics — copies share the same semaphore (as with Event)
   run_case(__func__, "case7", [&] {
     Semaphore a(1);
     Semaphore b = a;
     a.acquire();
     if (!b.locked()) throw std::logic_error("case7: copies must share the same semaphore");
-    b.release();  // 信号量不记录持有者，任意句柄都能释放
+    b.release();  // A semaphore records no owner, so any handle may release
     if (a.locked()) throw std::logic_error("case7: release through a copy must free it");
   });
 
-  // case 8: SemaphoreGuard——构造取得、析构释放（作用域即临界区）
+  // case 8: SemaphoreGuard — acquires on construction, releases on destruction (the scope is the
+  // critical section)
   run_case(__func__, "case8", [&] {
     Semaphore s(1);
     {
@@ -244,7 +250,7 @@ WEAVE_TEST(semaphore_semantics) {
     if (s.locked()) throw std::logic_error("case8: guard must release at scope exit");
   });
 
-  // case 9: SemaphoreGuard 在取消展开时释放（≡ async with 的 __aexit__）
+  // case 9: SemaphoreGuard releases while unwinding a cancellation (≡ async with's __aexit__)
   run_case(__func__, "case9", [&] {
     Semaphore s(1);
     Event in_crit;
@@ -252,7 +258,7 @@ WEAVE_TEST(semaphore_semantics) {
       SemaphoreGuard g(s);
       in_crit.set();
       Event never;
-      never.wait();  // 持许可阻塞，随后被取消
+      never.wait();  // Blocks while holding the permit, then gets cancelled
     });
     in_crit.wait();
     if (!s.locked()) throw std::logic_error("case9: guard must hold the permit");
@@ -260,17 +266,18 @@ WEAVE_TEST(semaphore_semantics) {
     try {
       holder.await();
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (s.locked()) throw std::logic_error("case9: guard must release while unwinding");
-    s.acquire();  // 许可确实可用：再取一次不阻塞
+    s.acquire();  // The permit really is available: acquiring again does not block
     s.release();
   });
 
-  // case 10: 上界检查——release 次数达到初始值后再放抛 std::logic_error
-  // （≡ asyncio 的 ValueError）；抛错不改状态，簿记仍一致
+  // case 10: bound check — releasing again after the release count reaches the initial value throws
+  // std::logic_error (≡ asyncio's ValueError); the throw does not change state and the bookkeeping
+  // stays consistent
   run_case(__func__, "case10", [&] {
-    BoundedSemaphore d;  // 默认上界 1
+    BoundedSemaphore d;  // Bound of 1 by default
     if (d.locked()) throw std::logic_error("case10: fresh BoundedSemaphore must be unlocked");
     BoundedSemaphore b(2);
     b.acquire();
@@ -281,20 +288,21 @@ WEAVE_TEST(semaphore_semantics) {
     if (b.locked()) throw std::logic_error("case10: locked() must reflect released permits");
     bool threw = false;
     try {
-      b.release();  // 第三次 release 越过初值 2
+      b.release();  // The third release goes past the initial value 2
     } catch (const std::logic_error&) {
       threw = true;
     }
     if (!threw) throw std::logic_error("case10: release beyond bound must throw");
-    b.acquire();  // 抛错不污染状态：簿记仍一致
+    b.acquire();  // The throw did not pollute the state: the bookkeeping is still consistent
     b.release();
   });
 
-  // case 11: 排队者被取消后上界簿记不漂移——取消路径不消耗也不归还许可，
-  // 主任务归还后计数恰好回到上界，再放必抛
+  // case 11: the bound bookkeeping does not drift after a queued waiter is cancelled — the
+  // cancellation path neither consumes nor returns a permit, so after the main task returns its
+  // permit the count is exactly back at the bound and one more release must throw
   run_case(__func__, "case11", [&] {
     BoundedSemaphore b(1);
-    b.acquire();  // 主任务持有唯一许可
+    b.acquire();  // The main task holds the only permit
     Event r1, caught;
     auto victim = create_task("c11_victim", [&] {
       r1.set();
@@ -306,32 +314,34 @@ WEAVE_TEST(semaphore_semantics) {
         throw;
       }
     });
-    r1.wait();        // victim 已排队
-    victim.cancel();  // 队列中取消：摘除，许可从未发出
+    r1.wait();        // victim has queued
+    victim.cancel();  // Cancelled in the queue: unlinked, no permit was ever issued
     caught.wait();
     try {
       victim.await();
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
-    b.release();  // 主任务归还：计数回到上界
+    b.release();  // The main task returns its permit: the count is back at the bound
     bool threw = false;
     try {
-      b.release();  // 若取消路径弄脏簿记，这里的判定会出错
+      b.release();  // If the cancellation path dirtied the bookkeeping, this check would fail
     } catch (const std::logic_error&) {
       threw = true;
     }
     if (!threw) throw std::logic_error("case11: permits taken must equal permits released");
-    b.acquire();  // 恰好一个许可可用
+    b.acquire();  // Exactly one permit is available
     b.release();
   });
 
-  // case 12: 上界检查必须读真实计数——许可经「放行 → 同槽取消 → handoff 转交」
-  // 回流后由非持有者 release，此时计数已暗中回到上界，再放必抛。
-  // 外层镜像计数（只跟踪配对调用）在这条路径下会漏判，与 asyncio 产生偏差。
+  // case 12: the bound check must read the real count — a permit that flowed back via "release →
+  // same-slot cancellation → handoff transfer" is released by a non-holder, so the count has
+  // quietly returned to the bound and one more release must throw.
+  // An outer mirror count (tracking only paired calls) would miss this path and diverge from
+  // asyncio.
   run_case(__func__, "case12", [&] {
     BoundedSemaphore b(1);
-    b.acquire();  // 主任务持有唯一许可
+    b.acquire();  // The main task holds the only permit
     Event r1, r2, caught, got;
     auto victim = create_task("c12_victim", [&] {
       r1.set();
@@ -346,37 +356,39 @@ WEAVE_TEST(semaphore_semantics) {
     auto peer = create_task("c12_peer", [&] {
       r1.wait();
       r2.set();
-      b.acquire();  // 经 handoff 拿到 victim 的许可
+      b.acquire();  // Receives victim's permit through the handoff
       got.set();
-      b.release();  // 非持有者的 release：计数回到上界
+      b.release();  // A non-holder's release: the count returns to the bound
     });
     r1.wait();
     r2.wait();
-    // release() 与 cancel() 之间没有挂起点：victim 必处于「已放行但拿到的是
-    // 取消」的同槽竞态形态，其许可由 handoff 转交 peer。
+    // There is no suspension point between release() and cancel(): victim is necessarily in the
+    // same-slot race shape of "already released but receiving a cancellation", and its permit is
+    // transferred to peer by the handoff.
     b.release();
     victim.cancel();
     caught.wait();
     try {
       victim.await();
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     got.wait();
     peer.await();
     bool threw = false;
     try {
-      b.release();  // peer 已把计数放回上界，再放必抛
+      b.release();  // peer has already put the count back at the bound, so this must throw
     } catch (const std::logic_error&) {
       threw = true;
     }
     if (!threw) throw std::logic_error("case12: over-release through handoff must be caught");
     if (b.locked()) throw std::logic_error("case12: one permit must be available");
-    b.acquire();  // 簿记正确：恰好一个许可
+    b.acquire();  // The bookkeeping is correct: exactly one permit
     b.release();
   });
 
-  // case 13: BoundedSemaphoreGuard——构造取得、析构释放（作用域即临界区）
+  // case 13: BoundedSemaphoreGuard — acquires on construction, releases on destruction (the scope
+  // is the critical section)
   run_case(__func__, "case13", [&] {
     BoundedSemaphore b(1);
     {

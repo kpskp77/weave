@@ -1,51 +1,66 @@
 # Weave
 
-C++ 测试逻辑与 EDA 仿真内核之间的**行为编排层**。API 组织方式借鉴 Python asyncio，不使用 C++20 coroutine——阻塞语义完全由后端承载：每个任务运行在一个仿真进程上下文（SV 进程 / SystemC SC_THREAD）上，`sleep`/`wait` 经由后端挂起点冻结整个 C++ 调用栈。
+A **behaviour orchestration layer** between C++ test logic and EDA simulation kernels. The API is
+modelled after Python asyncio, but does not use C++20 coroutines — blocking semantics are carried
+entirely by the backend: every task runs in a simulation process context (an SV process or a
+SystemC SC_THREAD), and `sleep`/`wait` freeze the whole C++ call stack through a backend
+suspension point.
 
-Weave 专注并发行为编排（任务、时间、事件、组合、超时、取消、状态查询）；不提供 DUT 信号读写、总线 driver/monitor、UVM component、transaction/coverage、TLM 建模、仿真内核本身。这些由 SystemVerilog/UVM/cocotb/SystemC 等既有工具提供，Weave 以统一接口把 C++ 测试行为接入它们。
+Weave focuses on concurrency orchestration (tasks, time, events, combinators, timeouts,
+cancellation, state queries); it does not provide DUT signal access, bus drivers/monitors, UVM
+components, transactions/coverage, TLM modelling, or the simulation kernel itself. Those are
+provided by existing tools such as SystemVerilog/UVM/cocotb/SystemC, and Weave plugs C++ test
+behaviour into them behind one uniform interface.
 
-## C++ ↔ asyncio 映射
+## C++ ↔ asyncio mapping
 
-Weave 的 API 语义**以 asyncio 为准**——下表即完整参考；与 asyncio 的差异只列在[已知偏差](#已知偏差)。
+Weave's API semantics **follow asyncio** — the table below is the complete reference; the
+differences from asyncio are listed under [known deviations](#known-deviations).
 
-| C++（weave） | Python（asyncio） | 备注 |
+| C++ (weave) | Python (asyncio) | Notes |
 |---|---|---|
-| `create_task(name, fn)` | `asyncio.create_task(coro)` | fn 为普通函数；调度而非立即运行 |
-| `task.await()` | `await task` | FAILED 重抛其异常；CANCELLED 抛 `Cancelled` |
-| `task.cancel()` / `task.cancel(msg)` | `task.cancel(msg)` | 协作式；msg 对齐 asyncio 3.9+，注入与 await 重投时保留 |
+| `create_task(name, fn)` | `asyncio.create_task(coro)` | fn is a plain function; scheduled, not run immediately |
+| `task.await()` | `await task` | FAILED rethrows its exception; CANCELLED throws `Cancelled` |
+| `task.cancel()` / `task.cancel(msg)` | `task.cancel(msg)` | Cooperative; msg matches asyncio 3.9+, preserved both on injection and on rethrow at `await` |
 | `task.done()` / `task.cancelled()` | `task.done()` / `task.cancelled()` | |
 | `task.get_name()` | `task.get_name()` | |
-| `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 为零时间让出 |
-| `Event::wait/set/clear` | `asyncio.Event` | set/clear 竞态采用 edge 语义 |
-| `Lock::acquire/release/locked` | `asyncio.Lock` | FIFO 交接；`LockGuard` ≡ `async with lock` |
-| `Semaphore::acquire/release/locked` | `asyncio.Semaphore` | 计数信号量；`SemaphoreGuard` ≡ `async with semaphore` |
-| `BoundedSemaphore::acquire/release/locked` | `asyncio.BoundedSemaphore` | 同 Semaphore；release 超上界抛 `std::logic_error`（≡ `ValueError`） |
-| `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | 默认形态（首失败即抛） |
-| `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | 返回 `vector<exception_ptr>`，不提前抛出 |
-| `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义 |
-| `wait({t1, ...}, return_when, timeout)` | `await asyncio.wait(fs, ...)` | 返回 `{done, pending}`；不取消子任务 |
-| `shield(t)` | `asyncio.shield(aw)` | 返回代理任务；取消/超时止于代理 |
-| `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` 按完成顺序阻塞产出 |
-| `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | 结构化并发；首失败取消兄弟 |
-| `Cancelled` / `Timeout` | `CancelledError` / `TimeoutError` | 取消不派生 `std::exception`（对齐 `BaseException` 分层）；`Timeout` 派生 |
-| `WEAVE_TEST` + 注册表 | pytest / 各类 runner | 无对应原语；由后端引导入口运行 |
+| `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` yields for zero time |
+| `Event::wait/set/clear` | `asyncio.Event` | set/clear races use edge semantics |
+| `Lock::acquire/release/locked` | `asyncio.Lock` | FIFO hand-off; `LockGuard` ≡ `async with lock` |
+| `Semaphore::acquire/release/locked` | `asyncio.Semaphore` | Counting semaphore; `SemaphoreGuard` ≡ `async with semaphore` |
+| `BoundedSemaphore::acquire/release/locked` | `asyncio.BoundedSemaphore` | Same as Semaphore; releasing past the bound throws `std::logic_error` (≡ `ValueError`) |
+| `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | Default form (throws on first failure) |
+| `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | Returns `vector<exception_ptr>`, does not throw early |
+| `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ timeout semantics |
+| `wait({t1, ...}, return_when, timeout)` | `await asyncio.wait(fs, ...)` | Returns `{done, pending}`; does not cancel child tasks |
+| `shield(t)` | `asyncio.shield(aw)` | Returns a proxy task; cancellation/timeout stops at the proxy |
+| `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` blocks and yields in completion order |
+| `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; first failure cancels siblings |
+| `Cancelled` / `Timeout` | `CancelledError` / `TimeoutError` | Cancellation does not derive from `std::exception` (matching the `BaseException` hierarchy); `Timeout` does derive |
+| `WEAVE_TEST` + registry | pytest / assorted runners | No asyncio counterpart; driven by the backend bootstrap entry point |
 
-规划中的扩展同样一一对齐 asyncio：`Queue` 等，见[演进方向](#演进方向)。
+Planned extensions follow asyncio in the same one-to-one way: `Queue` and friends, see
+[roadmap](#roadmap).
 
-### 模型差异（相对 Python，必读）
+### Model differences (versus Python, must read)
 
-映射表之外有三条结构性差异，误用大多源于此处：
+Beyond the mapping table there are three structural differences; most misuse stems from these:
 
-- **无 coroutine / await**：组合原语是任务上下文内的普通阻塞调用，不是可等待对象；`gather(...)` 直接阻塞到完成，不返回 future。
-- **无事件循环对象**：调度由仿真内核承担。`create_task` 创建的任务在**父任务碰到下一个阻塞点之后**才开始运行（对应 asyncio 的调度时机）。
-- **取消不破坏调用栈**：协作式取消 + 禁止强杀仿真进程，C++ RAII 始终正常展开（区别于线程取消）。
+- **No coroutine / await**: the combinators are ordinary blocking calls inside a task context, not
+  awaitables; `gather(...)` blocks until completion and does not return a future.
+- **No event loop object**: scheduling is carried by the simulation kernel. A task created by
+  `create_task` starts running only **after the parent task reaches its next blocking point**
+  (matching asyncio's scheduling timing).
+- **Cancellation never tears down the call stack**: cooperative cancellation plus a ban on killing
+  the simulation process means C++ RAII always unwinds normally (unlike thread cancellation).
 
-### 已知偏差
+### Known deviations
 
-- `TaskGroup` 无 `ExceptionGroup`：`wait()` 重抛首个失败（按完成顺序）；
-- gather 提前返回后，其余任务晚到的失败仅留在任务簿记中（无 Python 的 "exception was never retrieved" 告警）。
+- `TaskGroup` has no `ExceptionGroup`: `wait()` rethrows the first failure (in completion order);
+- after `gather` returns early, later failures of the remaining tasks stay only in the task
+  bookkeeping (there is no Python "exception was never retrieved" warning).
 
-## 快速开始
+## Quick start
 
 ```cpp
 #include <weave/weave.hpp>
@@ -56,61 +71,70 @@ WEAVE_TEST(my_test) {
     Event ev;
     auto t1 = create_task("producer", [&] { sleep(100_ns); ev.set(); });
     auto t2 = create_task("consumer", [&] { ev.wait(); /* ... */ });
-    wait_for(t1, 1_us);          // 超时即取消任务并抛 weave::Timeout
+    wait_for(t1, 1_us);          // On timeout cancels the task and throws weave::Timeout
     gather(t1, t2);
 }
 ```
 
-## 构建与运行
+## Build and run
 
 ```bash
-xmake smoke      # 语义自检：构建 smoke 载荷 + 用 xmake run 逐个跑 weave_smoke_*（两种后端各跑一次）
-xmake examples   # 示例回归：一次跑完 systemc + svdpi
+xmake smoke      # Semantic self-checks: build smoke payloads + run each weave_smoke_* via xmake run (once per backend)
+xmake examples   # Example regression: runs both systemc and svdpi in one go
 ```
 
-两者职责不同、都不可省：`tests/` 的断言体与 `examples/` 的示例互不编入对方载荷；示例按用户用法编译
-（只用公共头、链接 `libweave.so`，真实跨过 DSO 边界）。产物在 `build/<plat>/<arch>/<mode>/`；无 VCS/IES
-时 SVDPI 侧驱动打印 SKIP 并返回 0（等价于只做编译验证）。后端切换、SystemC 引导入口、VCS 手工运行、
-新增后端见 [docs/backends.md](docs/backends.md)。
+The two have different responsibilities and neither is optional: the assertion bodies in `tests/`
+and the programs in `examples/` are never compiled into each other's payloads; examples are built
+the way a user would use the library (public headers only, linking `libweave.so`, genuinely
+crossing the DSO boundary). Artifacts land in `build/<plat>/<arch>/<mode>/`; without VCS/IES the
+SVDPI driver prints SKIP and returns 0 (equivalent to a compile-only check). Backend switching, the
+SystemC bootstrap entry point, manual VCS runs, and adding a new backend are covered in
+[docs/backends.md](docs/backends.md).
 
-> 把 `libweave.so` 链进**自己的可执行文件**时**无需**任何 RTTI 可见性/导出标志（`-fvisibility=default`
-> / `-rdynamic` 都不需要）：两个异常类型的 `what()` 是库内外联定义的 key function，typeinfo 在库里
-> 只有一份、消费方只留未定义引用（见 backends.md 的「ABI 提示」）。
+> Linking `libweave.so` into **your own executable** needs **no** RTTI visibility/export flags
+> (`-fvisibility=default` / `-rdynamic` are not required): `what()` for both exception types is the
+> key function, defined out-of-line in the library, so the typeinfo exists exactly once in the
+> library and consumers only keep undefined references (see the "ABI notes" section of backends.md).
 
-## 语言标准：C++17 起
+## Language standard: C++17 and up
 
-全仓库以 **C++17 为最低标准**（`xmake.lua` 的 `set_languages("c++17")` 是唯一开关）：库自身按 C++17
-构建，且公开能力在 C++17 下必须功能完备。**更新的标准同样支持**——调用方可以自己选 `-std=c++20` /
-`c++23` / `c++2c` 编译，公共头在 C++17/20/23 下均验证可干净编译。
+The whole repository uses **C++17 as the minimum standard** (`set_languages("c++17")` in
+`xmake.lua` is the only switch): the library itself is built as C++17, and its public capabilities
+must be complete under C++17. **Newer standards are supported as well** — callers may choose
+`-std=c++20` / `c++23` / `c++2c` for their own translation units, and the public headers are
+verified to compile cleanly under C++17/20/23.
 
-- **17 即完备**：公共头不把任何 C++20+ 特性当作必需（`Cancelled::msg()` 是
-  `std::optional<std::string_view>`，`wait` 的 timeout 是 `std::optional<duration>`）。
-- **更高标准也可用**：公共头不依赖随标准版本改变含义、已被弃用或已移除的写法，因此升级 `-std=` 不会
-  引入告警或行为变化。
-- **不使用 C++20 coroutine 是设计决定而非标准限制**：挂起由仿真内核承载，与标准版本无关。
+- **17 is complete**: no public header treats any C++20+ feature as required (`Cancelled::msg()` is
+  a `std::optional<std::string_view>`, the `wait` timeout is a `std::optional<duration>`).
+- **Newer standards work too**: the public headers avoid constructs whose meaning changes by
+  standard version or that are deprecated/removed, so bumping `-std=` introduces no warnings and no
+  behavioural change.
+- **Not using C++20 coroutines is a design decision, not a standard limitation**: suspension is
+  carried by the simulation kernel, independently of the standard version.
 
-详见 [docs/architecture.md](docs/architecture.md) 的「语言基线」一节。
+See the "Language baseline" section of [docs/architecture.md](docs/architecture.md) for details.
 
-## 目录结构
+## Directory layout
 
 ```
-include/weave/    公共 API：weave.hpp(umbrella) + config/time/task/event/locks/sync/test[/sc]
-src/core/         后端无关核心 + port.hpp 后端契约
-src/backend/      后端适配（宏二选一）：svdpi.cpp（默认）/ systemc.cpp
-sv/               SVDPI 后端协议（事件表、三腿等待、spawn、tb 骨架）
-examples/         按域演示全部公共 API + 一个端到端用例（xmake examples 回归）
-tests/            语义自检断言体（xmake smoke 回归）
+include/weave/    Public API: weave.hpp (umbrella) + config/time/task/event/locks/sync/test[/sc]
+src/core/         Backend-agnostic core + port.hpp backend contract
+src/backend/      Backend adapters (exactly one, selected by macro): svdpi.cpp (default) / systemc.cpp
+sv/               SVDPI backend protocol (event table, three-legged wait, spawn, tb skeleton)
+examples/         Per-domain demos of the whole public API + one end-to-end case (xmake examples regression)
+tests/            Semantic self-check assertion bodies (xmake smoke regression)
 docs/             architecture.md / backends.md
 ```
 
-## 延伸阅读
+## Further reading
 
-- [docs/architecture.md](docs/architecture.md)：设计决策与实现约束（为何不用 coroutine、取消、edge 语义、时间、语言基线）
-- [docs/backends.md](docs/backends.md)：DPI 协议、SystemC 集成、ABI 注意事项、新增后端指南
-- [AGENTS.md](AGENTS.md)：面向 AI 编码助手的构建/验证约定与不变量
+- [docs/architecture.md](docs/architecture.md): design decisions and implementation constraints (why no coroutines, cancellation, edge semantics, time, language baseline)
+- [docs/backends.md](docs/backends.md): DPI protocol, SystemC integration, ABI notes, guide to adding a backend
+- [AGENTS.md](AGENTS.md): build/verification conventions and invariants for AI coding assistants
 
-## 演进方向
+## Roadmap
 
-- **通信原语**：Queue（`Lock` / `Condition` 见 `include/weave/locks.hpp`，
-  `Semaphore` 见 `include/weave/semaphore.hpp`；其余新头文件 queue.hpp）
-- **后端**：契约稳定于 `src/core/port.hpp`；SVDPI 与 SystemC 均已在各自工具链验证
+- **Communication primitives**: Queue (`Lock` / `Condition` live in `include/weave/locks.hpp`,
+  `Semaphore` in `include/weave/semaphore.hpp`; further new headers go to queue.hpp)
+- **Backends**: the contract is stable in `src/core/port.hpp`; both SVDPI and SystemC are verified
+  on their respective toolchains

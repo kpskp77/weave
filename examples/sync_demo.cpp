@@ -1,6 +1,6 @@
-// 组合原语常见用法：gather（默认 / return_exceptions）、wait_for、wait、
-// shield、as_completed。全部建于同一套任务簿记之上——同步完全靠事件传递，
-// 不假设任何"睡多久之后应该发生什么"。
+// Common combinator usage: gather (default / return_exceptions), wait_for, wait, shield,
+// as_completed. All of them are built on the same task bookkeeping — synchronisation relies
+// entirely on event passing, and nothing assumes "what should happen after sleeping this long".
 
 #include <cstdio>
 #include <exception>
@@ -13,7 +13,8 @@ using namespace weave::literals;
 
 namespace {
 
-// 可被外部放行的"工作"任务：置位 started 表示就位，然后等 go。
+// A "work" task that external code can release: setting started signals readiness, then it waits
+// for go.
 void worker(Event& started, Event& go) {
   started.set();
   go.wait();
@@ -22,22 +23,24 @@ void worker(Event& started, Event& go) {
 }  // namespace
 
 WEAVE_TEST(sync_demo) {
-  // ── gather：等一组任务全部完成 ────────────────────────────────────────
-  // 默认形态下任一任务失败/被取消会立即按完成顺序重抛，兄弟任务不被取消。
+  // ── gather: waits for a group of tasks to finish ──────────────────────
+  // In the default form, any task failing/being cancelled is rethrown immediately in completion
+  // order, and siblings are not cancelled.
   {
     Event s1, s2, go1, go2;
     auto a = create_task("gather_a", [&] { worker(s1, go1); });
     auto b = create_task("gather_b", [&] { worker(s2, go2); });
     s1.wait();
-    s2.wait();  // 两个任务都已就位
+    s2.wait();  // Both tasks are now in place
     go1.set();
     go2.set();
-    gather(a, b);  // 全部成功 → 正常返回
+    gather(a, b);  // All succeeded → returns normally
     std::printf("[sync_demo] gather ok\n");
   }
 
-  // ── gather(..., return_exceptions)：等全部落地，按输入顺序取结果 ──────
-  //   DONE → nullptr；FAILED → 其异常；CANCELLED → 包装 Cancelled
+  // ── gather(..., return_exceptions): waits for everything to land, then
+  // returns results in input order ──────────────────────────────────────
+  //   DONE → nullptr; FAILED → its exception; CANCELLED → a wrapped Cancelled
   {
     Event block;
     auto ok = create_task("re_ok", [] {});
@@ -64,12 +67,13 @@ WEAVE_TEST(sync_demo) {
     std::printf("[sync_demo] gather(return_exceptions) ok\n");
   }
 
-  // ── wait_for：成功照常返回；超时则取消任务、等取消完成、再抛 Timeout ──
+  // ── wait_for: returns normally on success; on timeout it cancels the
+  // task, waits for the cancellation to complete, then throws Timeout ───
   {
     Event gate;
     auto fast = create_task("wait_for_fast", [&] { gate.wait(); });
     gate.set();
-    wait_for(fast, 1_ms);  // 任务先完成 → 正常返回
+    wait_for(fast, 1_ms);  // The task finishes first → returns normally
     if (!fast.done() || fast.cancelled())
       throw std::logic_error("sync_demo: wait_for success path");
 
@@ -78,26 +82,28 @@ WEAVE_TEST(sync_demo) {
       wait_for(slow, 1_ns);
       throw std::logic_error("sync_demo: wait_for must time out");
     } catch (const Timeout&) {
-      // 预期路径：超时后任务已被取消，且取消已走完
+      // Expected path: after the timeout the task is cancelled and the cancellation completed
     }
     if (!slow.cancelled()) throw std::logic_error("sync_demo: timed-out task must be cancelled");
     std::printf("[sync_demo] wait_for ok\n");
   }
 
-  // ── wait：只按当时状态分组返回，不重抛异常、不取消任务 ─────────────────
+  // ── wait: only groups by the state at that moment, never rethrows,
+  // never cancels tasks ─────────────────────────────────────────────────
   {
     Event slow_gate;
     auto quick = create_task("wait_quick", [] {});
     auto slow = create_task("wait_slow", [&] { slow_gate.wait(); });
-    // 注意：必须写成 weave::wait——glibc 的 <stdlib.h> 在全局命名空间里定义了
-    // union wait，而实参 weave::Task 会触发 ADL，非限定调用两者都是候选（歧义）。
+    // Note: it must be written as weave::wait — glibc's <stdlib.h> defines a global
+    // `union wait`, and a weave::Task argument triggers ADL, making both candidates for an
+    // unqualified call (ambiguity).
     auto r = weave::wait({quick, slow}, ReturnWhen::FIRST_COMPLETED);
     if (r.done.size() != 1 || r.pending.size() != 1)
       throw std::logic_error("sync_demo: FIRST_COMPLETED must split done/pending");
     slow_gate.set();
-    slow.await();  // 未被取消，放行后自然完成
+    slow.await();  // Not cancelled, it finishes naturally after being released
 
-    // timeout 到点同样只做分组快照
+    // Reaching the timeout also just takes a grouping snapshot
     Event gate2;
     auto t = create_task("wait_timeout", [&] { gate2.wait(); });
     auto snapshot = weave::wait({t}, ReturnWhen::ALL_COMPLETED, 1_ns);
@@ -108,16 +114,17 @@ WEAVE_TEST(sync_demo) {
     std::printf("[sync_demo] wait ok\n");
   }
 
-  // ── shield：对代理的取消/超时停在代理层，inner 继续运行 ────────────────
+  // ── shield: cancel/timeout of the proxy stops at the proxy layer, inner keeps running ──
   {
     Event gate;
     auto inner = create_task("shield_inner", [&] { gate.wait(); });
-    auto proxy = shield(inner);  // 代理镜像 inner 的终态，但可独立被取消
+    auto proxy = shield(inner);  // The proxy mirrors inner's terminal state but can be cancelled
+                                 // independently
     try {
       wait_for(proxy, 1_ns);
       throw std::logic_error("sync_demo: shield proxy must time out");
     } catch (const Timeout&) {
-      // 预期路径
+      // Expected path
     }
     if (!proxy.cancelled()) throw std::logic_error("sync_demo: proxy should be cancelled");
     if (inner.done()) throw std::logic_error("sync_demo: shield must protect inner");
@@ -127,14 +134,14 @@ WEAVE_TEST(sync_demo) {
     std::printf("[sync_demo] shield ok\n");
   }
 
-  // ── as_completed：按完成顺序逐个产出（与创建顺序无关） ──────────────────
+  // ── as_completed: yields one by one in completion order (independent of creation order) ──
   {
     Event g1, g2;
     auto first = create_task("ac_first", [&] { g1.wait(); });
     auto second = create_task("ac_second", [&] { g2.wait(); });
     auto ac = as_completed({first, second});
 
-    g2.set();  // 只放行"后创建"的那个
+    g2.set();  // Release only the one created second
     if (ac.next().get_name() != "ac_second")
       throw std::logic_error("sync_demo: next() must yield by completion order");
     g1.set();

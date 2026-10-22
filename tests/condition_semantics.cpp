@@ -1,11 +1,13 @@
-// 通信原语自检：Condition 的 asyncio.Condition 语义——持锁要求（wait/notify 未持锁
-// 抛 std::logic_error）、wait 原子放锁与唤醒后重新取锁、notify(n) 只放行队首 n 个、
-// notify_all 全放行、谓词轮询（wait_for = 反复 wait）、等待者取消（摘除 + 重新取锁
-// 后再传播，锁不泄漏）、复用外部锁与句柄拷贝共享同一条件变量。
-// 同步完全事件驱动（纯 delta cycle），不依赖真实时钟。
-// 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）；
-// 与其它 *_semantics.cpp 共用断言体，由 weave_smoke_sc / weave_smoke_svdpi
-// 两个后端回归。
+// Communication-primitive self-check: Condition's asyncio.Condition semantics — the held-lock
+// requirement (wait/notify throw std::logic_error without it), wait's atomic unlock and
+// re-acquisition after waking, notify(n) releasing only the first n waiters, notify_all releasing
+// everyone, predicate polling (wait_for = repeated wait), waiter cancellation (unlink, re-acquire,
+// then propagate, without leaking the lock), reusing an external lock, and handle copies sharing
+// the same condition variable.
+// Synchronisation is fully event-driven (pure delta cycles) and does not depend on a real clock.
+// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
+// case_runner.hpp); it shares the assertion bodies with the other *_semantics.cpp files and is
+// regressed by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
 #include <stdexcept>
 #include <vector>
@@ -18,8 +20,8 @@ using weave_test::report;
 using weave_test::run_case;
 
 WEAVE_TEST(condition_semantics) {
-  // case 1: 构造即持独立锁且未锁定；wait()/notify() 未持锁 → std::logic_error
-  // （≡ asyncio 的 RuntimeError("cannot wait/notify on un-acquired lock")）
+  // case 1: construction owns a separate, unlocked lock; wait()/notify() without it →
+  // std::logic_error (≡ asyncio's RuntimeError("cannot wait/notify on un-acquired lock"))
   run_case(__func__, "case1", [&] {
     Condition c;
     if (c.locked()) throw std::logic_error("case1: fresh Condition must be unlocked");
@@ -38,35 +40,38 @@ WEAVE_TEST(condition_semantics) {
     }
     if (!threw_notify) throw std::logic_error("case1: notify on un-acquired lock must throw");
     c.acquire();
-    c.notify();  // 空等待队列 + 已持锁：合法 no-op
+    c.notify();  // Empty waiter queue + lock held: a legal no-op
     c.release();
   });
 
-  // case 2: wait 原子放锁——等待者阻塞后锁即释放（第三方 acquire 即刻可取）；
-  // notify 放行后 wait 返回前锁被重新取得（wait 返回时临界区成立）
+  // case 2: wait unlocks atomically — once the waiter is blocked the lock is released (a third
+  // party's acquire succeeds at once); after notify releases it, the lock is re-acquired before
+  // wait returns (the critical section holds when wait returns)
   run_case(__func__, "case2", [&] {
     Condition c;
     Event r, done;
     auto w = create_task("c2_waiter", [&] {
       c.acquire();
-      r.set();   // 持锁标记：r.wait() 返回时 waiter 必然尚未 wait
-      c.wait();  // 原子：入队 + 放锁 + 阻塞
+      r.set();   // Holding-lock marker: when r.wait() returns, waiter has certainly not waited yet
+      c.wait();  // Atomic: enqueue + unlock + block
       if (!c.locked()) throw std::logic_error("case2: wait must re-acquire before return");
       c.release();
       done.set();
     });
     r.wait();
-    c.acquire();  // 阻塞至 waiter 在 wait() 内放锁 → 「等待期间锁已释放」得证
-    c.notify();   // 放行唯一等待者；锁仍归主任务
-    c.release();  // waiter 重新取锁、检查、释放
+    c.acquire();  // Blocks until waiter unlocks inside wait() → "the lock is released while
+                  // waiting" is proven
+    c.notify();   // Releases the only waiter; the lock stays with the main task
+    c.release();  // waiter re-acquires, checks, releases
     done.wait();
     w.await();
     if (c.locked()) throw std::logic_error("case2: waiter must have released");
   });
 
-  // case 3: notify(n) 只放行队首 n 个（FIFO），其余继续等待；
-  // notify_all 放行剩余者
-  // 入队次序靠「前一个等待者先 set 入队标记、后一个才开始」的链式事件确定。
+  // case 3: notify(n) releases only the first n waiters (FIFO), the rest keep waiting;
+  // notify_all releases the remainder.
+  // The queue order is fixed by chained events ("the previous waiter sets its queued marker before
+  // the next one starts").
   run_case(__func__, "case3", [&] {
     Condition c;
     Event r1, r2, r3, d1, d2, d3;
@@ -95,22 +100,24 @@ WEAVE_TEST(condition_semantics) {
     });
     r1.wait();
     r2.wait();
-    r3.wait();  // 三个等待者已按 w1,w2,w3 入队且都在 wait() 内阻塞，锁空闲
+    r3.wait();  // All three waiters have queued as w1,w2,w3, are blocked inside wait(), and the
+                // lock is free
     c.acquire();
-    c.notify(2);  // 只放行 w1,w2
-    c.release();  // 交出锁：w1 经 Lock FIFO 先取，逐个走完
-    d2.wait();    // d2 完成 ⟹ w1 已先完成（锁 FIFO）
+    c.notify(2);  // Releases only w1,w2
+    c.release();  // Hands over the lock: w1 takes it first via the Lock FIFO, then each finishes
+    d2.wait();    // d2 finished ⟹ w1 finished before it (lock FIFO)
     if (!d1.is_set()) throw std::logic_error("case3: w1 must finish before w2");
     if (d3.is_set()) throw std::logic_error("case3: w3 must still be waiting after notify(2)");
-    c.acquire();  // w1/w2 已释放，锁空闲
+    c.acquire();  // w1/w2 have released, the lock is free
     c.notify_all();
     c.release();
     d3.wait();
     gather(w1, w2, w3);
   });
 
-  // case 4: 谓词轮询——wait 被放行但谓词仍为假时必须再入队等下一轮
-  // （wait_for 的循环语义）；每轮 wait 都先放锁、唤醒后重新取锁
+  // case 4: predicate polling — when wait is released but the predicate is still false, it must
+  // re-enqueue for the next round (wait_for's loop semantics); every wait round unlocks first and
+  // re-acquires after waking
   run_case(__func__, "case4", [&] {
     Condition c;
     int wakes = 0;
@@ -120,26 +127,27 @@ WEAVE_TEST(condition_semantics) {
       r1.set();
       c.wait();
       ++wakes;
-      r2.set();  // 即将第二次 wait（此刻持锁）
+      r2.set();  // About to wait a second time (holding the lock right now)
       c.wait();
       ++wakes;
       c.release();
     });
     r1.wait();
-    c.acquire();  // 阻塞至第一次放锁
+    c.acquire();  // Blocks until the first unlock
     c.notify_all();
-    c.release();  // 第一次放行
+    c.release();  // First release
     r2.wait();
-    c.acquire();  // 阻塞至第二次放锁
+    c.acquire();  // Blocks until the second unlock
     if (wakes != 1) throw std::logic_error("case4: waiter must be back in wait after false wake");
     c.notify_all();
-    c.release();  // 第二次放行
+    c.release();  // Second release
     w.await();
     if (wakes != 2) throw std::logic_error("case4: waiter must wake exactly twice");
   });
 
-  // case 5: 等待者取消 → 从队列摘除、重新取锁、再传播 Cancelled；
-  // 摘除后 notify 不得再放行它（否则在已销毁的栈帧上 resume），锁也不随取消泄漏
+  // case 5: waiter cancellation → unlink from the queue, re-acquire the lock, then propagate
+  // Cancelled; after the unlink a notify must not release it again (that would resume on a
+  // destroyed stack frame), and the lock does not leak with the cancellation
   run_case(__func__, "case5", [&] {
     Condition c;
     Event r, cancelled, ack;
@@ -152,35 +160,38 @@ WEAVE_TEST(condition_semantics) {
       } catch (const Cancelled&) {
         if (!c.locked()) throw std::logic_error("case5: lock must be re-acquired before Cancelled");
         cancelled.set();
-        ack.wait();  // 等主任务验证完毕再放锁（避免主任务等待时死锁）
+        ack.wait();  // Wait for the main task to finish verifying before unlocking (avoids a
+                     // deadlock while the main task waits)
         c.release();
         throw;
       }
     });
     r.wait();
-    c.acquire();  // 阻塞至 victim 在 wait() 内放锁；此后锁归主任务，victim 在队列中
+    c.acquire();  // Blocks until victim unlocks inside wait(); after that the lock belongs to the
+                  // main task and victim is in the queue
     victim.cancel();
-    // victim 的 catch 要先重新取锁，主任务必须先把锁让出
+    // victim's catch must re-acquire the lock first, so the main task has to yield it
     c.release();
-    cancelled.wait();  // victim 已重新取锁、通过 locked() 检查
+    cancelled.wait();  // victim has re-acquired the lock and passed the locked() check
     if (!c.locked()) throw std::logic_error("case5: re-acquired lock must belong to victim");
     ack.set();
     try {
       victim.await();
       throw std::logic_error("case5: victim must end CANCELLED");
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (c.locked()) throw std::logic_error("case5: victim must have released in its catch");
-    // 关键不变量：victim 已摘除——notify 不得再 set 它的一次性事件
+    // Key invariant: victim was unlinked — notify must not set its one-shot event again
     c.acquire();
     c.notify_all();
     c.release();
   });
 
-  // case 6: 取消与 notify 同槽——notify_all() 与 cancel() 之间无挂起点，victim
-  // 处于「已出队但拿到 Cancelled」的竞态形态（后端取消腿优先）：放行已被消费，
-  // 锁被重新取得后传播取消，且不影响其余等待者
+  // case 6: cancellation and notify in the same slot — there is no suspension point between
+  // notify_all() and cancel(), so victim is in the "already dequeued but receiving Cancelled" race
+  // shape (the backend cancel leg wins): the release was already consumed, the lock is re-acquired
+  // and then the cancellation propagates, without affecting the remaining waiters
   run_case(__func__, "case6", [&] {
     Condition c;
     Event r1, r2, cancelled, ack, got;
@@ -207,24 +218,25 @@ WEAVE_TEST(condition_semantics) {
       c.release();
     });
     r1.wait();
-    r2.wait();  // 条件队列为 victim,peer；锁空闲
+    r2.wait();  // The condition queue is victim,peer; the lock is free
     c.acquire();
-    c.notify_all();   // 两者出队放行
-    victim.cancel();  // 与放行同槽：victim 拿 Cancelled，peer 正常
+    c.notify_all();   // Both are dequeued and released
+    victim.cancel();  // Same slot as the release: victim gets Cancelled, peer proceeds normally
     c.release();
     cancelled.wait();
     ack.set();
-    got.wait();  // peer 不受 victim 取消影响，正常走完
+    got.wait();  // peer is unaffected by victim's cancellation and runs through normally
     peer.await();
     try {
       victim.await();
       throw std::logic_error("case6: victim must end CANCELLED");
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
   });
 
-  // case 7: wait_for 谓词已为真时不阻塞、不让出（同步通过，≡ asyncio 的无等待分支）
+  // case 7: with an already-true predicate wait_for neither blocks nor yields (passes
+  // synchronously, ≡ asyncio's fast path)
   run_case(__func__, "case7", [&] {
     Condition c;
     int items = 0;
@@ -235,7 +247,7 @@ WEAVE_TEST(condition_semantics) {
     auto consumer = create_task("c7_consumer", [&] {
       c.acquire();
       if (c.locked() == false) throw std::logic_error("case7: consumer must hold the lock");
-      c.wait_for([&] { return items > 0; });  // 谓词已真：不得挂起
+      c.wait_for([&] { return items > 0; });  // Predicate already true: must not suspend
       if (!c.locked()) throw std::logic_error("case7: wait_for must hold the lock on exit");
       --items;
       c.release();
@@ -246,13 +258,14 @@ WEAVE_TEST(condition_semantics) {
     if (items != 0) throw std::logic_error("case7: item must be consumed");
   });
 
-  // case 8: 复用外部锁 + 句柄拷贝共享同一条件变量（与 Lock/Event 句柄语义一致）
+  // case 8: reusing an external lock + handle copies sharing the same condition variable (matching
+  // Lock/Event handle semantics)
   run_case(__func__, "case8", [&] {
     Lock l;
-    Condition c(l);  // 对齐 asyncio.Condition(lock)：底层即传入的锁
+    Condition c(l);  // Matching asyncio.Condition(lock): the underlying lock is the one passed in
     c.acquire();
     if (!l.locked()) throw std::logic_error("case8: condition must hold the given lock");
-    Condition d = c;  // 拷贝共享
+    Condition d = c;  // Copies share
     d.release();
     if (l.locked()) throw std::logic_error("case8: copies must share state with the given lock");
   });

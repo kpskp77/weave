@@ -1,7 +1,8 @@
-// Weave C++ 簿记层自检：在真实 SystemC 内核上（weave_smoke_sc）验证
-// as_completed 的 asyncio.as_completed 语义。同步完全事件驱动（纯 delta
-// cycle），不依赖真实时钟。
-// 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
+// Weave C++ bookkeeping self-check: verifies as_completed's asyncio.as_completed semantics on a
+// real SystemC kernel (weave_smoke_sc). Synchronisation is fully event-driven (pure delta cycles)
+// and does not depend on a real clock.
+// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
+// case_runner.hpp).
 
 #include <stdexcept>
 #include <string>
@@ -14,14 +15,14 @@ using weave_test::report;
 using weave_test::run_case;
 
 WEAVE_TEST(as_completed_semantics) {
-  // case 1: 按完成顺序产出（与创建顺序无关）
+  // case 1: yields in completion order (independent of creation order)
   run_case(__func__, "case1", [&] {
     Event g1, g2, g3;
     auto a = create_task("ac1_a", [&] { g1.wait(); });
     auto b = create_task("ac1_b", [&] { g2.wait(); });
     auto c = create_task("ac1_c", [&] { g3.wait(); });
     auto ac = as_completed({a, b, c});
-    g3.set();  // 只放行 c：next() 阻塞期间 c 完成
+    g3.set();  // Release only c: it completes while next() is blocking
     if (ac.next().get_name() != "ac1_c")
       throw std::logic_error("case1: first completed must come first");
     g1.set();
@@ -33,26 +34,26 @@ WEAVE_TEST(as_completed_semantics) {
     if (ac.pending()) throw std::logic_error("case1: all tasks produced");
   });
 
-  // case 2: 全部产出后 next() 抛 logic_error；pending() 为 false
+  // case 2: after everything is produced next() throws logic_error; pending() is false
   run_case(__func__, "case2", [&] {
     auto a = create_task("ac2_a", [] {});
     auto ac = as_completed({a});
     ac.next().await();
     if (ac.pending()) throw std::logic_error("case2: pending must be false at end");
     try {
-      (void)ac.next();  // 期望抛出：返回值无意义
+      (void)ac.next();  // Expected to throw: the return value is meaningless
       throw std::logic_error("case2: unreachable");
     } catch (const std::logic_error& e) {
       if (std::string(e.what()).find("no more tasks") == std::string::npos) throw;
     }
   });
 
-  // case 3: 失败任务照常产出，异常由 await 重抛
+  // case 3: a failed task is produced as usual, and await rethrows its exception
   run_case(__func__, "case3", [&] {
     auto bad = create_task("ac3_bad", [] { throw std::runtime_error("ac3_fail"); });
     auto good = create_task("ac3_good", [] {});
     auto ac = as_completed({bad, good});
-    auto first = ac.next();  // delta-0 完成，spawn 顺序 bad 在前
+    auto first = ac.next();  // Both complete at delta 0, and bad was spawned first
     try {
       first.await();
       throw std::logic_error("case3: unreachable");
@@ -64,7 +65,8 @@ WEAVE_TEST(as_completed_semantics) {
     if (ac.pending()) throw std::logic_error("case3: all tasks produced");
   });
 
-  // case 4: 消费者在 next() 中被取消 → 取消只中断 next()，队列与子任务完好
+  // case 4: the consumer is cancelled inside next() → only that next() is interrupted, the queue
+  // and the child tasks stay intact
   run_case(__func__, "case4", [&] {
     Event block, ready;
     auto child = create_task("ac4_child", [&] { block.wait(); });
@@ -72,17 +74,17 @@ WEAVE_TEST(as_completed_semantics) {
       auto ac = as_completed({child});
       ready.set();
       try {
-        (void)ac.next();  // 期望抛出：返回值无意义
+        (void)ac.next();  // Expected to throw: the return value is meaningless
         throw std::logic_error("case4: unreachable");
       } catch (const Cancelled&) {
-        // 预期路径：取消只中断本次 next()
+        // Expected path: the cancellation only interrupts this next() call
       }
       if (!ac.pending()) throw std::logic_error("case4: state must survive cancellation");
       block.set();
-      ac.next().await();  // 放行后正常取到
+      ac.next().await();  // Retrieved normally after the release
       if (ac.pending()) throw std::logic_error("case4: all tasks produced");
     });
-    ready.wait();  // consumer 已阻塞在 next() 内（锁交接即同步）
+    ready.wait();  // consumer is now blocked inside next() (the hand-off itself synchronises)
     consumer.cancel();
     consumer.await();
     if (consumer.cancelled())
@@ -91,10 +93,11 @@ WEAVE_TEST(as_completed_semantics) {
       throw std::logic_error("case4: child must not be affected by consumer cancel");
   });
 
-  // case 5: 注册时已完成（FAILED 亦然）的任务立即产出，不阻塞
+  // case 5: tasks already completed at registration (FAILED too) are produced immediately, without
+  // blocking
   run_case(__func__, "case5", [&] {
     auto a = create_task("ac5_a", [] {});
-    a.await();  // a 已 DONE
+    a.await();  // a is already DONE
     Event gate;
     auto b = create_task("ac5_b", [&] { gate.wait(); });
     auto ac = as_completed({a, b});
@@ -105,12 +108,12 @@ WEAVE_TEST(as_completed_semantics) {
     if (ac.pending()) throw std::logic_error("case5: all tasks produced");
   });
 
-  // case 6: 空任务组 → pending() 立即为 false，next() 抛 logic_error
+  // case 6: empty task set → pending() is false immediately and next() throws logic_error
   run_case(__func__, "case6", [&] {
     auto ac = as_completed({});
     if (ac.pending()) throw std::logic_error("case6: empty set must not be pending");
     try {
-      (void)ac.next();  // 期望抛出：返回值无意义
+      (void)ac.next();  // Expected to throw: the return value is meaningless
       throw std::logic_error("case6: unreachable");
     } catch (const std::logic_error& e) {
       if (std::string(e.what()).find("no more tasks") == std::string::npos) throw;

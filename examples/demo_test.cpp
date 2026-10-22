@@ -1,6 +1,8 @@
-// 端到端示例：把 task / Event / wait_for / cancel / gather 串成一个典型的
-// producer-consumer 测试。slow 因 wait_for 超时被取消，demo 正常收尾，仿真 PASSED。
-// 各原语的独立用法见同目录：task_demo / event_demo / sync_demo / taskgroup_demo。
+// End-to-end example: strings task / Event / wait_for / cancel / gather into a typical
+// producer-consumer test. slow gets cancelled because wait_for times out, demo winds down
+// normally, and the simulation reports PASSED.
+// Isolated usage of each primitive lives in the same directory: task_demo / event_demo /
+// sync_demo / taskgroup_demo.
 
 #include <stdexcept>
 #include <string>
@@ -32,21 +34,22 @@ WEAVE_TEST(demo) {
   auto t1 = create_task("producer", [&] { producer(ev); });
   auto t2 = create_task("consumer", [&] { consumer(ev); });
 
-  // wait_for 注定超时：cancel 生效，取消完成后抛 Timeout
+  // wait_for is bound to time out: the cancel takes effect and Timeout is thrown once the
+  // cancellation completes
   auto t3 = create_task("slow", slow);
   try {
     wait_for(t3, 1_us);
     throw std::logic_error("wait_for should have timed out");
   } catch (const Timeout&) {
-    // 预期路径
+    // Expected path
   }
   if (!t3.cancelled()) throw std::logic_error("slow should be cancelled");
 
-  // gather 等待剩余任务完成；不含已被消费的 t3
+  // gather waits for the remaining tasks; t3 is not included, its exception was already consumed
   gather(t1, t2);
 
-  // gather asyncio 语义：首个失败按完成顺序立即重抛，不等慢任务，
-  // 也不拖走/取消兄弟任务
+  // asyncio gather semantics: the first failure is rethrown immediately in completion order,
+  // without waiting for slow tasks and without dragging down / cancelling peers
   auto t4 = create_task("boom", [&] {
     sleep(100_ns);
     throw std::runtime_error("boom");
@@ -60,23 +63,23 @@ WEAVE_TEST(demo) {
   }
   if (t5.done() || t5.cancelled())
     throw std::logic_error("gather failure must not drag peers to terminal");
-  sleep(2_us);  // 慢任务应在 gather 失败后继续运行至自然完成
+  sleep(2_us);  // The slow task should keep running to natural completion after gather fails
   if (!t5.done() || t5.cancelled())
     throw std::logic_error("peer must keep running after gather failure");
 
-  // gather 自身被取消：未完成的子任务一并取消（asyncio 语义）
+  // gather itself is cancelled: unfinished child tasks are cancelled too (asyncio semantics)
   auto t6 = create_task("gc_child", [&] { sleep(10_us); });
   auto t7 = create_task("gatherer", [&] {
     try {
       gather(t6);
       throw std::logic_error("unreachable");
     } catch (const Cancelled&) {
-      // 预期路径：外层取消经 gather 传播
+      // Expected path: the outer cancellation propagates through gather
     }
   });
-  sleep(100_ns);  // 让 gatherer 进入 gather 等待
+  sleep(100_ns);  // Let gatherer enter the gather wait
   t7.cancel();
-  sleep(100_ns);  // 让取消流程走完
+  sleep(100_ns);  // Let the cancellation flow finish
   if (!t6.cancelled())
     throw std::logic_error("outer cancel of gather must cancel pending children");
 }

@@ -2,25 +2,26 @@
 
 #if defined(WEAVE_BACKEND_SYSTEMC)
 
-// SystemC 后端（WEAVE_BACKEND_SYSTEMC）：把 port 契约映射到 sc_event/sc_spawn。
+// SystemC backend (WEAVE_BACKEND_SYSTEMC): maps the port contract onto sc_event/sc_spawn.
 //
-// 进程模型：SC_THREAD 挂起时 C++ 调用栈冻结，与 SV 进程一致，
-// 因此核心簿记层原样复用；调度/激活全部由 SystemC 内核承担：
-//   - spawn   → sc_spawn 动态进程（父进程挂起后子进程才运行，与
-//               fork...join_none / create_task 语义一致）
-//   - 事件    → sc_event；wait 三腿竞速用 sc_event_or_list +
-//               内核定时等待（wait(sc_time, or_list)）
-//   - 时间    → sc_get_time_resolution 决定 fs→tick 换算
+// Process model: when an SC_THREAD suspends, the C++ call stack freezes, just like an SV process,
+// so the core bookkeeping layer is reused as-is; scheduling/activation is entirely carried by the
+// SystemC kernel:
+//   - spawn   → an sc_spawn dynamic process (the child runs only after the parent suspends,
+//               consistent with fork...join_none / create_task semantics)
+//   - events  → sc_event; the three-legged wait uses sc_event_or_list + a kernel timed
+//               wait (wait(sc_time, or_list))
+//   - time    → sc_get_time_resolution determines the fs→tick conversion
 //
-// 用法（测试侧提供 sc_main）——xmake-repo 的 SystemC 按 C 链接寻找 sc_main：
+// Usage (the test side provides sc_main) — xmake-repo's SystemC looks for sc_main with C linkage:
 //   #include <weave/weave.hpp>
 //   extern "C" int sc_main(int, char**);
 //   extern "C" int sc_main(int, char**) { return weave::sc::run(); }
-//   // run() spawn 根任务与汇报进程：终态打印 PASSED/FAILED，
-//   // sc_start() 至 sc_stop()，返回 root_status() 作进程退出码
+//   // run() spawns the root task and the reporting process: on a terminal state it prints
+//   // PASSED/FAILED, sc_start() runs until sc_stop(), and root_status() becomes the exit code
 //
-// 已在 xmake-repo SystemC 3.0.2 上验证（weave_smoke_sc 目标，
-// 全部 gather 语义断言在真实内核上通过）；接口行为对照 sv/weave_pkg.sv。
+// Verified on xmake-repo SystemC 3.0.2 (the weave_smoke_sc target, all gather semantics assertions
+// passing on a real kernel); interface behaviour mirrors sv/weave_pkg.sv.
 
 #if defined(__has_include)
 #if !__has_include(<systemc>)
@@ -73,8 +74,9 @@ int create_event() {
 }
 
 void destroy_event(int ev_id) {
-  // 与 event_by_id 一致地对未知 id 报错（否则双重 destroy 会被静默吃掉）；
-  // erase(key) 返回删除个数，省掉一次 find，unique_ptr 负责真正释放
+  // Reports an unknown id the same way event_by_id does (otherwise a double destroy would be
+  // silently swallowed); erase(key) returns the deletion count, saving a find, and the unique_ptr
+  // does the actual release
   if (g_events.erase(ev_id) == 0) throw std::out_of_range("weave: invalid event id");
 }
 
@@ -85,7 +87,8 @@ std::int64_t ticks_per_sec() {
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
   const sc_core::sc_event& ab = event_by_id(abort_id);
   const bool has_to = timeout_ticks >= 0;
-  // 无超时腿时不以负 tick 构造 sc_time（负时间无意义），用 SC_ZERO_TIME 占位
+  // Without a timeout leg, do not build an sc_time from a negative tick (negative time is
+  // meaningless); SC_ZERO_TIME is used as a placeholder
   const sc_core::sc_time to =
       has_to ? sc_core::sc_time(timeout_ticks * tick_seconds(), sc_core::SC_SEC)
              : sc_core::SC_ZERO_TIME;
@@ -101,7 +104,7 @@ void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
     else
       sc_core::wait(ab);
   }
-  // 同槽冲突时取消腿优先（与 sv/weave_pkg.sv 的 weave_sv_wait 一致）
+  // On a same-slot conflict the cancel leg wins (consistent with weave_sv_wait in sv/weave_pkg.sv)
   if (ab.triggered())
     *status = 2;
   else if (ev_id >= 0 && event_by_id(ev_id).triggered())
@@ -117,10 +120,12 @@ namespace sc {
 int run() {
   const int done_ev = detail::run_registered_test();
   if (done_ev < 0) return -1;
-  // 汇报进程：等待根任务终态，输出结果并停止仿真（≡ sv/weave_tb.sv）。
-  // sc_event 无记忆：若根任务在汇报进程首次 wait 之前就已终态（如首个测试
-  // delta 0 即失败），delta notification 会被错过——故先查状态，未终态才等待；
-  // 查状态与 wait 之间无其他进程插空（单活动进程），不会竞态。
+  // Reporting process: waits for the root task's terminal state, prints the result and stops the
+  // simulation (≡ sv/weave_tb.sv). sc_event has no memory: if the root task is already terminal
+  // before the reporting process's first wait (e.g. the first test fails at delta 0), the delta
+  // notification would be missed — so check the state first and only wait when it is not terminal;
+  // no other process can interleave between the state check and the wait (single active process),
+  // so there is no race.
   sc_core::sc_spawn([done_ev] {
     while (detail::root_status() < 0) sc_core::wait(event_by_id(done_ev));
     const int st = detail::root_status();
@@ -131,7 +136,8 @@ int run() {
     std::fflush(stdout);
     sc_core::sc_stop();
   });
-  sc_core::sc_start();  // 运行至 sc_stop（汇报进程在根任务终态时调用）
+  sc_core::sc_start();  // Runs until sc_stop (called by the reporting process on the root's
+                        // terminal state)
   return detail::root_status();
 }
 

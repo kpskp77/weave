@@ -1,15 +1,16 @@
 #pragma once
 
-// 测试注册。用户通过 WEAVE_TEST(name) { ... } 定义测试；
-// 由后端引导入口运行（SVDPI: weave_run；SystemC: weave::sc::run()）。
-// 所有注册测试按名字序串行运行（任一失败即整体失败）；plusarg 选择留作扩展。
+// Test registration. Users define tests via WEAVE_TEST(name) { ... };
+// they are run by the backend bootstrap entry point (SVDPI: weave_run; SystemC:
+// weave::sc::run()). All registered tests run serially in name order (any failure fails the
+// whole run); plusarg selection is left as a future extension.
 
 #include <string>
 
 namespace weave {
 
 using test_fn = void (*)();
-bool register_test(std::string name, test_fn fn);  // 返回 true 仅供静态初始化
+bool register_test(std::string name, test_fn fn);  // The true return is just for static init
 
 }  // namespace weave
 

@@ -1,20 +1,25 @@
 #pragma once
 
-// 时间表示。内部固定为 int64 飞秒（10^-15 s，对齐 SV 最大精度），
-// 提交给后端时按 tick 换算（向上取整，保证至少睡够；换算见 src/core/time.cpp）。
+// Time representation. Internally always int64 femtoseconds (10^-15 s, matching SV's maximum
+// precision), converted to ticks when submitted to the backend (rounded up, guaranteeing at least
+// the requested duration; conversion in src/core/time.cpp).
 //
-// 表示上限：int64 飞秒 ≈ 9223 s ≈ 2.56 h 仿真时间。越界的字面量在编译期报错
-// （见 detail::fs_scaled），不会静默回绕成负数。
+// Representable ceiling: int64 femtoseconds ≈ 9223 s ≈ 2.56 h of simulation time. An
+// out-of-range literal is a compile error (see detail::fs_scaled) and never wraps silently into
+// a negative value.
 //
-// 算术（+ - * / 与整数缩放）用于把时延算成变量，例如 `rounds * 100_ns`：
-//   · 结果同样不得越界：越界抛 std::overflow_error、除零抛 std::domain_error。
-//     与字面量越界的编译期守卫同一原则——不静默回绕（回绕会变成负 tick，
-//     在 port 线格式里恰好意味着"无超时腿"，即睡死）。
-//   · duration 是**有符号**量：d1 - d2 可为负，表示差值/偏置。非正时长交给
-//     sleep / wait_for 时按 0 tick 处理（≡ asyncio：delay <= 0 只让出一次），
-//     不会退化成"无超时"或负延迟。
-//   · 只提供**整数**缩放，不提供浮点乘除：仿真时间必须可复现，浮点比例会在两端
-//     引入舍入差异（需要比例时先在整数域换算，如 `n * d / 8`）。
+// Arithmetic (+ - * / and integer scaling) exists so delays can be computed from variables, e.g.
+// `rounds * 100_ns`:
+//   · Results must not overflow either: overflow throws std::overflow_error and division by zero
+//     throws std::domain_error. Same principle as the compile-time guard on literals — no silent
+//     wrapping (a wrap becomes a negative tick, which in the port wire format means exactly
+//     "no timeout leg", i.e. sleeping forever).
+//   · duration is a **signed** quantity: d1 - d2 may be negative, expressing a difference/offset.
+//     A non-positive duration handed to sleep / wait_for is treated as 0 ticks (≡ asyncio:
+//     delay <= 0 yields once) and never degenerates into "no timeout" or a negative delay.
+//   · Only **integer** scaling is provided, no floating-point multiply/divide: simulation time
+//     must be reproducible, and a floating-point ratio introduces rounding differences on both
+//     ends (when a ratio is needed, convert in the integer domain first, e.g. `n * d / 8`).
 
 #include <cstdint>
 #include <stdexcept>
@@ -24,18 +29,20 @@ namespace weave {
 
 namespace detail {
 
-// 字面量换算 + 范围检查。越界时在常量求值路径上 throw → 不是常量表达式，
-// 因此 `sleep(10000_s)` 这类超过 int64 飞秒上限的写法直接编译失败，
-// 而不会乘出负数静默交给后端。
+// Literal conversion + range check. On overflow it throws on the constant-evaluation path → not
+// a constant expression, so something like `sleep(10000_s)` that exceeds the int64 femtosecond
+// ceiling fails to compile instead of multiplying into a negative value handed to the backend
+// silently.
 constexpr std::int64_t fs_scaled(unsigned long long v, unsigned long long fs_per_unit) {
   if (v > static_cast<unsigned long long>(INT64_MAX) / fs_per_unit)
     throw std::overflow_error("weave: duration literal exceeds int64 femtoseconds (~2.56 h)");
   return static_cast<std::int64_t>(v * fs_per_unit);
 }
 
-// 运行期算术的越界检查，与 fs_scaled 的编译期守卫同一原则。
-// 判界一律用除法完成（不经 __int128），公共头对编译器扩展零依赖；
-// 各分支里作为除数的操作数都严格为正或为 -1 之外的安全值，故不产生新的溢出。
+// Range checks for runtime arithmetic, same principle as fs_scaled's compile-time guard.
+// Bounds are always tested by division (never via __int128), keeping the public header free of
+// compiler extensions; the divisors in each branch are strictly positive or safe values other
+// than -1, so no new overflow is introduced.
 constexpr std::int64_t checked_add(std::int64_t a, std::int64_t b) {
   if (b > 0 ? a > INT64_MAX - b : a < INT64_MIN - b)
     throw std::overflow_error("weave: duration addition exceeds int64 femtoseconds (~2.56 h)");
@@ -69,10 +76,11 @@ constexpr std::int64_t checked_div(std::int64_t a, std::int64_t b) {
 class duration {
 public:
   constexpr explicit duration(int64_t fs = 0) : fs_(fs) {}
-  constexpr int64_t count() const { return fs_; }  // 飞秒
+  constexpr int64_t count() const { return fs_; }  // femtoseconds
 
-  // 复合赋值：便于累加变量时延（total += chunk）。直接走 detail::checked_*，
-  // 不写 *this = *this + rhs —— 类体内看不到类后声明的自由 operator。
+  // Compound assignment: convenient for accumulating a delay (total += chunk). Goes straight
+  // through detail::checked_*, without writing *this = *this + rhs — the free operators declared
+  // after the class are not visible inside the class body.
   constexpr duration& operator+=(duration rhs) {
     fs_ = detail::checked_add(fs_, rhs.fs_);
     return *this;
@@ -90,7 +98,7 @@ public:
     return *this;
   }
 
-  // 浮点操作数显式删除（见下方自由 operator* 的说明）。
+  // Floating-point operands are explicitly deleted (see the free operator* below).
   template <typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
   duration& operator*=(T) = delete;
   template <typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
@@ -100,7 +108,8 @@ private:
   int64_t fs_;
 };
 
-// 加减：两段时长拼接/相减，结果可负（差值）。
+// Addition/subtraction: concatenating/differencing two spans, the result may be negative (a
+// difference).
 constexpr duration operator+(duration lhs, duration rhs) {
   return duration(detail::checked_add(lhs.count(), rhs.count()));
 }
@@ -109,12 +118,13 @@ constexpr duration operator-(duration lhs, duration rhs) {
   return duration(detail::checked_sub(lhs.count(), rhs.count()));
 }
 
-// 取负：便于写偏置（d + (-offset)）与差值翻转。
+// Negation: makes offsets easy to write (d + (-offset)) and flips differences.
 constexpr duration operator-(duration d) {
   return duration(detail::checked_sub(0, d.count()));
 }
 
-// 整数缩放：k * d 与 d * k 等价（变量时延的主要写法，如 rounds * 100_ns）。
+// Integer scaling: k * d and d * k are equivalent (the main way to build variable delays, e.g.
+// rounds * 100_ns).
 constexpr duration operator*(duration d, int64_t k) {
   return duration(detail::checked_mul(d.count(), k));
 }
@@ -123,21 +133,24 @@ constexpr duration operator*(int64_t k, duration d) {
   return d * k;
 }
 
-// 整除：向零截断（C++ 整数除法语义），除零抛 std::domain_error。
+// Integer division: truncates toward zero (C++ integer division semantics); division by zero
+// throws std::domain_error.
 constexpr duration operator/(duration d, int64_t k) {
   return duration(detail::checked_div(d.count(), k));
 }
 
-// 时长之比：整数商，向零截断（如 1_us / 100_ns == 10）。
-// 返回 int64_t 而非 duration——量纲是"倍数"，不是时长。
+// Ratio of durations: the integer quotient, truncating toward zero (e.g. 1_us / 100_ns == 10).
+// Returns int64_t rather than duration — the quantity is a "multiple", not a duration.
 constexpr int64_t operator/(duration lhs, duration rhs) {
   return detail::checked_div(lhs.count(), rhs.count());
 }
 
-// 浮点操作数一律**编译期拒绝**：`d * 1.5` 若靠隐式转换走整数重载会静默变成
-// `d * 1`（与内建类型 int64_t * 1.5 的结果不同，且毫无提示）。删除的模板只对浮点
-// 启用，因此不影响 `d * 2`（int 仍落到 int64_t 重载）；需要比例时先在整数域
-// 换算（`n * d / 8`）或显式 `duration(static_cast<int64_t>(...))` 明确取整口径。
+// Floating-point operands are always **rejected at compile time**: if `d * 1.5` went through an
+// implicit conversion to the integer overload it would silently become `d * 1` (a different
+// result from the built-in int64_t * 1.5, with no hint whatsoever). The deleted templates are
+// enabled only for floating-point types, so they do not affect `d * 2` (int still picks the
+// int64_t overload); when a ratio is needed, convert in the integer domain (`n * d / 8`) or write
+// an explicit `duration(static_cast<int64_t>(...))` stating the rounding convention.
 template <typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
 duration operator*(duration, T) = delete;
 template <typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>

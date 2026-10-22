@@ -1,9 +1,10 @@
-// 任务原语语义自检：create_task 调度时机、cancel 各路径
-// （PENDING 不执行 body / 阻塞点注入 / 拒绝取消）、终态任务 cancel 幂等、
-// 句柄属性（valid/get_name）、sleep(0) 零时间让出。
-// 每个用例经 run_case 打印 [PASS]/[FAIL]，末尾 report 汇总（见 case_runner.hpp）。
-// 与 gather_semantics.cpp 共用同一断言体风格，由 weave_smoke_sc /
-// weave_smoke_svdpi 两个后端回归。
+// Task primitive semantic self-check: create_task scheduling timing, the various cancel paths
+// (PENDING skips the body / injection at the blocking point / refusing cancellation), cancel
+// idempotence on terminal tasks, handle attributes (valid/get_name), and sleep(0)'s zero-time
+// yield.
+// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
+// case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp and is regressed
+// by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
 #include <stdexcept>
 #include <string_view>
@@ -17,7 +18,8 @@ using weave_test::report;
 using weave_test::run_case;
 
 WEAVE_TEST(task_semantics) {
-  // case 1: create_task 只调度不立即运行——父任务不碰阻塞点前子任务不得启动
+  // case 1: create_task only schedules, it does not run immediately — the child must not start
+  // before the parent hits a blocking point
   run_case(__func__, "case1", [&] {
     Event started, gate;
     auto child = create_task("lazy", [&] {
@@ -25,33 +27,34 @@ WEAVE_TEST(task_semantics) {
       gate.wait();
     });
     if (started.is_set()) throw std::logic_error("case1: child must not run before parent blocks");
-    started.wait();  // 父任务挂起后子任务才被调度
+    started.wait();  // The child is scheduled only after the parent suspends
     if (!child.valid()) throw std::logic_error("case1: child handle must be valid");
     gate.set();
     child.await();
   });
 
-  // case 2: PENDING 任务被取消 → body 永不执行，直接进入 CANCELLED
+  // case 2: cancelling a PENDING task → the body never runs and it goes straight to CANCELLED
   run_case(__func__, "case2", [&] {
     Event started, release;
     auto victim = create_task("pending_victim", [&] {
-      started.set();  // 若被执行必然置位
+      started.set();  // Would certainly be set if it ever ran
       release.wait();
     });
-    victim.cancel();  // 此时 victim 尚未被调度（PENDING）
-    release.set();    // 父任务让出，victim 获得一次调度机会
-    sleep(0_fs);      // 再让出一拍，确保 victim 已被内核调度过
+    victim.cancel();  // victim has not been scheduled yet (PENDING)
+    release.set();    // The parent yields so victim gets a chance to be scheduled
+    sleep(0_fs);      // Yield once more to be sure the kernel has scheduled victim
     if (started.is_set()) throw std::logic_error("case2: PENDING cancel must skip body");
     try {
       victim.await();
       throw std::logic_error("case2: await on cancelled task must throw");
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (!victim.cancelled()) throw std::logic_error("case2: victim should be CANCELLED");
   });
 
-  // case 3: 阻塞中的任务被取消 → 立即唤醒并在阻塞点注入 Cancelled
+  // case 3: cancelling a blocked task → wake it immediately and inject Cancelled at the blocking
+  // point
   run_case(__func__, "case3", [&] {
     Event ready, caught;
     auto victim = create_task("waiting_victim", [&] {
@@ -65,19 +68,20 @@ WEAVE_TEST(task_semantics) {
         throw;
       }
     });
-    ready.wait();  // victim 已阻塞在 never.wait()
+    ready.wait();  // victim is now blocked in never.wait()
     victim.cancel();
-    caught.wait();  // Cancelled 已在 victim 的阻塞点注入
+    caught.wait();  // Cancelled has been injected at victim's blocking point
     try {
       victim.await();
       throw std::logic_error("case3: await must rethrow Cancelled");
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (!victim.cancelled()) throw std::logic_error("case3: victim should be CANCELLED");
   });
 
-  // case 4: 任务可捕获 Cancelled 拒绝取消 → 正常返回即 DONE（协作式语义）
+  // case 4: a task may catch Cancelled to refuse cancellation → returning normally means DONE
+  // (cooperative semantics)
   run_case(__func__, "case4", [&] {
     Event ready, finished;
     auto stubborn = create_task("stubborn", [&] {
@@ -86,30 +90,31 @@ WEAVE_TEST(task_semantics) {
         Event never;
         never.wait();
       } catch (const Cancelled&) {
-        // 吞掉取消：拒绝取消
+        // Swallow the cancellation: refuse it
       }
-      finished.set();  // 仍执行到正常结束
+      finished.set();  // Still runs through to a normal finish
     });
     ready.wait();
     stubborn.cancel();
-    finished.wait();   // 拒绝取消后跑完 body
-    stubborn.await();  // DONE：不抛异常
+    finished.wait();   // The body runs to completion after refusing cancellation
+    stubborn.await();  // DONE: does not throw
     if (!stubborn.done() || stubborn.cancelled())
       throw std::logic_error("case4: swallowed cancel must end DONE, not CANCELLED");
   });
 
-  // case 5: 终态任务 cancel 幂等（DONE / CANCELLED 均不受影响）
+  // case 5: cancel is idempotent on terminal tasks (neither DONE nor CANCELLED is affected)
   run_case(__func__, "case5", [&] {
     auto done_task = create_task("done_t", [] {});
     done_task.await();
-    done_task.cancel();  // 不得抛异常、不得改变终态
+    done_task.cancel();  // Must not throw and must not change the terminal state
     if (!done_task.done() || done_task.cancelled())
       throw std::logic_error("case5: cancel on DONE task must be a no-op");
     if (done_task.get_name() != "done_t")
       throw std::logic_error("case5: get_name must return the create_task name");
   });
 
-  // case 6: sleep(0) 零时间让出——不挂死，任务照常推进（子任务先睡 0 再置位）
+  // case 6: sleep(0) is a zero-time yield — no deadlock, the task progresses as usual (the child
+  // sleeps 0 then sets the flag)
   run_case(__func__, "case6", [&] {
     Event done;
     auto t = create_task("zero_sleep", [&] {
@@ -121,8 +126,8 @@ WEAVE_TEST(task_semantics) {
     if (!t.done()) throw std::logic_error("case6: task after sleep(0) must complete");
   });
 
-  // case 7: cancel(msg) 对齐 asyncio Task.cancel(msg)（Python 3.9+）——
-  // msg 在阻塞点注入的 Cancelled 中可见，且在 await 重投处保留同一 msg。
+  // case 7: cancel(msg) matches asyncio Task.cancel(msg) (Python 3.9+) — the msg is visible in the
+  // Cancelled injected at the blocking point and is preserved when rethrown at await.
   run_case(__func__, "case7", [&] {
     Event ready;
     auto victim = create_task("msg_victim", [&] {
@@ -137,7 +142,7 @@ WEAVE_TEST(task_semantics) {
         throw;
       }
     });
-    ready.wait();  // victim 已阻塞在 never.wait()
+    ready.wait();  // victim is now blocked in never.wait()
     victim.cancel("shutdown");
     try {
       victim.await();
@@ -149,8 +154,8 @@ WEAVE_TEST(task_semantics) {
     if (!victim.cancelled()) throw std::logic_error("case7: victim should be CANCELLED");
   });
 
-  // case 8: cancel() 不带 msg → Cancelled::msg() 为 nullopt（对应 asyncio 的 msg=None），
-  // what() 回落到默认文案。
+  // case 8: cancel() without a msg → Cancelled::msg() is nullopt (corresponding to asyncio's
+  // msg=None), and what() falls back to the default text.
   run_case(__func__, "case8", [&] {
     Event ready;
     auto victim = create_task("plain_victim", [&] {
@@ -174,9 +179,11 @@ WEAVE_TEST(task_semantics) {
     }
   });
 
-  // case 9: 取消腿与事件腿同槽 → 取消优先（port 契约第 4 条）。
-  // set() 与 cancel() 之间没有挂起点，victim 不可能被调度，两腿必然落在同一
-  // 时间槽；后端必须让取消腿胜出，否则组合原语会把"已被取消"误判成正常放行。
+  // case 9: cancel leg and event leg in the same slot → cancellation wins (port contract
+  // guarantee 4).
+  // There is no suspension point between set() and cancel(), so victim cannot be scheduled and
+  // both legs necessarily land in the same time slot; the backend must let the cancel leg win,
+  // otherwise combinators would mistake "already cancelled" for a normal release.
   run_case(__func__, "case9", [&] {
     Event gate, ready;
     auto victim = create_task("same_slot_victim", [&] {
@@ -185,17 +192,17 @@ WEAVE_TEST(task_semantics) {
         gate.wait();
         throw std::logic_error("case9: cancel must win over the event leg");
       } catch (const Cancelled&) {
-        throw;  // 预期路径：取消在阻塞点注入
+        throw;  // Expected path: the cancellation is injected at the blocking point
       }
     });
-    ready.wait();     // victim 已阻塞在 gate.wait()
-    gate.set();       // 事件腿
-    victim.cancel();  // 同槽的取消腿
+    ready.wait();     // victim is now blocked in gate.wait()
+    gate.set();       // The event leg
+    victim.cancel();  // The same-slot cancel leg
     try {
       victim.await();
       throw std::logic_error("case9: await must rethrow Cancelled");
     } catch (const Cancelled&) {
-      // 预期路径
+      // Expected path
     }
     if (!victim.cancelled()) throw std::logic_error("case9: victim must be CANCELLED");
   });

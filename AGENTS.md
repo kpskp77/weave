@@ -1,161 +1,230 @@
 # AGENTS.md
 
-面向在本仓库工作的 AI 编码助手：构建/验证命令，以及改动时必须守住的不变量。项目定位见 [README.md](README.md)（含 C++↔asyncio 映射），架构理由见 [docs/architecture.md](docs/architecture.md)，后端接入见 [docs/backends.md](docs/backends.md)。
+For AI coding assistants working in this repository: build/verification commands, and the
+invariants you must preserve when making changes. For the project's positioning see
+[README.md](README.md) (including the C++↔asyncio mapping), for the architectural rationale see
+[docs/architecture.md](docs/architecture.md), and for backend integration see
+[docs/backends.md](docs/backends.md).
 
-## 项目一句话
+## The project in one sentence
 
-Weave 是 C++ 测试逻辑与 EDA 仿真内核之间的行为编排层：API 借鉴 Python asyncio，但**不用 C++20 coroutine**——阻塞语义由后端仿真进程承载（SV 进程 / SystemC SC_THREAD 挂起时整个 C++ 调用栈冻结）。
+Weave is a behaviour orchestration layer between C++ test logic and EDA simulation kernels: the API
+is borrowed from Python asyncio, but **does not use C++20 coroutines** — blocking semantics are
+carried by backend simulation processes (when an SV process / SystemC SC_THREAD suspends, the entire
+C++ call stack freezes).
 
-## 构建与验证（改动后必做）
+## Build and verify (mandatory after changes)
 
-**原则：每次改动都回归所有用例，不挑跑、不省略。**
+**Principle: after every change, regress every case — no cherry-picking, no skipping.**
 
 ```bash
-xmake smoke      # 语义自检：构建 smoke 载荷 + 逐个 xmake run 运行 weave_smoke_* 自检二进制
-xmake examples   # 示例回归（独立）：一次跑完 systemc + svdpi 两种后端
+xmake smoke      # Semantic self-checks: build smoke payloads + run each weave_smoke_* binary via xmake run
+xmake examples   # Example regression (independent): runs both the systemc and svdpi backends in one go
 ```
 
-- 跨后端的改动（`port.hpp`、后端文件、`config.hpp`、xmake 宏映射）必须在两种配置下各跑一次：
+- Cross-backend changes (`port.hpp`, backend files, `config.hpp`, xmake macro mapping) must be run
+  once under each configuration:
 
 ```bash
 xmake f --backend=svdpi   && xmake smoke
 xmake f --backend=systemc && xmake smoke
-xmake f --backend=svdpi   # 还原默认配置
+xmake f --backend=svdpi   # restore the default configuration
 ```
 
-- 自检二进制按 `weave_smoke_*` 命名才会被 smoke 任务逐个运行；新增自检目标还需把它加进 `smoke` 任务
-  的 `xmake build` 列表（运行统一走 `xmake run`，见下方「本环境的坑」）。
-- `tests/` 与 `examples/` 载荷严格分离：示例只经 `add_deps("weave")` 链接 `libweave.so`（不内联核心
-  源码），不编进任何 `weave_smoke_*` 载荷；反向亦然。改公共头或示例只需跑一次 `xmake examples`。
-- 无 VCS/IES 时 SVDPI 驱动打印 SKIP 并返回 0（等价于只做编译验证），跳过 SVDPI 侧即可。
-- 首次构建自动安装 xmake-repo 的 SystemC；自检跑在真实内核上，delta-cycle 语义保证结论确定性。
+- Self-check binaries are run one by one by the smoke task only if named `weave_smoke_*`; a new
+  self-check target must also be added to the `xmake build` list of the `smoke` task (running always
+  goes through `xmake run`, see "Pitfalls in this environment" below).
+- The `tests/` and `examples/` payloads are strictly separated: examples link `libweave.so` only via
+  `add_deps("weave")` (never inlining core sources) and are not compiled into any `weave_smoke_*`
+  payload; the reverse holds too. Changing public headers or examples only needs a single
+  `xmake examples` run.
+- Without VCS/IES the SVDPI driver prints SKIP and returns 0 (equivalent to a compile-only check), so
+  the SVDPI side can be skipped.
+- The first build automatically installs SystemC from xmake-repo; self-checks run on a real kernel,
+  and delta-cycle semantics make the conclusions deterministic.
 
-## 架构：核心/后端分离
+## Architecture: core/backend separation
 
 ```
-include/weave/    公共 API：weave.hpp(umbrella) + config/time/task/event/sync/test[/sc]
-src/core/         后端无关：task/event/sync/time/registry + port.hpp(契约) + *_internal.hpp
-src/backend/      svdpi.cpp(默认) / systemc.cpp，整文件由 WEAVE_BACKEND_* 宏守卫
+include/weave/    Public API: weave.hpp (umbrella) + config/time/task/event/sync/test[/sc]
+src/core/         Backend-agnostic: task/event/sync/time/registry + port.hpp (contract) + *_internal.hpp
+src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAVE_BACKEND_* macros
 ```
 
-核心簿记**只允许依赖 `port.hpp` 的 7 个原语**与内部头，不得直接引用 DPI/SystemC/线程 API。后端选择的
-唯一开关是编译期宏（`config.hpp`，互斥，默认 SVDPI），`--backend=` 只是定义宏。新增后端 = 一个宏守卫的
-`src/backend/*.cpp` 实现 port 契约 + 引导入口，**核心代码零改动**。
+Core bookkeeping **may only depend on the 7 primitives of `port.hpp`** and internal headers, and must
+never reference DPI/SystemC/thread APIs directly. The only switch for backend selection is a
+compile-time macro (`config.hpp`, mutually exclusive, SVDPI by default); `--backend=` merely defines
+the macro. A new backend = one macro-guarded `src/backend/*.cpp` implementing the port contract + a
+bootstrap entry point, with **zero changes to core code**.
 
-port 契约的四条保证见 `port.hpp` 头注释（摘要见 architecture.md）：spawn 是"调度而非立即执行"、任一时刻
-至多一个进程执行 C++ 簿记、事件一次性且 trigger 不作用于已 destroy 的 id、`wait` 是唯一挂起点（三腿竞速，
-取消腿优先，负 id 禁用该腿）。**只有需要新的挂起形态时才动契约。**
+The four guarantees of the port contract are in the `port.hpp` header comment (summary in
+architecture.md): spawn is "scheduled, not run immediately"; at any instant at most one process
+executes C++ bookkeeping; events are one-shot and trigger never targets an already destroyed id;
+`wait` is the only suspension point (three-legged race, cancel leg wins, a negative id disables that
+leg). **Touch the contract only when a new suspension shape is required.**
 
-## 不变量（改 `src/core/` 时逐条自查）
+## Invariants (check each one when changing `src/core/`)
 
-- **唯一阻塞点**：一切挂起都经 `detail::backend_wait()` → `port::wait`，别处不得引入挂起。
-- **协作式取消**：`cancel(msg)` 只置 `cancel_armed` + 记录 msg + 触发私有 abort 事件，`Cancelled(msg)` 在
-  阻塞点注入；body 吞掉 `Cancelled` 后正常返回 → 任务 DONE。禁止强杀进程（破坏 RAII 展开）；级联取消
-  兄弟传空 msg，注入点与 `await` 重投处保留原 msg。
-- **异常类型分层不可改**：`Cancelled` **不派生** `std::exception`（对齐 `BaseException`，不被兜底 catch
-  静默吞掉），`Timeout` **派生**（对齐 `TimeoutError`）。
-- **两个异常类型的 `what()` 必须外联定义在库里**（`src/core/sync.cpp` / `src/core/task.cpp`）：它是
-  两个类型的 key function，vtable/typeinfo 因此只在 libweave.so 生成一份，消费方 TU 只留未定义引用。
-  一旦写回内联，typeinfo 退化成每 TU 一份的 weak 定义，libc++abi 按指针比对 → 跨 DSO 的 catch
-  静默失配（编译、链接都不报错）。因此 `Cancelled` 是多态类型且带虚析构（不再是 trivially
-  copyable，断言改为 nothrow 拷贝 + 无堆成员）。
-- **Event edge 语义**：`set()` 快照当前等待者并逐个触发，放行后不复查 flag；`wait()` 成功与取消**两条
-  路径**都必须先从 `wake_evs` 摘除再销毁唤醒事件，否则后续 `set()` 会对已销毁 id 触发。该清场现由单个
-  `detail::scope_exit` 守卫承担（摘除与销毁的顺序写在 lambda 体内，不依赖析构逆序）。
-- **Lock 交接不丢所有权**：`release()` 在同一个不挂起调用内交给队首（`held` 全程为 true，不存在空闲窗口，
-  新来者也不插队）；每个排队者持一个一次性 `Event` 作为交接信号。等待者取消时若已 `granted`（取消与交接
-  同槽 → 后端取消腿优先，拿到的是 `Cancelled` 而不是锁），必须 `handoff()` 给下一个等待者，
-  否则锁随取消永久消失。
-- **`detail::on_scope_exit` 用在「帧死后仍有读者」的状态上**：`Event::wait()`（`wake_evs` 挂在共享
-  `Impl` 上）、`AsCompleted::next()`（`waiting` 挂在跨调用的 `*impl_` 上）、`wait()`/`TaskGroup::wait()`
-  （`WaitState`/`GroupState` 虽局部，但被未完成子任务的 done_callback 按 `shared_ptr` 持有，帧死后
-  仍活着，回调仍会读 `waiting`/`signalled`）。
-- **标志复位与事件销毁的耦合看取消是否逸出**：`wait()`（asyncio.wait）设计上把 `Cancelled` 原样往上传
-  （不取消子任务），逸出时子任务仍 pending、`st` 仍被其回调持有，所以「先落 `waiting` 再 `destroy_event`」
-  必须成对写在同一个守卫里——拆成「守卫 + 直线代码」，直线那句在取消路径上执行不到，子任务晚到完成
-  就会对已销毁 id `trigger`（SystemC 侧抛 `invalid event id`）。`TaskGroup::wait()` 不同：`Cancelled`
-  就地捕获并 drain 完兄弟才外抛，标志复位留在 `try` 之后就够，守卫只需销毁事件。
-- 守卫的析构不抛、不挂起；需要挂起的收尾（TaskGroup 级联取消后等落地）永远留在显式代码里。
-- **时间**：内部 int64 飞秒，`to_ticks` 向上取整保证至少睡够，**非正时长一律夹到 0 tick**
-  （`sleep(0)` 保持 0 tick；负 tick 在线格式里是"无超时腿"，漏下去就是永久阻塞）。飞秒上限 ≈ 2.56 h
-  仿真时间，越界字面量是**编译错误**（`time.hpp` 的 constexpr 守卫），运行期算术（`+ - * /`）
-  越界抛 `std::overflow_error`、除零抛 `std::domain_error`，两边都**不静默回绕**。
-- **失败传播**：`gather` 首个失败按**完成顺序**立即重抛、兄弟不取消（取消兄弟是 TaskGroup 语义）；gather
-  自身被取消则先级联取消未完成任务；`wait_for` 超时 → 取消并等取消完成 → 抛 `Timeout`。
+- **Single blocking point**: every suspension goes through `detail::backend_wait()` → `port::wait`;
+  nowhere else may introduce a suspension.
+- **Cooperative cancellation**: `cancel(msg)` only sets `cancel_armed` + records msg + triggers the
+  private abort event, and `Cancelled(msg)` is injected at the blocking point; if the body swallows
+  `Cancelled` and returns normally → the task is DONE. Killing processes is forbidden (it breaks RAII
+  unwinding); cascade cancellation of siblings passes an empty msg, while the injection point and the
+  rethrow at `await` preserve the original msg.
+- **The exception type hierarchy must not change**: `Cancelled` **does not derive** from
+  `std::exception` (matching `BaseException`, so it is not silently swallowed by a backstop catch),
+  while `Timeout` **does derive** (matching `TimeoutError`).
+- **`what()` for both exception types must be defined out-of-line in the library**
+  (`src/core/sync.cpp` / `src/core/task.cpp`): it is the key function for both types, so the
+  vtable/typeinfo is emitted exactly once in libweave.so and consumer TUs keep only undefined
+  references. Writing it back as inline degrades typeinfo into a per-TU weak definition, and
+  libc++abi compares by pointer → cross-DSO `catch` silently mismatches (neither compilation nor
+  linking reports anything). Therefore `Cancelled` is a polymorphic type with a virtual destructor
+  (no longer trivially copyable; the assertions became nothrow-copy + no heap members).
+- **Event edge semantics**: `set()` snapshots the current waiters and triggers each one, and does not
+  re-check the flag after releasing them; on **both paths** (success and cancellation) `wait()` must
+  unlink its wake event from `wake_evs` before destroying it, otherwise a later `set()` would
+  trigger an already destroyed id. That cleanup is currently carried by a single
+  `detail::scope_exit` guard (the unlink-then-destroy ordering is written inside the lambda body, not
+  left to destruction order).
+- **Lock hand-off never loses ownership**: `release()` hands the lock to the queue head within the
+  same non-suspending call (`held` stays true throughout, so there is no idle window and newcomers
+  cannot jump the queue); each queued waiter holds a one-shot `Event` as the hand-off signal. If a
+  waiter is cancelled after it has already been `granted` (cancellation and hand-off in the same
+  slot → the backend cancel leg wins, so it receives `Cancelled` instead of the lock), it must
+  `handoff()` to the next waiter, otherwise the lock vanishes permanently with the cancellation.
+- **`detail::on_scope_exit` is used for state that still has readers after the frame dies**:
+  `Event::wait()` (`wake_evs` lives on the shared `Impl`), `AsCompleted::next()` (`waiting` lives on
+  the cross-call `*impl_`), and `wait()`/`TaskGroup::wait()` (`WaitState`/`GroupState` are local, but
+  they are held by `shared_ptr` from the done_callbacks of unfinished child tasks, so they are still
+  alive after the frame dies and those callbacks still read `waiting`/`signalled`).
+- **Whether flag reset is coupled with event destruction depends on whether cancellation escapes**:
+  `wait()` (asyncio.wait) is designed to propagate `Cancelled` as-is (without cancelling child
+  tasks); when it escapes, the child tasks are still pending and `st` is still held by their
+  callbacks, so "clear `waiting` and then `destroy_event`" must be written as a pair inside the same
+  guard — if split into "guard + straight-line code", the straight-line statement never runs on the
+  cancellation path, and a child task completing later would `trigger` an already destroyed id (the
+  SystemC side throws `invalid event id`). `TaskGroup::wait()` differs: it catches `Cancelled` in
+  place, drains the siblings, and only then rethrows, so resetting the flag right after the `try` is
+  enough and the guard only needs to destroy the event.
+- Guard destructors neither throw nor suspend; cleanup that needs to suspend (waiting for landing
+  after a TaskGroup cascade cancellation) always stays in explicit code.
+- **Time**: internally int64 femtoseconds, `to_ticks` rounds up to guarantee sleeping at least long
+  enough, and **non-positive durations are always clamped to 0 ticks** (`sleep(0)` stays 0 ticks; a
+  negative tick means "no timeout leg" in the wire format, and letting it through blocks forever).
+  The femtosecond ceiling is ≈ 2.56 h of simulation time; an out-of-range literal is a **compile
+  error** (the constexpr guard in `time.hpp`), while runtime arithmetic (`+ - * /`) out of range
+  throws `std::overflow_error` and division by zero throws `std::domain_error` — neither side
+  **wraps silently**.
+- **Failure propagation**: `gather` rethrows the first failure immediately in **completion order**
+  and does not cancel siblings (cancelling siblings is TaskGroup semantics); if gather itself is
+  cancelled it first cascade-cancels the unfinished tasks; `wait_for` timeout → cancel, wait for the
+  cancellation to complete, then throw `Timeout`.
 
-## 添加新内容的落点
+## Where new content goes
 
-| 内容 | 位置 |
+| Content | Location |
 |---|---|
-| 新同步原语（TaskGroup/shield/as_completed/…） | `include/weave/sync.hpp` + `src/core/sync.cpp` |
-| 新通信原语（Queue/Lock/Semaphore/…） | 新公共头 `include/weave/<域>.hpp` + umbrella 加入 include |
-| 新后端 | `src/backend/<name>.cpp`（宏守卫）+ `config.hpp` 加宏 + xmake 映射 |
-| 新自检断言 | `tests/<域>_semantics.cpp`，同时加入 `weave_smoke_sc` 与 `weave_smoke_svdpi` |
-| 新示例 | `examples/<域>_demo.cpp`（glob 自动纳入，无需改 xmake.lua） |
+| New sync primitive (TaskGroup/shield/as_completed/…) | `include/weave/sync.hpp` + `src/core/sync.cpp` |
+| New communication primitive (Queue/Lock/Semaphore/…) | New public header `include/weave/<domain>.hpp` + add the include to the umbrella |
+| New backend | `src/backend/<name>.cpp` (macro-guarded) + macro in `config.hpp` + xmake mapping |
+| New self-check assertions | `tests/<domain>_semantics.cpp`, added to both `weave_smoke_sc` and `weave_smoke_svdpi` |
+| New example | `examples/<domain>_demo.cpp` (picked up automatically by glob, no xmake.lua change needed) |
 
-原则：**能由"任务簿记 + Event + 三腿等待"组合出的原语进核心层；需新挂起形态的才动 port 契约。**
-公共头分层（依赖方向自上而下）：config → time → task/event → sync → test，umbrella `weave.hpp` 最后；
-每个公共头必须可独立编译。核心内部状态只放 `src/core/*_internal.hpp`，不进公共头。
+Principle: **a primitive that can be composed from "task bookkeeping + Event + three-legged wait"
+goes into the core layer; only a new suspension shape justifies touching the port contract.**
+Public header layering (dependencies point downwards): config → time → task/event → sync → test, with
+the umbrella `weave.hpp` last; every public header must compile standalone. Core internal state lives
+only in `src/core/*_internal.hpp`, never in public headers.
 
-## 命名与语言基线
+## Naming and language baseline
 
-- **命名以 asyncio 为准**：凡有 asyncio 对应物的原语必须同名（`done`/`cancelled`/`cancel`/`get_name`、
-  `create_task`、`sleep`、`Event::wait/set/clear/is_set`、`gather`、`wait_for`、`TaskGroup`、`shield`、
-  `as_completed`、`Cancelled`、`Timeout`），新增原语也不例外——先查 asyncio 再动手，不自行发明。无对应物
-  的项目自有概念（`duration`、`WEAVE_TEST`、`weave::sc::run()`）按 C++ 惯例；`detail::`/`g_*` 不受约束。
-- **C++17 是下限而非上限**：库自身按 C++17 构建（`set_languages("c++17")` 是唯一开关），公开能力
-  必须在 C++17 下功能完备——不得把 C++20+ 特性当必需；同时公共头必须能在更新的标准（C++20/23）下
-  干净编译（不依赖随标准改变含义/被弃用/被移除的写法，`-Wall -Wextra -Werror` 下无告警），调用方可
-  自选 `-std=`。公共头必须能独立编译（用到的头显式 include，不靠传递包含）。已评估的边界（`string_view`
-  不能替代需所有权的参数、port 线格式哨兵仍用负值、无类型分支不加 `if constexpr`、`Cancelled` 的
-  `what()` 必须外联以保 typeinfo 单库唯一）见 architecture.md 的「语言基线」。
+- **Naming follows asyncio**: any primitive that has an asyncio counterpart must use the same name
+  (`done`/`cancelled`/`cancel`/`get_name`, `create_task`, `sleep`,
+  `Event::wait/set/clear/is_set`, `gather`, `wait_for`, `TaskGroup`, `shield`, `as_completed`,
+  `Cancelled`, `Timeout`), and new primitives are no exception — check asyncio first, do not invent.
+  Project-specific concepts with no counterpart (`duration`, `WEAVE_TEST`, `weave::sc::run()`) follow
+  C++ conventions; `detail::`/`g_*` are unconstrained.
+- **C++17 is the floor, not the ceiling**: the library itself is built as C++17
+  (`set_languages("c++17")` is the only switch) and its public capabilities must be complete under
+  C++17 — never treat C++20+ features as required; at the same time the public headers must compile
+  cleanly under newer standards (C++20/23) (no reliance on constructs whose meaning changes, or that
+  are deprecated/removed, with no warnings under `-Wall -Wextra -Werror`), so callers may pick their
+  own `-std=`. Public headers must compile standalone (explicitly include the headers they use, no
+  reliance on transitive inclusion). Evaluated boundaries (`string_view` cannot replace parameters
+  that need ownership, port wire-format sentinels stay negative, no `if constexpr` without a
+  type-dependent branch, `Cancelled::what()` must stay out-of-line to keep typeinfo unique per
+  library) are covered in the "Language baseline" section of architecture.md.
 
-## 测试编写约定
+## Test-writing conventions
 
-- 同步必须**完全事件驱动**（`Event` 传递次序），禁止用 `sleep` 时长表达时序。
-- 每个用例包 `run_case(__func__, "caseN", [&] { ... })`，失败 `throw std::logic_error("caseN: 描述")`；
-  每个 `WEAVE_TEST` 末尾 `report(__func__)`。不包裹则回归日志看不到逐条结果。
-- 利用不变量做同步："等待方从阻塞返回"本身保证触发方已推进到阻塞点之后（锁交接/进程调度屏障）。
-- 断言体集中在 `tests/` 且与后端 main 入口分离，由两个 smoke 载荷共用（除 `sc_main.cpp` 外同集，
-  这是刻意保持的对称）；注册的 `WEAVE_TEST` 按名字序串行运行，任一失败即整体失败（`registry.cpp`）。
-- **任务 body 不得引用会先销毁的栈帧**：lambda 按引用捕获局部 `Event`/`Task` 时，必须保证任务在该栈帧
-  退出前完成（`await`/`gather`，或异常路径先收尾兄弟），否则 resume 即 use-after-free。
-- 示例不用 `run_case`，末尾一行 `printf`；同样要事件驱动，且不得依赖只在某一后端成立的时序——它要在
-  SystemC 可执行与 VCS 双库两种形态下都跑通。
+- Synchronisation must be **fully event-driven** (ordering carried by `Event`); expressing timing
+  through `sleep` durations is forbidden.
+- Wrap each case in `run_case(__func__, "caseN", [&] { ... })`, failing with
+  `throw std::logic_error("caseN: description")`; end each `WEAVE_TEST` with `report(__func__)`.
+  Without the wrapper the regression log shows no per-case results.
+- Use the invariants for synchronisation: "the waiting side returned from the blocking call" by
+  itself guarantees the triggering side has advanced past the blocking point (lock hand-off/process
+  scheduling barrier).
+- Assertion bodies are centralised in `tests/` and separated from the backend main entry points, and
+  shared by both smoke payloads (the same set except `sc_main.cpp`, a symmetry kept on purpose);
+  registered `WEAVE_TEST`s run serially in name order, and any failure fails the whole run
+  (`registry.cpp`).
+- **Task bodies must not reference stack frames that are destroyed earlier**: when a lambda captures
+  a local `Event`/`Task` by reference, the task must be guaranteed to finish before that frame exits
+  (`await`/`gather`, or on the exception path finish off the siblings first), otherwise resuming is a
+  use-after-free.
+- Examples do not use `run_case` and end with a single `printf` line; they must be event-driven too,
+  and must not rely on timing that holds on only one backend — they have to pass both as a SystemC
+  executable and in the VCS two-library form.
 
-## 代码风格（提交前必做）
+## Code style (mandatory before committing)
 
 ```bash
-clang-format -i <改动的 .cpp/.hpp>                                        # Google 基线，见 .clang-format
-verible-verilog-format --inplace --flagfile=.verible-format <改动的 .sv>  # 见 .verible-format
-stylua <改动的 .xmake>  # 见 .stylua.toml
+clang-format -i <changed .cpp/.hpp>                                        # Google base, see .clang-format
+verible-verilog-format --inplace --flagfile=.verible-format <changed .sv>  # see .verible-format
+stylua <changed .xmake>  # see .stylua.toml
 ```
 
-- 只格式化自己改动的文件，不做全仓库无关重排；具体参数以两个配置文件为准（2 空格缩进、列宽 100 等）。
-- `sv/weave_pkg.sv` 含 `->` 事件触发语句，超出 verible 解析器能力（报 syntax error）：该文件按配置参数
-  手工保持一致，不要用 verible 强行格式化。
+- Only format the files you changed; no unrelated whole-repository reshuffles. The two config files
+  are authoritative for the exact parameters (2-space indent, column width 100, etc.).
+- `sv/weave_pkg.sv` contains `->` event trigger statements, which are beyond verible's parser
+  (syntax error): keep that file manually consistent with the configured parameters and do not force
+  verible on it.
 
-## 本环境的坑（已踩过）
+## Pitfalls in this environment (already hit)
 
-- **已触发事件的 triggered 状态会滞留**（SystemC 按 `change_stamp`、SV 按标志持续）：任务捕获 `Cancelled`
-  后在同一 abort_ev 上再次阻塞会被误判为取消命中，故 `backend_wait` 注入取消后必须销毁并重建
-  `abort_ev`。同理，组合原语使用裸 port 事件时必须用 waiting 标志保证 trigger 必有等待者（无等待者的
-  trigger 会留下未消费的 delta notification，destroy 后后端侧是未定义行为）。
-- **SV 的取消腿不能只靠标志位判定**：`weave_sv_wait` 是 `fork … join_any; disable fork;`，两腿在同一时间槽
-  触发时 `join_any` 可能在 `ab_leg` 执行前就返回，`disable fork` 随即把该腿停掉 —— 腿内 `ab_hit = 1` 来不及
-  置位，取消优先（port 契约第 4 条）就失效。故取消腿改为查 `ev_table[abort_id].ev.triggered`（与 systemc.cpp
-  的 `ab.triggered()` 判法一致）。回归：`task_semantics` case9（同槽 cancel 必须胜过事件腿）、
-  `lock_semantics` case6（同槽取消 + 交接 → 所有权转交）。
-- xmake-repo 的 SystemC 按 **C 链接**找 `sc_main`：入口必须 `extern "C"`（见 `tests/sc_main.cpp`）。
-- **SystemC 自检必须经 `xmake run` 跑**：`add_packages(systemc)` 不会产生 rpath（xmake 只为 shared 目标
-  依赖自动补 `$ORIGIN`），运行期靠 `xmake run` 注入包带的 `LD_LIBRARY_PATH`；`os.execv(targetfile)`
-  直接执行会报 `library "libsystemc.so.3.0" not found`。故 smoke / examples 任务统一走 `xmake run <target>`。
-- 此 xmake 版本：`add_requires` 只能在顶层作用域且不能跟在 option/target 定义之后（作用域泄漏）；
-  `has_config(name, value)` 对 set_values 选项不可靠，用 `get_config(name) == "..."`。
-- 时间换算用 `__int128` 防溢出；`ticks_per_sec()` 首次经 port 查询后缓存（static local）。
-- **跨 DSO 的 catch 依赖 typeinfo 唯一**：已由「异常类型的 `what()` 外联定义」保证（见不变量一节），
-  消费方可执行文件**不需要**任何 `-fvisibility=default` / `-rdynamic`；即便 xmake `mode.release` 对非
-  shared 目标默认设了 `symbols=hidden`（`-fvisibility=hidden -fvisibility-inlines-hidden`，与 package 无关）
-  也照样能 catch。判别：`nm -D <exe> | grep _ZTIN5weave` 应全是 `U`，定义只在 libweave.so；
-  反之（exe 里出现 `D`/`V` 定义）说明 key function 被写回内联了。详见
-  [docs/backends.md](docs/backends.md) 的「ABI 提示」。
+- **The triggered state of an already triggered event lingers** (SystemC via `change_stamp`, SV via a
+  sticky flag): after a task catches `Cancelled` and blocks again on the same abort_ev, that would be
+  misdetected as a cancellation hit, so `backend_wait` must destroy and recreate `abort_ev` after
+  injecting cancellation. Likewise, combinators that use raw port events must use a waiting flag to
+  guarantee a trigger always has a waiter (a trigger with no waiter leaves an unconsumed delta
+  notification, and destroying that is undefined behaviour on the backend side).
+- **SV's cancel leg cannot rely on a flag alone**: `weave_sv_wait` is `fork … join_any; disable
+  fork;`, and when both legs trigger in the same time slot `join_any` may return before `ab_leg`
+  executes, whereupon `disable fork` stops that leg — `ab_hit = 1` inside the leg never gets set and
+  cancel precedence (port contract guarantee 4) is lost. So the cancel leg instead checks
+  `ev_table[abort_id].ev.triggered` (the same test as `ab.triggered()` in systemc.cpp). Regression:
+  `task_semantics` case9 (same-slot cancel must beat the event leg), `lock_semantics` case6
+  (same-slot cancel + hand-off → ownership is transferred).
+- xmake-repo's SystemC looks for `sc_main` with **C linkage**: the entry point must be `extern "C"`
+  (see `tests/sc_main.cpp`).
+- **SystemC self-checks must be run through `xmake run`**: `add_packages(systemc)` does not produce an
+  rpath (xmake only adds `$ORIGIN` automatically for shared target dependencies), so at runtime the
+  package's `LD_LIBRARY_PATH` is injected by `xmake run`; executing via `os.execv(targetfile)`
+  directly fails with `library "libsystemc.so.3.0" not found`. Hence the smoke / examples tasks all
+  go through `xmake run <target>`.
+- This xmake version: `add_requires` may only appear at top-level scope and must not follow
+  option/target definitions (scope leakage); `has_config(name, value)` is unreliable for set_values
+  options, use `get_config(name) == "..."`.
+- Time conversion uses `__int128` to prevent overflow; `ticks_per_sec()` is queried once through the
+  port and then cached (static local).
+- **Cross-DSO `catch` depends on typeinfo uniqueness**: guaranteed by "`what()` for the exception
+  types is defined out-of-line" (see the invariants section); consumer executables need **no**
+  `-fvisibility=default` / `-rdynamic`, and `catch` still works even though xmake `mode.release` sets
+  `symbols=hidden` by default on non-shared targets (`-fvisibility=hidden
+  -fvisibility-inlines-hidden`, unrelated to packages). How to check: `nm -D <exe> | grep _ZTIN5weave`
+  should be all `U`, with definitions only in libweave.so; the opposite (a `D`/`V` definition appearing
+  in the exe) means the key function was written back as inline. See the "ABI notes" section of
+  [docs/backends.md](docs/backends.md).

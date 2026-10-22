@@ -1,15 +1,15 @@
 #pragma once
 
-// 后端引导用的内部入口。非公共 API，仅供 src/backend 使用。
+// Internal entries used by the backend bootstrap. Not a public API; only src/backend may use it.
 
 namespace weave {
 namespace detail {
 
-// 创建并 spawn 根任务（第一个注册的测试）。
-// 返回根任务 done 事件 id；无注册测试返回 -1。
+// Creates and spawns the root task (the first registered test).
+// Returns the root task's done event id; -1 when no test is registered.
 int run_registered_test();
 
-// 根任务状态：0=DONE 1=FAILED 2=CANCELLED -1=未完成
+// Root task state: 0=DONE 1=FAILED 2=CANCELLED -1=not finished
 int root_status();
 
 }  // namespace detail

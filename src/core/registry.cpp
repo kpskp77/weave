@@ -1,4 +1,4 @@
-// 测试注册表与后端引导入口（运行注册测试 / 查询根任务状态）。
+// Test registry and backend bootstrap entry (run registered tests / query the root task state).
 
 #include <map>
 #include <utility>
@@ -24,9 +24,10 @@ namespace detail {
 
 int run_registered_test() {
   if (registry().empty()) return -1;
-  // 所有注册测试按名字序串行运行在根任务内：每个测试是一个子任务，
-  // 根任务 await 其完成再跑下一个；任一测试 FAILED → 根任务 FAILED（整体失败）。
-  // 串行 + 确定性（delta-cycle），顺序无关的并行留作扩展。
+  // All registered tests run serially inside the root task: each test is a child task and the root
+  // awaits its completion before running the next one; any FAILED test → the root task FAILs (the
+  // whole run fails). Serial + deterministic (delta-cycle); order-independent parallelism is left
+  // as a future extension.
   Task root = create_task("weave_root", [] {
     for (const auto& [name, fn] : registry()) {
       Task t = create_task(name, fn);
