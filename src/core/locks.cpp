@@ -41,6 +41,86 @@ struct Lock::Impl {
   }
 };
 
+// ── Condition ─────────────────────────────────────────────────────────
+//
+// 等待者队列每个成员持一个一次性 Event（放行信号）。notify 只 set() 队首至多 n 个，
+// 不交接锁：被唤醒者返回前经 Lock::acquire() 按 FIFO 重新取锁，期间锁归 notify 方。
+//
+// 取消路径守住两条不变量：
+//   1. 队列摘除与重新取锁都在 catch 内完成，Cancelled 传播时锁已复位（不泄漏）；
+//   2. 若取消与 notify 同槽（已被出队、拿到的是 Cancelled），摘除失败是预期形态——
+//      放行已被消费，直接重新取锁后传播。
+
+struct Condition::Impl {
+  struct Waiter {
+    Event ev;  // 放行信号：一次性，被 set() 即出队（由 notify 出队后置位）
+  };
+
+  Lock mutex;
+  std::deque<std::shared_ptr<Waiter>> waiters;
+};
+
+Condition::Condition() : impl_(std::make_shared<Impl>()) {}
+
+Condition::Condition(Lock lock) : impl_(std::make_shared<Impl>()) {
+  impl_->mutex = lock;
+}
+
+void Condition::acquire() {
+  impl_->mutex.acquire();
+}
+
+void Condition::release() {
+  impl_->mutex.release();
+}
+
+bool Condition::locked() const noexcept {
+  return impl_->mutex.locked();
+}
+
+Lock& Condition::mutex() noexcept {
+  return impl_->mutex;
+}
+
+void Condition::wait() {
+  if (!impl_->mutex.locked()) throw std::logic_error("weave: Condition.wait() on un-acquired lock");
+  const std::shared_ptr<Impl::Waiter> me = std::make_shared<Impl::Waiter>();
+  impl_->waiters.push_back(me);
+  impl_->mutex.release();  // 原子语义的第一步：入队与放锁之间没有挂起点
+  try {
+    me->ev.wait();
+  } catch (...) {
+    // 取消（Event::wait 只会抛 Cancelled；仍用 catch (...) 守住不变量）。
+    // 尚未被 notify 出队 → 摘除；已被出队（与 notify 同槽）→ 摘除失败即预期形态。
+    auto& q = impl_->waiters;
+    for (auto it = q.begin(); it != q.end(); ++it) {
+      if (it->get() == me.get()) {
+        q.erase(it);
+        break;
+      }
+    }
+    impl_->mutex.acquire();  // 先复位锁再传播（对齐 asyncio 3.13+）
+    throw;
+  }
+  impl_->mutex.acquire();  // 唤醒后重新取锁，wait 返回时临界区仍成立
+}
+
+void Condition::notify(std::size_t n) {
+  if (!impl_->mutex.locked())
+    throw std::logic_error("weave: Condition.notify() on un-acquired lock");
+  auto& q = impl_->waiters;
+  while (n > 0 && !q.empty()) {
+    const std::shared_ptr<Impl::Waiter> next = std::move(q.front());
+    q.pop_front();  // 先出队再放行：被唤醒者返回队列里已没有自己
+    next->ev.set();
+    --n;
+  }
+}
+
+void Condition::notify_all() {
+  notify(impl_->waiters.size());
+}
+
 Lock::Lock() : impl_(std::make_shared<Impl>()) {}
 
 bool Lock::locked() const noexcept {

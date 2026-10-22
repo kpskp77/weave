@@ -15,6 +15,7 @@
 //
 // 全部建于 Event + 唯一阻塞点之上（每个排队者持一个一次性 Event），后端零改动。
 
+#include <cstddef>
 #include <memory>
 
 namespace weave {
@@ -55,6 +56,52 @@ public:
 
 private:
   Lock lock_;
+};
+
+// ── Condition（asyncio.Condition）──────────────────────────────────────
+
+// 条件变量，语义对齐 asyncio.Condition：
+//   · 构造即持有一把底层 Lock（可传入已有 Lock 复用，对齐 asyncio.Condition(lock)）；
+//   · acquire()/release()/locked() 委托底层锁（≡ `async with cond:` 的进入/退出，
+//     持锁区间也可用 LockGuard guard(cond.mutex()) 表达）；
+//   · wait()：要求已持锁。原子地「入队 → 放锁 → 阻塞」，被 notify 唤醒后
+//     **重新取得锁**才返回（与 asyncio 一致：wait 返回时谓词检查所依赖的
+//     临界区仍然成立）。等待期间被取消 → 先从队列摘除、重新取锁、再抛
+//     Cancelled（锁不随取消泄漏，对齐 asyncio 3.13+ 的「先 re-acquire 再传播
+//     取消」）；
+//   · wait_for(pred)：反复 wait() 直到 pred() 为真（对齐 asyncio 的
+//     `while not predicate(): await cond.wait()`）；
+//   · notify(n=1)/notify_all()：唤醒队首 n 个/全部等待者，要求已持锁
+//     （≡ asyncio 的 RuntimeError("cannot notify on un-acquired lock")）。
+//     唤醒只是放行：被唤醒者仍要按 Lock 的 FIFO 排队重新取锁，notify 不交接锁。
+//
+// 全部建于 Lock + Event + 唯一阻塞点之上，后端零改动。
+// 句柄语义与 Lock/Event 一致：拷贝共享同一个条件变量。
+class Condition {
+public:
+  Condition();
+  explicit Condition(Lock lock);  // 复用已有锁，对齐 asyncio.Condition(lock)
+
+  void acquire();  // 取得底层锁（可能挂起）
+  void release();  // 释放底层锁
+  [[nodiscard]] bool locked() const noexcept;
+  [[nodiscard]] Lock& mutex() noexcept;  // 底层锁句柄（asyncio 的 .lock 属性）
+
+  // 要求已持锁；返回时锁已被重新取得。见类注释的取消语义。
+  void wait();
+
+  // 反复 wait() 直至 pred() 为真；返回时锁已持有。
+  template <typename Pred>
+  void wait_for(Pred pred) {
+    while (!pred()) wait();
+  }
+
+  void notify(std::size_t n = 1);  // 唤醒队首至多 n 个等待者；要求已持锁
+  void notify_all();               // 唤醒全部等待者；要求已持锁
+
+private:
+  struct Impl;
+  std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace weave

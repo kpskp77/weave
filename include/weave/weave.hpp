@@ -11,7 +11,7 @@
 //   time.hpp     时间表示（int64 飞秒 + 字面量）
 //   task.hpp     任务原语（Task / create_task / sleep / Cancelled）
 //   event.hpp    事件原语（Event）
-//   locks.hpp    通信原语（Lock / LockGuard）
+//   locks.hpp    通信原语（Lock / LockGuard / Condition）
 //   sync.hpp     组合原语（gather / wait_for / wait / shield / as_completed / TaskGroup）
 //   test.hpp     测试注册（WEAVE_TEST）
 
