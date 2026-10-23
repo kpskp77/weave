@@ -49,7 +49,7 @@ WEAVE_TEST(taskgroup_demo) {
     auto runner = create_task("tg_runner", [&] {
       try {
         tg.wait();
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Expected: wait_for timed out and cancelled runner, so TaskGroup already
         // cascade-cancelled the children
       }
@@ -57,7 +57,7 @@ WEAVE_TEST(taskgroup_demo) {
     try {
       wait_for(runner, 1_ns);
       throw std::logic_error("taskgroup_demo: wait_for must time out");
-    } catch (const Timeout&) {
+    } catch (const TimeoutError&) {
       // Expected path
     }
     if (!a.cancelled() || !b.cancelled())

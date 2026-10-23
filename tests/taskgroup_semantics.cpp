@@ -64,8 +64,8 @@ WEAVE_TEST(taskgroup_semantics) {
     killer.await();
   });
 
-  // case 4: the caller of wait is cancelled → cascade-cancel every child and throw Cancelled once
-  // they have landed
+  // case 4: the caller of wait is cancelled → cascade-cancel every child and throw CancelledError
+  // once they have landed
   run_case(__func__, "case4", [&] {
     Event block, ready;
     TaskGroup tg;  // waiter references tg/block from this frame; waiter.await() guarantees it
@@ -77,7 +77,7 @@ WEAVE_TEST(taskgroup_semantics) {
       try {
         tg.wait();
         throw std::logic_error("case4: unreachable");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Expected path: propagate after the cascade cancellation
       }
     });
@@ -85,7 +85,7 @@ WEAVE_TEST(taskgroup_semantics) {
     waiter.cancel();
     waiter.await();
     if (waiter.cancelled())
-      throw std::logic_error("case4: waiter swallowed Cancelled and finished DONE");
+      throw std::logic_error("case4: waiter swallowed CancelledError and finished DONE");
     if (!c1.cancelled() || !c2.cancelled())
       throw std::logic_error("case4: outer cancel must cascade to all children");
   });
@@ -144,8 +144,8 @@ WEAVE_TEST(taskgroup_semantics) {
       throw std::logic_error("case7: cancel() must cancel all unfinished children");
   });
 
-  // case 8: cancel(msg): a child catching Cancelled can read the msg; already-DONE children are
-  // unaffected
+  // case 8: cancel(msg): a child catching CancelledError can read the msg; already-DONE children
+  // are unaffected
   run_case(__func__, "case8", [&] {
     Event block, ready;
     std::string seen;
@@ -155,7 +155,7 @@ WEAVE_TEST(taskgroup_semantics) {
       ready.set();  // Reports having advanced to just before the blocking point
       try {
         block.wait();
-      } catch (const Cancelled& c) {
+      } catch (const CancelledError& c) {
         if (c.msg()) seen = std::string(*c.msg());
       }
     });

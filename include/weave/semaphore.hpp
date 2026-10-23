@@ -30,14 +30,14 @@ namespace weave {
 //      available but someone is queued", and a newly arriving acquire cannot jump the queue
 //      (barging protection, matching asyncio 3.10+'s fair semantics);
 //   2. permits are never lost on the cancellation path: when cancellation and release land in the
-//      same slot (already granted but what it receives is Cancelled), the permit is transferred to
-//      the next waiter, or returned to the count if the queue is empty.
+//      same slot (already granted but what it receives is CancelledError), the permit is
+//      transferred to the next waiter, or returned to the count if the queue is empty.
 class Semaphore {
 public:
   explicit Semaphore(std::size_t value = 1);
 
-  // Acquires one permit; suspends until released if the count is 0. Cancelled while queued →
-  // throws Cancelled, and in that case no permit is held (the cancellation is injected at the
+  // Acquires one permit; suspends until released if the count is 0. CancelledError while queued →
+  // throws CancelledError, and in that case no permit is held (the cancellation is injected at the
   // blocking point, which is the normal shape of cooperative cancellation).
   void acquire();
 
@@ -55,8 +55,8 @@ private:
 // ── SemaphoreGuard ───────────────────────────────────────────────────────────
 //
 // The C++ counterpart of asyncio's `async with semaphore:`: the scope is the held-permit interval.
-// Construction calls acquire() (it may suspend; if it throws Cancelled the construction fails and
-// no permit is held), destruction calls release() (no suspension). Cancellation during stack
+// Construction calls acquire() (it may suspend; if it throws CancelledError the construction fails
+// and no permit is held), destruction calls release() (no suspension). Cancellation during stack
 // unwinding therefore releases too, equivalent to releasing through __aexit__.
 // It holds its own copy of the handle (Semaphore is copyable and shares the same semaphore) and
 // does not depend on the lifetime of the caller's handle.
@@ -97,8 +97,8 @@ class BoundedSemaphore {
 public:
   explicit BoundedSemaphore(std::size_t value = 1);
 
-  // Acquires one permit; suspends until released if the count is 0. Cancelled while queued →
-  // throws Cancelled, and in that case no permit is held. Exactly like Semaphore::acquire.
+  // Acquires one permit; suspends until released if the count is 0. CancelledError while queued →
+  // throws CancelledError, and in that case no permit is held. Exactly like Semaphore::acquire.
   void acquire();
 
   // Releases one permit; throws std::logic_error if the count has already reached the bound (the
@@ -116,13 +116,12 @@ private:
 // ── BoundedSemaphoreGuard ────────────────────────────────────────────────────
 //
 // The C++ counterpart of asyncio's `async with bounded_semaphore:`: the scope is the held-permit
-// interval. Construction calls acquire() (it may suspend; if it throws Cancelled the construction
-// fails and no permit is held), destruction calls release() (no suspension). Cancellation during
-// stack unwinding therefore releases too.
-// It holds its own copy of the handle (BoundedSemaphore is copyable and shares the same semaphore)
-// and does not depend on the lifetime of the caller's handle. The guard pairs strictly with
-// acquire — misuse (an over-bound release caused by more destructions than constructions)
-// terminates per noexcept semantics.
+// interval. Construction calls acquire() (it may suspend; if it throws CancelledError the
+// construction fails and no permit is held), destruction calls release() (no suspension).
+// Cancellation during stack unwinding therefore releases too. It holds its own copy of the handle
+// (BoundedSemaphore is copyable and shares the same semaphore) and does not depend on the lifetime
+// of the caller's handle. The guard pairs strictly with acquire — misuse (an over-bound release
+// caused by more destructions than constructions) terminates per noexcept semantics.
 class BoundedSemaphoreGuard {
 public:
   explicit BoundedSemaphoreGuard(BoundedSemaphore& sem);

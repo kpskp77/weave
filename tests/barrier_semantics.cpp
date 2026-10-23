@@ -202,8 +202,9 @@ WEAVE_TEST(barrier_semantics) {
     t2.await();
   });
 
-  // case 7: a cancelled party leaves the barrier and throws Cancelled — as in asyncio the barrier
-  // is neither broken nor corrupted (unlike threading.Barrier), and it can trip again afterwards
+  // case 7: a cancelled party leaves the barrier and throws CancelledError — as in asyncio the
+  // barrier is neither broken nor corrupted (unlike threading.Barrier), and it can trip again
+  // afterwards
   run_case(__func__, "case7", [&] {
     Barrier b(2);
     Event t1_in, caught;
@@ -212,7 +213,7 @@ WEAVE_TEST(barrier_semantics) {
       try {
         b.wait();
         throw std::logic_error("case7: a cancelled party must not pass the barrier");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         caught.set();
         throw;
       }
@@ -223,7 +224,7 @@ WEAVE_TEST(barrier_semantics) {
     caught.wait();
     try {
       t1.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (b.broken()) throw std::logic_error("case7: cancellation must not break the barrier");
@@ -254,7 +255,7 @@ WEAVE_TEST(barrier_semantics) {
       try {
         b.wait();
         throw std::logic_error("case8: a cancelled party must not pass the barrier");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         caught_cancel.set();
         throw;
       }
@@ -265,7 +266,7 @@ WEAVE_TEST(barrier_semantics) {
     caught_cancel.wait();
     try {
       t2.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (b.broken()) throw std::logic_error("case8: cancellation must not break the barrier");

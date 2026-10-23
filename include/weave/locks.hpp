@@ -27,15 +27,15 @@ namespace weave {
 // "released but not yet taken over" idle window (in asyncio locked() briefly returns False in
 // that window, and newcomers do not jump the queue either). The lock is not lost when a waiter is
 // cancelled: if cancellation and hand-off land in the same slot (the lock was already handed to
-// it but what it receives is Cancelled), ownership is transferred to the next waiter — see
+// it but what it receives is CancelledError), ownership is transferred to the next waiter — see
 // src/core/locks.cpp.
 class Lock {
 public:
   Lock();
 
-  // Acquires the lock; if already held, suspends until it is handed over. Cancelled while queued →
-  // throws Cancelled, and in that case the lock is not held (the cancellation is injected at the
-  // blocking point, which is the normal shape of cooperative cancellation).
+  // Acquires the lock; if already held, suspends until it is handed over. CancelledError while
+  // queued → throws CancelledError, and in that case the lock is not held (the cancellation is
+  // injected at the blocking point, which is the normal shape of cooperative cancellation).
   void acquire();
 
   // Releases and hands off: wakes the queue head, or actually unlocks when the queue is empty.
@@ -54,8 +54,8 @@ private:
 // ── LockGuard ─────────────────────────────────────────────────────────────
 //
 // The C++ counterpart of asyncio's `async with lock:`: the scope is the held interval.
-// Construction calls acquire() (it may suspend; if it throws Cancelled the construction fails and
-// nothing is held), destruction calls release() (no suspension). Cancellation during stack
+// Construction calls acquire() (it may suspend; if it throws CancelledError the construction fails
+// and nothing is held), destruction calls release() (no suspension). Cancellation during stack
 // unwinding therefore releases too, equivalent to releasing through __aexit__.
 // It holds its own copy of the handle (Lock is copyable and shares the same lock) and does not
 // depend on the lifetime of the caller's handle.
@@ -82,10 +82,10 @@ private:
 //     guard(cond.mutex()));
 //   · wait(): requires the lock to be held. Atomically "enqueue → drop the lock → block", and after
 //     being woken by notify it **re-acquires the lock** before returning (as in asyncio: when wait
-//     returns, the critical section the predicate check relies on holds again). Cancelled while
-//     waiting → first unlink from the queue, re-acquire the lock, then throw Cancelled (the lock
-//     does not leak with the cancellation, matching asyncio 3.13+'s "re-acquire first, then
-//     propagate the cancellation");
+//     returns, the critical section the predicate check relies on holds again). CancelledError
+//     while waiting → first unlink from the queue, re-acquire the lock, then throw CancelledError
+//     (the lock does not leak with the cancellation, matching asyncio 3.13+'s "re-acquire first,
+//     then propagate the cancellation");
 //   · wait_for(pred): calls wait() repeatedly until pred() is true (matching asyncio's
 //     `while not predicate(): await cond.wait()`);
 //   · notify(n=1)/notify_all(): wake the first n/all waiters, requires the lock to be held

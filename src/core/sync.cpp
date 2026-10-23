@@ -18,14 +18,14 @@
 
 namespace weave {
 
-// Out-of-line definition of Timeout::what().
+// Out-of-line definition of TimeoutError::what().
 // Keeping the definition in the library (rather than inline in the header) makes it the key
 // function of this type: the vtable and typeinfo are emitted exactly once, in this TU, and consumer
 // TUs keep only undefined references that the dynamic linker resolves to the same copy. Written
 // back inline, typeinfo would degrade into one weak definition per TU, and since libc++abi compares
 // type_info by pointer, catch across DSOs would silently mismatch.
-const char* Timeout::what() const noexcept {
-  return "weave::Timeout";
+const char* TimeoutError::what() const noexcept {
+  return "weave::TimeoutError";
 }
 
 namespace detail {
@@ -36,7 +36,7 @@ namespace detail {
 //     TaskGroup's semantics)
 //   · all complete normally → return
 //   · gather itself is cancelled → cancel all unfinished tasks first (asyncio: when gather is
-//     cancelled, its unfinished child tasks are cancelled too), then propagate Cancelled
+//     cancelled, its unfinished child tasks are cancelled too), then propagate CancelledError
 void gather_impl(std::initializer_list<Task> tasks) {
   if (tasks.size() == 0) return;
 
@@ -64,7 +64,7 @@ void gather_impl(std::initializer_list<Task> tasks) {
 
   try {
     st->wake.wait();
-  } catch (const Cancelled&) {
+  } catch (const CancelledError&) {
     // gather was cancelled: cancel all unfinished tasks and then propagate (asyncio semantics).
     // The cascade-cancelled sibling tasks do not carry the gather caller's msg (that is the parent
     // task's context; the siblings were cancelled alongside it and the msg belongs to whoever
@@ -102,7 +102,7 @@ std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return
       if (r.state == detail::TaskState::FAILED)
         st->results[i] = r.eptr;
       else if (r.state == detail::TaskState::CANCELLED)
-        // CANCELLED mapping for the return_exceptions form: rethrow a Cancelled carrying the
+        // CANCELLED mapping for the return_exceptions form: rethrow a CancelledError carrying the
         // original msg, matching how asyncio.gather(*aws, return_exceptions=True) preserves
         // CancelledError(msg)
         st->results[i] = std::make_exception_ptr(detail::cancelled_with_msg(r.cancel_msg));
@@ -113,7 +113,7 @@ std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return
 
   try {
     st->wake.wait();
-  } catch (const Cancelled&) {
+  } catch (const CancelledError&) {
     // gather was cancelled: cancel all unfinished tasks and then propagate (same as the default
     // form)
     for (const Task& t : tasks) {
@@ -137,12 +137,12 @@ void wait_for(const Task& task, duration timeout) {
     detail::dispatch_completed(r);
     return;
   }
-  // Timeout: cancel and wait for the cancellation to complete (asyncio semantics), then throw
-  // Timeout. The cancellation carries a msg stating the reason (matching asyncio 3.12+: the
+  // TimeoutError: cancel and wait for the cancellation to complete (asyncio semantics), then throw
+  // TimeoutError. The cancellation carries a msg stating the reason (matching asyncio 3.12+: the
   // internal cancellation on timeout is tagged with its origin).
   task.cancel("wait_for timeout");
   detail::backend_wait(r.done_ev, -1);
-  throw Timeout{};
+  throw TimeoutError{};
 }
 
 // ── wait（asyncio.wait）────────────────────────────────────────────────
@@ -322,8 +322,8 @@ void TaskGroup::wait() {
   st->drain_ev = port::create_event();
 
   // The guard destroys both raw events on scope exit. There is no need to reset flags inside the
-  // guard as wait() does: Cancelled is caught in place and only rethrown after the siblings have
-  // drained, so the only things that can escape are invariant violations of current()/record()
+  // guard as wait() does: CancelledError is caught in place and only rethrown after the siblings
+  // have drained, so the only things that can escape are invariant violations of current()/record()
   // (already bug paths), and the original implementation did not reset st for those either.
   auto destroy_events = detail::on_scope_exit([&st] {
     port::destroy_event(st->wake_ev);
@@ -353,7 +353,7 @@ void TaskGroup::wait() {
     st->waiting = true;
     try {
       detail::backend_wait(st->wake_ev, -1);
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       cancelled = true;  // The waiter was cancelled: cascade-cancel all unfinished child tasks
     }
     st->waiting = false;
@@ -374,7 +374,7 @@ void TaskGroup::wait() {
       st->draining = true;
       try {
         detail::backend_wait(st->drain_ev, -1);
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Second cancellation: keep waiting for landing
       }
       st->draining = false;
@@ -382,9 +382,9 @@ void TaskGroup::wait() {
   }
 
   if (cancelled) {
-    // The TaskGroup waiter was cancelled: throw a Cancelled carrying the calling task's current
-    // cancel_msg, so that an outer layer awaiting this task sees the outer cancellation reason
-    // (matching the propagation of asyncio's CancelledError(msg)).
+    // The TaskGroup waiter was cancelled: throw a CancelledError carrying the calling task's
+    // current cancel_msg, so that an outer layer awaiting this task sees the outer cancellation
+    // reason (matching the propagation of asyncio's CancelledError(msg)).
     throw detail::cancelled_with_msg(detail::current().cancel_msg);
   }
   if (st->failed) detail::dispatch_completed(detail::record(st->first_failed));

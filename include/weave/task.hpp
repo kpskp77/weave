@@ -1,6 +1,6 @@
 #pragma once
 
-// Task primitives: Task / create_task / sleep / Cancelled. Semantics follow asyncio.Task.
+// Task primitives: Task / create_task / sleep / CancelledError. Semantics follow asyncio.Task.
 // create_task only schedules, it does not run immediately: a child task is scheduled only after
 // the parent reaches its next blocking point (or finishes), which the backend process semantics
 // guarantee.
@@ -16,19 +16,19 @@
 namespace weave {
 
 class Task;
-struct Cancelled;
+struct CancelledError;
 
 namespace detail {
 struct TaskRecord;  // core bookkeeping (defined in src/core/core_internal.hpp)
 
-// Constructs a Cancelled carrying a message (msg is owned by a TaskRecord; the view stays valid
-// for the lifetime of the throw). Takes a view rather than a const char*: a view does not own
-// data, consistent with the borrowed semantics of Cancelled::msg_, and callers (always
+// Constructs a CancelledError carrying a message (msg is owned by a TaskRecord; the view stays
+// valid for the lifetime of the throw). Takes a view rather than a const char*: a view does not own
+// data, consistent with the borrowed semantics of CancelledError::msg_, and callers (always
 // std::string members) can pass the whole string without a strlen.
 // Invariant: the view must come from a std::string's full contents (NUL immediately after),
-// because Cancelled::what() returns data() directly and uses it as a C string.
+// because CancelledError::what() returns data() directly and uses it as a C string.
 // Exposed to detail:: so the dispatch path in sync.cpp can preserve the original message.
-Cancelled cancelled_with_msg(std::string_view msg) noexcept;
+CancelledError cancelled_with_msg(std::string_view msg) noexcept;
 }  // namespace detail
 
 // Cancellation signal. Corresponds to asyncio.CancelledError, injected at a task's blocking
@@ -36,7 +36,7 @@ Cancelled cancelled_with_msg(std::string_view msg) noexcept;
 // CancelledError belongs to BaseException since asyncio 3.8 — the idiomatic
 // catch (const std::exception&) backstop must not silently swallow cancellation (swallowing it
 // would make the task wrongly finish as DONE and break gather / TaskGroup / wait_for's judgement
-// of the CANCELLED terminal state). To catch it, write catch (const weave::Cancelled&) or
+// of the CANCELLED terminal state). To catch it, write catch (const weave::CancelledError&) or
 // catch (...) explicitly.
 //
 // The message matches asyncio Task.cancel(msg) (Python 3.9+): msg is an optional description
@@ -54,19 +54,19 @@ Cancelled cancelled_with_msg(std::string_view msg) noexcept;
 // constructor of a class with virtual functions non-trivial) — catch correctness is chosen here,
 // and the assertions instead watch the properties that really matter (see the static_assert
 // below).
-struct Cancelled {
-  // A polymorphic type must declare a virtual destructor: Cancelled is constructed/destroyed on
-  // the heap through paths such as std::make_exception_ptr (gather(return_exceptions)), and a
+struct CancelledError {
+  // A polymorphic type must declare a virtual destructor: CancelledError is constructed/destroyed
+  // on the heap through paths such as std::make_exception_ptr (gather(return_exceptions)), and a
   // non-virtual destructor triggers -Wdelete-non-abstract-non-virtual-dtor (a hard compile
   // failure under -Werror).
-  virtual ~Cancelled() = default;
+  virtual ~CancelledError() = default;
   virtual const char* what() const noexcept;
   // msg=None → nullopt (no longer a nullptr sentinel)
   std::optional<std::string_view> msg() const noexcept { return msg_; }
 
 private:
   std::optional<std::string_view> msg_;
-  friend Cancelled detail::cancelled_with_msg(std::string_view msg) noexcept;
+  friend CancelledError detail::cancelled_with_msg(std::string_view msg) noexcept;
 };
 
 // The exception object = "a nullable view + a discriminant", with no heap members and a nothrow
@@ -75,9 +75,9 @@ private:
 // makes the copy constructor of a polymorphic class non-trivial — RTTI being unique across DSOs
 // (catch correctness) takes priority over that trait. What is watched here instead are the two
 // things actually wanted: nothrow copy/destruction, and no heap members at all.
-static_assert(std::is_nothrow_copy_constructible_v<Cancelled> &&
-                  std::is_nothrow_destructible_v<Cancelled>,
-              "Cancelled must be cheap to throw: nothrow copy, no heap members");
+static_assert(std::is_nothrow_copy_constructible_v<CancelledError> &&
+                  std::is_nothrow_destructible_v<CancelledError>,
+              "CancelledError must be cheap to throw: nothrow copy, no heap members");
 
 class Task;
 
@@ -96,7 +96,7 @@ public:
   Task() = default;
 
   // Waits for the task to finish. A FAILED task rethrows its exception; a CANCELLED task throws
-  // Cancelled. Must be called inside a task context (it is a blocking primitive).
+  // CancelledError. Must be called inside a task context (it is a blocking primitive).
   void await();
 
   // Reached any terminal state (DONE / FAILED / CANCELLED), matching asyncio.Task.done()
@@ -106,11 +106,11 @@ public:
   const std::string& get_name() const;  // Matches asyncio.Task.get_name()
 
   // Cooperative cancellation (matching asyncio Task.cancel(msg), Python 3.9+):
-  // PENDING → the body does not run; RUNNING → Cancelled(msg) is thrown at the next blocking
-  // point; WAITING → woken immediately and Cancelled(msg) thrown at the blocking point. A task
-  // may catch Cancelled to refuse cancellation.
+  // PENDING → the body does not run; RUNNING → CancelledError(msg) is thrown at the next blocking
+  // point; WAITING → woken immediately and CancelledError(msg) thrown at the blocking point. A task
+  // may catch CancelledError to refuse cancellation.
   // msg is an optional cancellation reason; an empty string means a plain cancellation; whoever
-  // awaits this task sees a Cancelled carrying the same msg.
+  // awaits this task sees a CancelledError carrying the same msg.
   // const: Task is a handle, and cancelling changes the bookkeeping state of the referenced task,
   // not the handle itself (same semantics as shared_ptr's const operator*), so cancellation may
   // be initiated through a const Task& (e.g. gather's cascade cancellation).

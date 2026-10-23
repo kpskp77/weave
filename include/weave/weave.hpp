@@ -10,7 +10,7 @@
 // API. Header layering (dependencies point downwards):
 //   config.hpp   backend selection (compile-time macro, SVDPI by default)
 //   time.hpp     time representation (int64 femtoseconds + literals)
-//   task.hpp     task primitives (Task / create_task / sleep / Cancelled)
+//   task.hpp     task primitives (Task / create_task / sleep / CancelledError)
 //   event.hpp    event primitive (Event)
 //   locks.hpp    communication primitives (Lock / LockGuard / Condition)
 //   semaphore.hpp communication primitives (Semaphore / SemaphoreGuard / BoundedSemaphore /

@@ -62,8 +62,8 @@ WEAVE_TEST(wait_semantics) {
     killer.await();
     try {
       victim.await();
-      throw std::logic_error("case3: victim should throw Cancelled");
-    } catch (const Cancelled&) {
+      throw std::logic_error("case3: victim should throw CancelledError");
+    } catch (const CancelledError&) {
       // Expected path
     }
     gate.set();
@@ -85,7 +85,7 @@ WEAVE_TEST(wait_semantics) {
     b.await();
   });
 
-  // case 5: wait itself is cancelled → Cancelled propagates and the child tasks keep running
+  // case 5: wait itself is cancelled → CancelledError propagates and the child tasks keep running
   run_case(__func__, "case5", [&] {
     Event block, ready;
     auto child = create_task("w5_child", [&] { block.wait(); });
@@ -94,7 +94,7 @@ WEAVE_TEST(wait_semantics) {
       try {
         weave::wait({child});
         throw std::logic_error("case5: unreachable");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Expected path
       }
     });

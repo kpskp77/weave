@@ -146,8 +146,8 @@ WEAVE_TEST(semaphore_semantics) {
     gather(t1, t2);
   });
 
-  // case 5: a queued waiter is cancelled → it throws Cancelled and holds no permit; the permit is
-  // still handed to the remaining waiters by the main task's release
+  // case 5: a queued waiter is cancelled → it throws CancelledError and holds no permit; the permit
+  // is still handed to the remaining waiters by the main task's release
   run_case(__func__, "case5", [&] {
     Semaphore s(1);
     s.acquire();  // The main task holds the only permit
@@ -157,7 +157,7 @@ WEAVE_TEST(semaphore_semantics) {
       try {
         s.acquire();
         throw std::logic_error("case5: cancelled waiter must not acquire");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         caught.set();
         throw;
       }
@@ -175,7 +175,7 @@ WEAVE_TEST(semaphore_semantics) {
     caught.wait();
     try {
       victim.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (got.is_set()) throw std::logic_error("case5: cancel must not release a permit");
@@ -186,9 +186,9 @@ WEAVE_TEST(semaphore_semantics) {
   });
 
   // case 6: cancellation and release in the same slot — release() has already handed the permit to
-  // victim, and the immediately following cancel() makes it receive Cancelled at the blocking point
-  // (the backend cancel leg wins). The permit must not be lost: it has to be handed to the next
-  // waiter.
+  // victim, and the immediately following cancel() makes it receive CancelledError at the blocking
+  // point (the backend cancel leg wins). The permit must not be lost: it has to be handed to the
+  // next waiter.
   run_case(__func__, "case6", [&] {
     Semaphore s(1);
     s.acquire();
@@ -198,7 +198,7 @@ WEAVE_TEST(semaphore_semantics) {
       try {
         s.acquire();
         throw std::logic_error("case6: cancelled waiter must not acquire");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         caught.set();
         throw;
       }
@@ -220,7 +220,7 @@ WEAVE_TEST(semaphore_semantics) {
     caught.wait();
     try {
       victim.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     got.wait();  // The point: the permit was transferred to peer instead of vanishing with the
@@ -265,7 +265,7 @@ WEAVE_TEST(semaphore_semantics) {
     holder.cancel();
     try {
       holder.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (s.locked()) throw std::logic_error("case9: guard must release while unwinding");
@@ -309,17 +309,17 @@ WEAVE_TEST(semaphore_semantics) {
       try {
         b.acquire();
         throw std::logic_error("case11: cancelled waiter must not acquire");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         caught.set();
         throw;
       }
     });
     r1.wait();        // victim has queued
-    victim.cancel();  // Cancelled in the queue: unlinked, no permit was ever issued
+    victim.cancel();  // CancelledError in the queue: unlinked, no permit was ever issued
     caught.wait();
     try {
       victim.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     b.release();  // The main task returns its permit: the count is back at the bound
@@ -348,7 +348,7 @@ WEAVE_TEST(semaphore_semantics) {
       try {
         b.acquire();
         throw std::logic_error("case12: cancelled waiter must not acquire");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         caught.set();
         throw;
       }
@@ -370,7 +370,7 @@ WEAVE_TEST(semaphore_semantics) {
     caught.wait();
     try {
       victim.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     got.wait();

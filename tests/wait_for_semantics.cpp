@@ -1,13 +1,12 @@
 // wait_for semantic self-check (asyncio.wait_for, 3.12+ timeout semantics):
-// timeout → cancel the task, wait for the cancellation to complete, then throw Timeout; the task
-// finishing first → returns normally; a task already failed at call time → the synchronous path
-// rethrows immediately; a task refusing cancellation → Timeout is still thrown.
-// Timing stays fully event-driven (the ready hand-off guarantees the task under test is blocked);
-// the timeout duration is merely an input to the mechanism under test, never a way to express
-// ordering between cases.
-// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
-// case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp and is regressed
-// by both the weave_smoke_sc and weave_smoke_svdpi backends.
+// timeout → cancel the task, wait for the cancellation to complete, then throw TimeoutError; the
+// task finishing first → returns normally; a task already failed at call time → the synchronous
+// path rethrows immediately; a task refusing cancellation → TimeoutError is still thrown. Timing
+// stays fully event-driven (the ready hand-off guarantees the task under test is blocked); the
+// timeout duration is merely an input to the mechanism under test, never a way to express ordering
+// between cases. Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end
+// (see case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp and is
+// regressed by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
 #include <stdexcept>
 #include <string>
@@ -21,7 +20,7 @@ using weave_test::report;
 using weave_test::run_case;
 
 WEAVE_TEST(wait_for_semantics) {
-  // case 1: the task finishes before the timeout → returns normally, task is DONE, no Timeout
+  // case 1: the task finishes before the timeout → returns normally, task is DONE, no TimeoutError
   run_case(__func__, "case1", [&] {
     Event ready, gate;
     auto t = create_task("fast1", [&] {
@@ -34,7 +33,7 @@ WEAVE_TEST(wait_for_semantics) {
     if (!t.done() || t.cancelled()) throw std::logic_error("case1: task state wrong");
   });
 
-  // case 2: timeout → throws Timeout; the task is cancelled and the cancellation has completed
+  // case 2: timeout → throws TimeoutError; the task is cancelled and the cancellation has completed
   // (await immediately yields a terminal state)
   run_case(__func__, "case2", [&] {
     Event ready;
@@ -46,8 +45,8 @@ WEAVE_TEST(wait_for_semantics) {
     ready.wait();  // slow is blocked, so the timeout necessarily fires before it finishes
     try {
       wait_for(slow, 1_ns);
-      throw std::logic_error("case2: wait_for must throw Timeout");
-    } catch (const Timeout&) {
+      throw std::logic_error("case2: wait_for must throw TimeoutError");
+    } catch (const TimeoutError&) {
       // Expected path
     }
     if (!slow.done() || !slow.cancelled())
@@ -55,7 +54,7 @@ WEAVE_TEST(wait_for_semantics) {
     try {
       slow.await();
       throw std::logic_error("case2: await on timed-out task must throw");
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path: the cancellation has propagated and completed
     }
   });
@@ -79,9 +78,9 @@ WEAVE_TEST(wait_for_semantics) {
     }
   });
 
-  // case 4: the task refuses cancellation (swallows Cancelled) → wait_for still throws Timeout,
-  // but the task itself runs its body to the end → DONE (asyncio 3.12+: a timeout is not voided by
-  // cancellation being refused)
+  // case 4: the task refuses cancellation (swallows CancelledError) → wait_for still throws
+  // TimeoutError, but the task itself runs its body to the end → DONE (asyncio 3.12+: a timeout is
+  // not voided by cancellation being refused)
   run_case(__func__, "case4", [&] {
     Event ready, finished;
     auto stubborn = create_task("stubborn4", [&] {
@@ -89,7 +88,7 @@ WEAVE_TEST(wait_for_semantics) {
       try {
         Event never;
         never.wait();
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Swallow the cancellation
       }
       finished.set();
@@ -97,8 +96,8 @@ WEAVE_TEST(wait_for_semantics) {
     ready.wait();
     try {
       wait_for(stubborn, 1_ns);
-      throw std::logic_error("case4: wait_for must throw Timeout even if cancel is resisted");
-    } catch (const Timeout&) {
+      throw std::logic_error("case4: wait_for must throw TimeoutError even if cancel is resisted");
+    } catch (const TimeoutError&) {
       // Expected path
     }
     finished.wait();  // The body still runs to completion after refusing cancellation
@@ -122,8 +121,8 @@ WEAVE_TEST(wait_for_semantics) {
     ready.wait();  // slow is blocked: a non-positive timeout necessarily fires first
     try {
       wait_for(slow, duration{} - 1_ns);
-      throw std::logic_error("case5: non-positive timeout must throw Timeout");
-    } catch (const Timeout&) {
+      throw std::logic_error("case5: non-positive timeout must throw TimeoutError");
+    } catch (const TimeoutError&) {
       // Expected path
     }
     if (!slow.done() || !slow.cancelled())

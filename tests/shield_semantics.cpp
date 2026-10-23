@@ -24,7 +24,7 @@ WEAVE_TEST(shield_semantics) {
     try {
       wait_for(proxy, 1_ms);
       throw std::logic_error("case1: wait_for should timeout");
-    } catch (const Timeout&) {
+    } catch (const TimeoutError&) {
       // Expected path
     }
     if (!proxy.cancelled()) throw std::logic_error("case1: proxy should be cancelled");
@@ -46,7 +46,7 @@ WEAVE_TEST(shield_semantics) {
       try {
         gather(proxy, other);
         throw std::logic_error("case2: unreachable");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Expected path
       }
     });
@@ -58,14 +58,14 @@ WEAVE_TEST(shield_semantics) {
     // terminal states explicitly before asserting (determinism).
     try {
       proxy.await();
-      throw std::logic_error("case2: proxy should throw Cancelled");
-    } catch (const Cancelled&) {
+      throw std::logic_error("case2: proxy should throw CancelledError");
+    } catch (const CancelledError&) {
       // Expected path
     }
     try {
       other.await();
-      throw std::logic_error("case2: other should throw Cancelled");
-    } catch (const Cancelled&) {
+      throw std::logic_error("case2: other should throw CancelledError");
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!proxy.cancelled()) throw std::logic_error("case2: proxy should be cancelled");

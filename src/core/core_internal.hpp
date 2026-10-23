@@ -67,7 +67,7 @@ struct TaskRecord {
   int done_ev = -1;   // Task completion event (monotonic, may be awaited by any number of parties)
   bool cancel_armed = false;
   // Matches asyncio Task.cancel(msg)'s _cancel_message: the cancellation reason recorded by
-  // cancel(), whose c_str() is used when injecting Cancelled; it is kept after the task enters
+  // cancel(), whose c_str() is used when injecting CancelledError; it is kept after the task enters
   // CANCELLED so that a rethrow at await yields the same msg.
   std::string cancel_msg;
   std::vector<std::function<void()>> done_callbacks;

@@ -19,15 +19,15 @@ namespace weave {
 //
 // The barrier-broken signal: thrown by wait() on a barrier that was abort()ed, and injected into
 // the parties that were already inside a barrier which was then abort()ed or reset().
-// Unlike Cancelled it derives from std::exception — asyncio's BrokenBarrierError is a RuntimeError
-// (an ordinary Exception), i.e. a normal failure path that a generic
+// Unlike CancelledError it derives from std::exception — asyncio's BrokenBarrierError is a
+// RuntimeError (an ordinary Exception), i.e. a normal failure path that a generic
 // catch (const std::exception&) backstop may handle.
 //
 // The destructor is declared here and defined **out-of-line** (src/core/barrier.cpp): it is the
 // key function of this type, so the vtable/typeinfo is emitted exactly once in libweave.so and
 // consumer TUs keep only undefined references. This is the same ABI requirement as
-// Cancelled::what() / Timeout::what() (see the "ABI notes" section of docs/backends.md): if it
-// degraded into a per-TU weak definition, libc++abi's pointer comparison would make cross-DSO
+// CancelledError::what() / TimeoutError::what() (see the "ABI notes" section of docs/backends.md):
+// if it degraded into a per-TU weak definition, libc++abi's pointer comparison would make cross-DSO
 // catch silently mismatch (not even the linker would complain).
 class BrokenBarrierError : public std::runtime_error {
 public:
@@ -62,8 +62,8 @@ public:
 //   · broken(): whether the barrier is in the broken state.
 //
 // Cancellation follows asyncio rather than threading.Barrier: a cancelled party leaves the barrier
-// (Cancelled is injected at the blocking point; the generation bookkeeping and the drain gate stay
-// consistent, so the barrier is neither broken nor corrupted), and the remaining parties keep
+// (CancelledError is injected at the blocking point; the generation bookkeeping and the drain gate
+// stay consistent, so the barrier is neither broken nor corrupted), and the remaining parties keep
 // waiting. Releasing them is the caller's job — abort() or reset() — exactly as in asyncio.
 //
 // abort()/reset() are plain non-suspending member functions even though asyncio spells them
@@ -78,7 +78,7 @@ public:
 
   // Blocks until `parties` parties have arrived; returns this party's unique arrival index in
   // [0, parties). Throws BrokenBarrierError if the barrier is (or becomes) broken or was reset
-  // while this party waited, and Cancelled if the waiting party is cancelled.
+  // while this party waited, and CancelledError if the waiting party is cancelled.
   std::size_t wait();
 
   // Breaks the barrier: waiting parties and all later wait() calls throw BrokenBarrierError.

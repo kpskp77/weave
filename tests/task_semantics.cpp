@@ -47,14 +47,14 @@ WEAVE_TEST(task_semantics) {
     try {
       victim.await();
       throw std::logic_error("case2: await on cancelled task must throw");
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!victim.cancelled()) throw std::logic_error("case2: victim should be CANCELLED");
   });
 
-  // case 3: cancelling a blocked task → wake it immediately and inject Cancelled at the blocking
-  // point
+  // case 3: cancelling a blocked task → wake it immediately and inject CancelledError at the
+  // blocking point
   run_case(__func__, "case3", [&] {
     Event ready, caught;
     auto victim = create_task("waiting_victim", [&] {
@@ -63,24 +63,24 @@ WEAVE_TEST(task_semantics) {
         Event never;
         never.wait();
         throw std::logic_error("case3: cancelled waiter must not return from wait()");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         caught.set();
         throw;
       }
     });
     ready.wait();  // victim is now blocked in never.wait()
     victim.cancel();
-    caught.wait();  // Cancelled has been injected at victim's blocking point
+    caught.wait();  // CancelledError has been injected at victim's blocking point
     try {
       victim.await();
-      throw std::logic_error("case3: await must rethrow Cancelled");
-    } catch (const Cancelled&) {
+      throw std::logic_error("case3: await must rethrow CancelledError");
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!victim.cancelled()) throw std::logic_error("case3: victim should be CANCELLED");
   });
 
-  // case 4: a task may catch Cancelled to refuse cancellation → returning normally means DONE
+  // case 4: a task may catch CancelledError to refuse cancellation → returning normally means DONE
   // (cooperative semantics)
   run_case(__func__, "case4", [&] {
     Event ready, finished;
@@ -89,7 +89,7 @@ WEAVE_TEST(task_semantics) {
       try {
         Event never;
         never.wait();
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Swallow the cancellation: refuse it
       }
       finished.set();  // Still runs through to a normal finish
@@ -127,7 +127,7 @@ WEAVE_TEST(task_semantics) {
   });
 
   // case 7: cancel(msg) matches asyncio Task.cancel(msg) (Python 3.9+) — the msg is visible in the
-  // Cancelled injected at the blocking point and is preserved when rethrown at await.
+  // CancelledError injected at the blocking point and is preserved when rethrown at await.
   run_case(__func__, "case7", [&] {
     Event ready;
     auto victim = create_task("msg_victim", [&] {
@@ -136,9 +136,9 @@ WEAVE_TEST(task_semantics) {
         Event never;
         never.wait();
         throw std::logic_error("case7: cancelled waiter must not return");
-      } catch (const Cancelled& e) {
+      } catch (const CancelledError& e) {
         if (e.msg() != std::string_view{"shutdown"})
-          throw std::logic_error("case7: Cancelled must carry cancel msg at injection point");
+          throw std::logic_error("case7: CancelledError must carry cancel msg at injection point");
         throw;
       }
     });
@@ -146,15 +146,15 @@ WEAVE_TEST(task_semantics) {
     victim.cancel("shutdown");
     try {
       victim.await();
-      throw std::logic_error("case7: await must rethrow Cancelled");
-    } catch (const Cancelled& e) {
+      throw std::logic_error("case7: await must rethrow CancelledError");
+    } catch (const CancelledError& e) {
       if (e.msg() != std::string_view{"shutdown"})
-        throw std::logic_error("case7: await must rethrow Cancelled with original msg");
+        throw std::logic_error("case7: await must rethrow CancelledError with original msg");
     }
     if (!victim.cancelled()) throw std::logic_error("case7: victim should be CANCELLED");
   });
 
-  // case 8: cancel() without a msg → Cancelled::msg() is nullopt (corresponding to asyncio's
+  // case 8: cancel() without a msg → CancelledError::msg() is nullopt (corresponding to asyncio's
   // msg=None), and what() falls back to the default text.
   run_case(__func__, "case8", [&] {
     Event ready;
@@ -164,7 +164,7 @@ WEAVE_TEST(task_semantics) {
         Event never;
         never.wait();
         throw std::logic_error("case8: unreachable");
-      } catch (const Cancelled& e) {
+      } catch (const CancelledError& e) {
         if (e.msg()) throw std::logic_error("case8: plain cancel must have no msg");
         throw;
       }
@@ -173,8 +173,8 @@ WEAVE_TEST(task_semantics) {
     victim.cancel();
     try {
       victim.await();
-      throw std::logic_error("case8: await must rethrow Cancelled");
-    } catch (const Cancelled& e) {
+      throw std::logic_error("case8: await must rethrow CancelledError");
+    } catch (const CancelledError& e) {
       if (e.msg()) throw std::logic_error("case8: plain cancel rethrown must have no msg");
     }
   });
@@ -191,7 +191,7 @@ WEAVE_TEST(task_semantics) {
       try {
         gate.wait();
         throw std::logic_error("case9: cancel must win over the event leg");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         throw;  // Expected path: the cancellation is injected at the blocking point
       }
     });
@@ -200,8 +200,8 @@ WEAVE_TEST(task_semantics) {
     victim.cancel();  // The same-slot cancel leg
     try {
       victim.await();
-      throw std::logic_error("case9: await must rethrow Cancelled");
-    } catch (const Cancelled&) {
+      throw std::logic_error("case9: await must rethrow CancelledError");
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!victim.cancelled()) throw std::logic_error("case9: victim must be CANCELLED");

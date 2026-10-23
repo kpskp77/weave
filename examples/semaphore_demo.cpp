@@ -78,7 +78,7 @@ WEAVE_TEST(semaphore_demo) {
       queued.set();
       try {
         s.acquire();
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         std::printf("[semaphore_demo] waiter cancelled while queued\n");
         throw;  // Keep propagating (swallowing it would wrongly end the task as DONE)
       }
@@ -87,7 +87,7 @@ WEAVE_TEST(semaphore_demo) {
     waiter.cancel();  // Cancel a waiter that is sitting in the queue
     try {
       waiter.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!s.locked())

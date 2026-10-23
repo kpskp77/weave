@@ -20,7 +20,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | C++ (weave) | Python (asyncio) | Notes |
 |---|---|---|
 | `create_task(name, fn)` | `asyncio.create_task(coro)` | fn is a plain function; scheduled, not run immediately |
-| `task.await()` | `await task` | FAILED rethrows its exception; CANCELLED throws `Cancelled` |
+| `task.await()` | `await task` | FAILED rethrows its exception; CANCELLED throws `CancelledError` |
 | `task.cancel()` / `task.cancel(msg)` | `task.cancel(msg)` | Cooperative; msg matches asyncio 3.9+, preserved both on injection and on rethrow at `await` |
 | `task.done()` / `task.cancelled()` | `task.done()` / `task.cancelled()` | |
 | `task.get_name()` | `task.get_name()` | |
@@ -37,7 +37,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `shield(t)` | `asyncio.shield(aw)` | Returns a proxy task; cancellation/timeout stops at the proxy |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` blocks and yields in completion order |
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; first failure cancels siblings |
-| `Cancelled` / `Timeout` | `CancelledError` / `TimeoutError` | Cancellation does not derive from `std::exception` (matching the `BaseException` hierarchy); `Timeout` does derive |
+| `CancelledError` / `TimeoutError` | `CancelledError` / `TimeoutError` | Names match asyncio incl. the `Error` suffix; hierarchy as documented in [architecture.md](docs/architecture.md) |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | Barrier-broken/reset signal; derives from `std::runtime_error` (≡ `RuntimeError`) |
 | `WEAVE_TEST` + registry | pytest / assorted runners | No asyncio counterpart; driven by the backend bootstrap entry point |
 
@@ -76,7 +76,7 @@ WEAVE_TEST(my_test) {
     Event ev;
     auto t1 = create_task("producer", [&] { sleep(100_ns); ev.set(); });
     auto t2 = create_task("consumer", [&] { ev.wait(); /* ... */ });
-    wait_for(t1, 1_us);          // On timeout cancels the task and throws weave::Timeout
+    wait_for(t1, 1_us);          // On timeout cancels the task and throws weave::TimeoutError
     gather(t1, t2);
 }
 ```
@@ -109,8 +109,9 @@ must be complete under C++17. **Newer standards are supported as well** — call
 `-std=c++20` / `c++23` / `c++2c` for their own translation units, and the public headers are
 verified to compile cleanly under C++17/20/23.
 
-- **17 is complete**: no public header treats any C++20+ feature as required (`Cancelled::msg()` is
-  a `std::optional<std::string_view>`, the `wait` timeout is a `std::optional<duration>`).
+- **17 is complete**: no public header treats any C++20+ feature as required
+  (`CancelledError::msg()` is a `std::optional<std::string_view>`, the `wait` timeout is a
+  `std::optional<duration>`).
 - **Newer standards work too**: the public headers avoid constructs whose meaning changes by
   standard version or that are deprecated/removed, so bumping `-std=` introduces no warnings and no
   behavioural change.

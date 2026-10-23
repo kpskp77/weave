@@ -22,7 +22,7 @@ namespace weave {
 //      there is no "released but nobody took over" window, and a newcomer (acquire) cannot jump
 //      the queue.
 //   2. Ownership is not lost on the cancellation path: when cancellation and hand-off land in the
-//      same delta (the backend cancel leg wins, so the waiter receives Cancelled while already
+//      same delta (the backend cancel leg wins, so the waiter receives CancelledError while already
 //      granted), it is handed over to the next waiter.
 
 struct Lock::Impl {
@@ -64,9 +64,9 @@ void Lock::acquire() {
   try {
     me->ev.wait();
   } catch (...) {
-    // Cancelled while queued (Event::wait only throws Cancelled; catch (...) is still used to
-    // protect the "ownership is never lost" invariant). The two branches are mutually exclusive —
-    // granted is only set after dequeueing:
+    // CancelledError while queued (Event::wait only throws CancelledError; catch (...) is still
+    // used to protect the "ownership is never lost" invariant). The two branches are mutually
+    // exclusive — granted is only set after dequeueing:
     //   · not handed over yet → remove ourselves from the queue, the lock still belongs to the
     //     current holder
     //   · already handed over → hand it on to the queue head, the lock must not vanish with the
@@ -108,10 +108,10 @@ LockGuard::~LockGuard() {
 //
 // The cancellation path upholds two invariants:
 //   1. Both unlinking from the queue and re-acquiring the lock happen inside the catch, so the lock
-//      has been restored by the time Cancelled propagates (nothing leaks);
+//      has been restored by the time CancelledError propagates (nothing leaks);
 //   2. if cancellation and notify land in the same slot (already dequeued and what it receives is
-//      Cancelled), the failed unlink is the expected shape — the release was already consumed, so
-//      re-acquire the lock and then propagate.
+//      CancelledError), the failed unlink is the expected shape — the release was already consumed,
+//      so re-acquire the lock and then propagate.
 
 struct Condition::Impl {
   struct Waiter {
@@ -153,9 +153,9 @@ void Condition::wait() {
   try {
     me->ev.wait();
   } catch (...) {
-    // Cancellation (Event::wait only throws Cancelled; catch (...) is still used to protect the
-    // invariant). Not dequeued by notify yet → unlink; already dequeued (same slot as notify) → the
-    // failed unlink is the expected shape.
+    // Cancellation (Event::wait only throws CancelledError; catch (...) is still used to protect
+    // the invariant). Not dequeued by notify yet → unlink; already dequeued (same slot as notify) →
+    // the failed unlink is the expected shape.
     auto& q = impl_->waiters;
     for (auto it = q.begin(); it != q.end(); ++it) {
       if (it->get() == me.get()) {

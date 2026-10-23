@@ -21,8 +21,8 @@
 
 namespace weave {
 
-// Timeout signal. Corresponds to asyncio.TimeoutError, thrown when wait_for times out.
-// Unlike Cancelled, it derives from std::exception: asyncio's TimeoutError is an ordinary
+// TimeoutError signal. Corresponds to asyncio.TimeoutError, thrown when wait_for times out.
+// Unlike CancelledError, it derives from std::exception: asyncio's TimeoutError is an ordinary
 // Exception (an OSError subclass), since a timeout is a normal failure path that a generic
 // catch (const std::exception&) backstop may handle.
 //
@@ -32,7 +32,7 @@ namespace weave {
 // resolves to that copy in the library. Written back as inline (or removed), typeinfo degrades
 // into one weak definition per TU: libc++abi compares type_info by pointer, so catch would
 // silently mismatch across DSOs.
-struct Timeout : std::exception {
+struct TimeoutError : std::exception {
   const char* what() const noexcept override;
 };
 
@@ -44,7 +44,7 @@ struct Timeout : std::exception {
 //     TaskGroup's semantics)
 //   · all complete normally → returns
 //   · gather itself is cancelled → cancel all unfinished tasks first (asyncio: when gather is
-//     cancelled, its unfinished child tasks are cancelled too), then throw Cancelled
+//     cancelled, its unfinished child tasks are cancelled too), then throw CancelledError
 template <typename... Ts>
 void gather(Ts&... tasks) {
   detail::gather_impl({tasks...});
@@ -58,8 +58,8 @@ inline constexpr return_exceptions_t return_exceptions{};
 
 // The return_exceptions form: never returns early because a child task failed; once everything has
 // landed it returns the results in input order — DONE → nullptr; FAILED → its exception;
-// CANCELLED → an exception_ptr wrapping Cancelled. If gather itself is cancelled it still follows
-// the default form's semantics: cancel all unfinished tasks, then propagate Cancelled.
+// CANCELLED → an exception_ptr wrapping CancelledError. If gather itself is cancelled it still
+// follows the default form's semantics: cancel all unfinished tasks, then propagate CancelledError.
 // The result must be consumed: ignoring it equals waiting a whole round for nothing (the child
 // tasks have all landed but their exceptions are dropped).
 [[nodiscard]] std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks,
@@ -67,7 +67,7 @@ inline constexpr return_exceptions_t return_exceptions{};
 
 // ── wait_for ─────────────────────────────────────────────────────────────────
 
-// On timeout, cancels the task and waits for the cancellation to complete, then throws Timeout
+// On timeout, cancels the task and waits for the cancellation to complete, then throws TimeoutError
 // (asyncio 3.12+ semantics).
 void wait_for(const Task& task, duration timeout);
 
@@ -86,7 +86,7 @@ struct WaitResult {
 // None). On timeout the tasks are grouped by their state at that moment; nullopt (the default,
 // corresponding to asyncio's timeout=None) means no timeout; duration{0} is special-cased to an
 // immediate snapshot (no blocking, no yield), and non-positive durations are handled the same way.
-// If the waiter itself is cancelled → Cancelled propagates and the child tasks are unaffected.
+// If the waiter itself is cancelled → CancelledError propagates and the child tasks are unaffected.
 WaitResult wait(std::initializer_list<Task> tasks,
                 ReturnWhen return_when = ReturnWhen::ALL_COMPLETED,
                 std::optional<duration> timeout = std::nullopt);
@@ -130,7 +130,7 @@ AsCompleted as_completed(std::initializer_list<Task> tasks);
 //   · the first FAILED (in completion order) → cancel all unfinished siblings, wait for them all to
 //     land, then rethrow its exception
 //   · the waiter is cancelled → cascade-cancel all unfinished child tasks, wait for them to land,
-//     then throw Cancelled
+//     then throw CancelledError
 // A child task cancelled externally (CANCELLED) is not a failure and does not trigger sibling
 // cancellation (matching asyncio.TaskGroup's tolerance of externally cancelled child tasks).
 // Deviation: no ExceptionGroup, only the first failure is rethrown.

@@ -117,8 +117,8 @@ WEAVE_TEST(lock_semantics) {
     l.release();  // The normal path is unaffected
   });
 
-  // case 5: a queued waiter is cancelled → it throws Cancelled and holds nothing; the lock stays
-  // with its owner and goes to the remaining waiters
+  // case 5: a queued waiter is cancelled → it throws CancelledError and holds nothing; the lock
+  // stays with its owner and goes to the remaining waiters
   run_case(__func__, "case5", [&] {
     Lock l;
     l.acquire();  // Held by the main task
@@ -128,7 +128,7 @@ WEAVE_TEST(lock_semantics) {
       try {
         l.acquire();
         throw std::logic_error("case5: cancelled waiter must not acquire");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         caught.set();
         throw;
       }
@@ -146,7 +146,7 @@ WEAVE_TEST(lock_semantics) {
     caught.wait();
     try {
       victim.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!l.locked()) throw std::logic_error("case5: lock must stay with its owner");
@@ -158,9 +158,9 @@ WEAVE_TEST(lock_semantics) {
   });
 
   // case 6: cancellation and hand-off in the same slot — release() has already handed ownership to
-  // victim, and the immediately following cancel() makes it receive Cancelled at the blocking point
-  // (the backend cancel leg wins). Ownership must not be lost: it has to be handed to the next
-  // waiter.
+  // victim, and the immediately following cancel() makes it receive CancelledError at the blocking
+  // point (the backend cancel leg wins). Ownership must not be lost: it has to be handed to the
+  // next waiter.
   run_case(__func__, "case6", [&] {
     Lock l;
     l.acquire();
@@ -170,7 +170,7 @@ WEAVE_TEST(lock_semantics) {
       try {
         l.acquire();
         throw std::logic_error("case6: cancelled waiter must not acquire");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         caught.set();
         throw;
       }
@@ -192,7 +192,7 @@ WEAVE_TEST(lock_semantics) {
     caught.wait();
     try {
       victim.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     got.wait();  // The point: ownership was transferred to peer instead of vanishing with the
@@ -238,7 +238,7 @@ WEAVE_TEST(lock_semantics) {
     holder.cancel();
     try {
       holder.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (l.locked()) throw std::logic_error("case9: guard must release while unwinding");

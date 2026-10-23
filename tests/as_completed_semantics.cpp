@@ -76,7 +76,7 @@ WEAVE_TEST(as_completed_semantics) {
       try {
         (void)ac.next();  // Expected to throw: the return value is meaningless
         throw std::logic_error("case4: unreachable");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Expected path: the cancellation only interrupts this next() call
       }
       if (!ac.pending()) throw std::logic_error("case4: state must survive cancellation");
@@ -88,7 +88,7 @@ WEAVE_TEST(as_completed_semantics) {
     consumer.cancel();
     consumer.await();
     if (consumer.cancelled())
-      throw std::logic_error("case4: consumer swallowed Cancelled and finished DONE");
+      throw std::logic_error("case4: consumer swallowed CancelledError and finished DONE");
     if (!child.done() || child.cancelled())
       throw std::logic_error("case4: child must not be affected by consumer cancel");
   });

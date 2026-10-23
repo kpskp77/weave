@@ -65,10 +65,11 @@ WEAVE_TEST(event_semantics) {
     gather(w1, w2);
   });
 
-  // case 4: cancelled while waiting → Cancelled is injected at the blocking point; the wake event
-  // has been unlinked from wake_evs and destroyed (required on both the success and cancellation
-  // paths), and a later set() on the same Event must not trigger the destroyed wake event (SVDPI
-  // dereferenced a null pointer here); a new waiter passes immediately because the flag is set
+  // case 4: cancelled while waiting → CancelledError is injected at the blocking point; the wake
+  // event has been unlinked from wake_evs and destroyed (required on both the success and
+  // cancellation paths), and a later set() on the same Event must not trigger the destroyed wake
+  // event (SVDPI dereferenced a null pointer here); a new waiter passes immediately because the
+  // flag is set
   run_case(__func__, "case4", [&] {
     Event ev, ready, caught, ok;
     auto w = create_task("cancel_w", [&] {
@@ -76,18 +77,18 @@ WEAVE_TEST(event_semantics) {
       try {
         ev.wait();
         throw std::logic_error("case4: cancelled waiter must not return from wait()");
-      } catch (const Cancelled&) {
-        caught.set();  // Cancelled is injected inside ev.wait()
+      } catch (const CancelledError&) {
+        caught.set();  // CancelledError is injected inside ev.wait()
         throw;         // Keep propagating → the task is CANCELLED
       }
     });
     ready.wait();  // w is blocked in ev.wait()
     w.cancel();
-    caught.wait();  // Cancelled has been injected (w was woken and advanced past the block)
+    caught.wait();  // CancelledError has been injected (w was woken and advanced past the block)
     try {
       w.await();
       throw std::logic_error("case4: await on cancelled task must throw");
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!w.cancelled()) throw std::logic_error("case4: w should be CANCELLED");

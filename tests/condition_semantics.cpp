@@ -146,7 +146,7 @@ WEAVE_TEST(condition_semantics) {
   });
 
   // case 5: waiter cancellation → unlink from the queue, re-acquire the lock, then propagate
-  // Cancelled; after the unlink a notify must not release it again (that would resume on a
+  // CancelledError; after the unlink a notify must not release it again (that would resume on a
   // destroyed stack frame), and the lock does not leak with the cancellation
   run_case(__func__, "case5", [&] {
     Condition c;
@@ -157,8 +157,9 @@ WEAVE_TEST(condition_semantics) {
       try {
         c.wait();
         throw std::logic_error("case5: cancelled waiter must not pass wait");
-      } catch (const Cancelled&) {
-        if (!c.locked()) throw std::logic_error("case5: lock must be re-acquired before Cancelled");
+      } catch (const CancelledError&) {
+        if (!c.locked())
+          throw std::logic_error("case5: lock must be re-acquired before CancelledError");
         cancelled.set();
         ack.wait();  // Wait for the main task to finish verifying before unlocking (avoids a
                      // deadlock while the main task waits)
@@ -178,7 +179,7 @@ WEAVE_TEST(condition_semantics) {
     try {
       victim.await();
       throw std::logic_error("case5: victim must end CANCELLED");
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (c.locked()) throw std::logic_error("case5: victim must have released in its catch");
@@ -189,9 +190,9 @@ WEAVE_TEST(condition_semantics) {
   });
 
   // case 6: cancellation and notify in the same slot — there is no suspension point between
-  // notify_all() and cancel(), so victim is in the "already dequeued but receiving Cancelled" race
-  // shape (the backend cancel leg wins): the release was already consumed, the lock is re-acquired
-  // and then the cancellation propagates, without affecting the remaining waiters
+  // notify_all() and cancel(), so victim is in the "already dequeued but receiving CancelledError"
+  // race shape (the backend cancel leg wins): the release was already consumed, the lock is
+  // re-acquired and then the cancellation propagates, without affecting the remaining waiters
   run_case(__func__, "case6", [&] {
     Condition c;
     Event r1, r2, cancelled, ack, got;
@@ -201,8 +202,9 @@ WEAVE_TEST(condition_semantics) {
       try {
         c.wait();
         throw std::logic_error("case6: cancelled waiter must not pass wait");
-      } catch (const Cancelled&) {
-        if (!c.locked()) throw std::logic_error("case6: lock must be re-acquired before Cancelled");
+      } catch (const CancelledError&) {
+        if (!c.locked())
+          throw std::logic_error("case6: lock must be re-acquired before CancelledError");
         cancelled.set();
         ack.wait();
         c.release();
@@ -220,8 +222,9 @@ WEAVE_TEST(condition_semantics) {
     r1.wait();
     r2.wait();  // The condition queue is victim,peer; the lock is free
     c.acquire();
-    c.notify_all();   // Both are dequeued and released
-    victim.cancel();  // Same slot as the release: victim gets Cancelled, peer proceeds normally
+    c.notify_all();  // Both are dequeued and released
+    // Same slot as the release: victim gets CancelledError, peer proceeds normally
+    victim.cancel();
     c.release();
     cancelled.wait();
     ack.set();
@@ -230,7 +233,7 @@ WEAVE_TEST(condition_semantics) {
     try {
       victim.await();
       throw std::logic_error("case6: victim must end CANCELLED");
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
   });

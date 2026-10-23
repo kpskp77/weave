@@ -34,13 +34,13 @@ WEAVE_TEST(demo) {
   auto t1 = create_task("producer", [&] { producer(ev); });
   auto t2 = create_task("consumer", [&] { consumer(ev); });
 
-  // wait_for is bound to time out: the cancel takes effect and Timeout is thrown once the
+  // wait_for is bound to time out: the cancel takes effect and TimeoutError is thrown once the
   // cancellation completes
   auto t3 = create_task("slow", slow);
   try {
     wait_for(t3, 1_us);
     throw std::logic_error("wait_for should have timed out");
-  } catch (const Timeout&) {
+  } catch (const TimeoutError&) {
     // Expected path
   }
   if (!t3.cancelled()) throw std::logic_error("slow should be cancelled");
@@ -73,7 +73,7 @@ WEAVE_TEST(demo) {
     try {
       gather(t6);
       throw std::logic_error("unreachable");
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path: the outer cancellation propagates through gather
     }
   });

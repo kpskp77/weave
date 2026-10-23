@@ -17,9 +17,9 @@
 //      therefore never held across a suspension, so abort()/reset() (which merely take it) can
 //      never block and stay plain member functions.
 //   2. A party that enters the barrier always leaves it exactly once, on every path (trip,
-//      BrokenBarrierError, Cancelled). Leaving is what decrements `count` and, when it reaches 0,
-//      returns DRAINING/RESETTING to FILLING and wakes the arrivals that are waiting on the drain
-//      gate — forgetting it would wedge the barrier forever.
+//      BrokenBarrierError, CancelledError). Leaving is what decrements `count` and, when it reaches
+//      0, returns DRAINING/RESETTING to FILLING and wakes the arrivals that are waiting on the
+//      drain gate — forgetting it would wedge the barrier forever.
 //   3. Cancellation neither breaks nor corrupts the barrier (matching asyncio, and unlike
 //      threading.Barrier): the cancelled party unwinds through invariant 2, and the remaining
 //      parties keep waiting; only abort()/reset() releases them.
@@ -98,7 +98,7 @@ std::size_t Barrier::wait() {
   s.cond.acquire();
   // Drain gate: a party arriving while the previous generation is still leaving, or while a reset()
   // is being applied to the parties inside, waits first and then joins the (new) filling
-  // generation. Cancelled here leaves the barrier untouched — no slot was taken yet.
+  // generation. CancelledError here leaves the barrier untouched — no slot was taken yet.
   try {
     while (s.state == State::DRAINING || s.state == State::RESETTING) s.cond.wait();
     if (s.state == State::BROKEN) throw BrokenBarrierError("Barrier aborted");
@@ -106,7 +106,7 @@ std::size_t Barrier::wait() {
     s.cond.release();
     throw;
   }
-  // fill() may throw (BrokenBarrierError / Cancelled) only after it has taken a slot, so the
+  // fill() may throw (BrokenBarrierError / CancelledError) only after it has taken a slot, so the
   // leaving bookkeeping must run on that path too — that is invariant 2 above.
   auto leave_and_release = detail::on_scope_exit([&s] {
     s.leave();

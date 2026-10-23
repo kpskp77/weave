@@ -56,22 +56,23 @@ most natural fit for a simulation kernel.
 
 ### Why cancellation is cooperative
 
-`cancel()` only sets a flag and wakes the task, injecting a `Cancelled` exception at the blocking
-point. SV `disable` / `process::kill()` are banned: killing at an arbitrary point tears the C++
-call stack apart, RAII does not unwind, resources leak, and bookkeeping state is corrupted. This is
-isomorphic to asyncio's cooperative cancellation (`CancelledError` raised at await points, catchable
-and refusable). `cancel(msg)` matches asyncio 3.9+'s `Task.cancel(msg)`: msg is stored in the task
-bookkeeping, and the same msg is preserved both in the `Cancelled` injected at the blocking point
-and where later `await`/`gather` rethrow it; when a combinator cascade-cancels sibling tasks it
-passes an empty msg (msg belongs to the context of whoever initiated the cancellation).
+`cancel()` only sets a flag and wakes the task, injecting a `CancelledError` exception at the
+blocking point. SV `disable` / `process::kill()` are banned: killing at an arbitrary point tears the
+C++ call stack apart, RAII does not unwind, resources leak, and bookkeeping state is corrupted. This
+is isomorphic to asyncio's cooperative cancellation (`CancelledError` raised at await points,
+catchable and refusable). `cancel(msg)` matches asyncio 3.9+'s `Task.cancel(msg)`: msg is stored in
+the task bookkeeping, and the same msg is preserved both in the `CancelledError` injected at the
+blocking point and where later `await`/`gather` rethrow it; when a combinator cascade-cancels
+sibling tasks it passes an empty msg (msg belongs to the context of whoever initiated the
+cancellation).
 
-The type hierarchy of the cancellation signals also follows asyncio: `Cancelled` **deliberately does
-not derive from `std::exception`** (matching Python 3.8+, where `CancelledError` is a
+The type hierarchy of the cancellation signals also follows asyncio: `CancelledError` **deliberately
+does not derive from `std::exception`** (matching Python 3.8+, where `CancelledError` is a
 `BaseException`), so the idiomatic `catch (const std::exception&)` backstop cannot silently swallow
 cancellation — swallowing it would make the task wrongly finish as DONE and break gather / TaskGroup
-/ wait_for's judgement of the CANCELLED terminal state; `Timeout`, by contrast, **does derive from
-`std::exception`** (matching `TimeoutError` being an ordinary `Exception`), because a timeout is a
-normal failure path that generic logging/backstop code may handle.
+/ wait_for's judgement of the CANCELLED terminal state; `TimeoutError`, by contrast, **does derive
+from `std::exception`** (matching asyncio's `TimeoutError`, an ordinary `Exception`), because a
+timeout is a normal failure path that generic logging/backstop code may handle.
 
 ### Edge semantics of Event
 
@@ -93,8 +94,8 @@ Each queued waiter holds a one-shot `Event` as the hand-off signal, so the whole
 
 Cancellation must not make the lock vanish. If cancellation and hand-off land in the same delta
 (`release()` has just handed the lock to some waiter, which is immediately `cancel()`ed; the backend
-cancel leg wins), that waiter receives `Cancelled` rather than the lock inside `acquire()` — in that
-case ownership must be handed on to the next waiter (see `handoff()` in `src/core/locks.cpp`). This
+cancel leg wins), that waiter receives `CancelledError` rather than the lock inside `acquire()` — in
+that case ownership must be handed on to the next waiter (see `handoff()` in `src/core/locks.cpp`). This
 is equivalent to asyncio doing an extra `_wake_up_first()` in `acquire()`'s `except
 CancelledError` branch.
 
@@ -133,7 +134,7 @@ Dependencies point downwards, and every public header must compile standalone:
 ```
 weave/config.hpp    backend selection macro (SVDPI by default)
 weave/time.hpp     duration (int64 femtoseconds) + literals
-weave/task.hpp     Task / create_task / sleep / Cancelled
+weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event
 weave/locks.hpp    Lock / LockGuard / Condition (communication primitive, built on Event)
 weave/semaphore.hpp Semaphore / SemaphoreGuard / BoundedSemaphore / BoundedSemaphoreGuard
@@ -172,23 +173,23 @@ compiles; not using coroutines is a design decision (see above).
   once under `-std=c++17` / `c++20` / `c++23` with `-Wall -Wextra -Werror -fsyntax-only` (`sc.hpp`
   additionally needs the SystemC include path and `WEAVE_BACKEND_SYSTEMC`).
 
-Idioms already in use and to be kept by new code: `std::optional` (`Cancelled::msg()`, the `wait`
-timeout), `std::string_view`, `[[nodiscard]]` (pure queries and resource acquisition),
+Idioms already in use and to be kept by new code: `std::optional` (`CancelledError::msg()`, the
+`wait` timeout), `std::string_view`, `[[nodiscard]]` (pure queries and resource acquisition),
 `[[maybe_unused]]`, `inline constexpr`, structured bindings, `std::exchange`, `unique_ptr` (backend
 event table), `static_assert` + `std::is_invocable_v` / `std::is_nothrow_copy_constructible_v`.
 
 A few boundaries that have been evaluated — do not cross them again:
 
 1. **Owning parameters stay `std::string`**: `create_task(name)`, `TaskGroup::create_task`,
-   `Task::cancel(msg)`, `register_test(name)`. `Cancelled::msg_` is a borrowed view pointing at
-   `TaskRecord::cancel_msg`, and `what()` relies on `std::string`'s NUL termination. `Cancelled` must
-   have no heap members and must copy nothrow (it is thrown across the `-sv_lib` boundary); the
+   `Task::cancel(msg)`, `register_test(name)`. `CancelledError::msg_` is a borrowed view pointing at
+   `TaskRecord::cancel_msg`, and `what()` relies on `std::string`'s NUL termination. `CancelledError`
+   must have no heap members and must copy nothrow (it is thrown across the `-sv_lib` boundary); the
    message-carrying construction goes through exactly one path, `detail::cancelled_with_msg`. **It is
    no longer trivially copyable**: `what()` is the key function, defined out-of-line in the library,
    which keeps the typeinfo unique per library (polymorphic classes are not trivially copyable per
    the standard) — that trait is traded for catch correctness, see the "ABI notes" section of
-   [backends.md](backends.md). Likewise, **do not move `Cancelled::what()` / `Timeout::what()` back
-   to inline definitions**.
+   [backends.md](backends.md). Likewise, **do not move `CancelledError::what()` /
+   `TimeoutError::what()` back to inline definitions**.
 2. **`std::optional` never enters the port wire format**: `ev_id < 0`, `timeout_ticks < 0`,
    `abort_id < 0` are the convention with the SV DPI; changing it means touching
    `sv/weave_pkg.sv` and both backends together.

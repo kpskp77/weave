@@ -35,9 +35,9 @@ template <typename F>
 void run_case(const char* test, const char* name, F&& body) {
   try {
     body();
-  } catch (const weave::Cancelled& e) {
-    // Cancelled deliberately does not derive from std::exception (see include/weave/task.hpp), so
-    // it must be caught separately before std::exception; otherwise it would only reach catch
+  } catch (const weave::CancelledError& e) {
+    // CancelledError deliberately does not derive from std::exception (see include/weave/task.hpp),
+    // so it must be caught separately before std::exception; otherwise it would only reach catch
     // (...).
     ++failed_count();
     std::printf("[FAIL] %s::%s: %s\n", test, name, e.what());

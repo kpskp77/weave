@@ -1,6 +1,6 @@
 // Common task-primitive usage: create_task's scheduling timing, await / done / cancelled /
 // get_name, sleep and sleep(0), cancel(msg), and the cooperative semantics of "swallowing
-// Cancelled to refuse cancellation".
+// CancelledError to refuse cancellation".
 // Isolated usage of each primitive is spread across this directory by domain; a typical
 // end-to-end test lives in demo_test.cpp.
 
@@ -52,14 +52,14 @@ WEAVE_TEST(task_demo) {
   paced_done.wait();
   paced.await();
 
-  // ── cancel(msg): injects Cancelled(msg) at the target's next blocking point ──
+  // ── cancel(msg): injects CancelledError(msg) at the target's next blocking point ──
   Event ready, caught;
   auto victim = create_task("victim", [&] {
     ready.set();
     try {
       Event never;
       never.wait();
-    } catch (const Cancelled& e) {
+    } catch (const CancelledError& e) {
       // msg() is an optional<string_view>: nullopt when the canceller passed no message
       if (!e.msg() || *e.msg() != "shutdown")
         throw std::logic_error("task_demo: cancel msg missing at injection point");
@@ -71,15 +71,15 @@ WEAVE_TEST(task_demo) {
   victim.cancel("shutdown");
   caught.wait();
   try {
-    victim.await();  // Awaiting a CANCELLED task rethrows the same Cancelled
+    victim.await();  // Awaiting a CANCELLED task rethrows the same CancelledError
     throw std::logic_error("task_demo: await must throw for a cancelled task");
-  } catch (const Cancelled& e) {
+  } catch (const CancelledError& e) {
     if (!e.msg() || *e.msg() != "shutdown")
       throw std::logic_error("task_demo: await must rethrow with the original msg");
   }
   if (!victim.cancelled()) throw std::logic_error("task_demo: victim should be CANCELLED");
 
-  // ── refusing cancellation: swallowing Cancelled and returning normally
+  // ── refusing cancellation: swallowing CancelledError and returning normally
   // → the task is DONE (the process is never killed) ────────────────────
   Event ready2, finished;
   auto stubborn = create_task("stubborn", [&] {
@@ -87,7 +87,7 @@ WEAVE_TEST(task_demo) {
     try {
       Event never;
       never.wait();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Ignore the cancellation and carry on (locals and RAII unwind normally throughout)
     }
     finished.set();

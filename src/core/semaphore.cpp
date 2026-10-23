@@ -34,7 +34,7 @@ namespace {
 //      "a permit is available but someone is queued", and a newly arriving acquire cannot jump the
 //      queue (barging protection, matching asyncio 3.10+'s fair semantics).
 //   2. Permits are not lost on the cancellation path: when cancellation and release land in the
-//      same delta (the backend cancel leg wins, so the waiter receives Cancelled while already
+//      same delta (the backend cancel leg wins, so the waiter receives CancelledError while already
 //      granted), the permit is transferred to the next waiter; if the queue is already empty the
 //      permit is returned to the count.
 struct SemaphoreCore {
@@ -72,9 +72,9 @@ struct SemaphoreCore {
     try {
       me->ev.wait();
     } catch (...) {
-      // Cancelled while queued (Event::wait only throws Cancelled; catch (...) is still used to
-      // protect invariant 2). The two branches are mutually exclusive — granted is only set after
-      // dequeueing:
+      // CancelledError while queued (Event::wait only throws CancelledError; catch (...) is still
+      // used to protect invariant 2). The two branches are mutually exclusive — granted is only set
+      // after dequeueing:
       //   · not released yet → remove ourselves from the queue (the permit was never issued)
       //   · already released → transfer to the queue head / return to the count, the permit must
       //     not vanish with the cancellation

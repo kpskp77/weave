@@ -69,7 +69,7 @@ WEAVE_TEST(condition_demo) {
       try {
         c.wait();
         throw std::logic_error("condition_demo: cancelled waiter must not pass wait");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         c.release();  // wait already re-acquired the lock; release, then propagate
         throw;
       }
@@ -80,7 +80,7 @@ WEAVE_TEST(condition_demo) {
     c.release();  // Yields the lock: wait's cancellation path re-acquires it first
     try {
       waiter.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (c.locked()) throw std::logic_error("condition_demo: lock must be free after cancel");

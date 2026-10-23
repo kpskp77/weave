@@ -72,8 +72,8 @@ extern "C" int sc_main(int, char**) { return weave::sc::run(); }
 // uses C++ linkage, drop extern "C"
 ```
 
-**ABI notes (exception types across DSOs)**: `Cancelled` / `Timeout` are thrown by the library and
-caught by user code. On Linux/Android, libc++abi follows the Itanium ABI and assumes type
+**ABI notes (exception types across DSOs)**: `CancelledError` / `TimeoutError` are thrown by the
+library and caught by user code. On Linux/Android, libc++abi follows the Itanium ABI and assumes type
 information is globally unique (`type_info` is compared by pointer), so both sides must share **the
 same** typeinfo object. Writing inline definitions directly in a public header makes GCC/Clang treat
 them as vague linkage: every TU that uses the type emits a weak definition; and since, for instance,
@@ -94,9 +94,9 @@ references that the dynamic linker resolves to that same copy at load time. Cons
 - How to check: `nm -D <exe> | grep _ZTIN5weave` should be all `U` (undefined), with `D`/`V`
   definitions appearing only in `libweave.so`; if `what()` is ever moved back to an inline
   definition, definitions reappear here and `catch` regresses to mismatch;
-- The cost: `Cancelled` thereby becomes a polymorphic type (with a virtual destructor, no longer
-  trivially copyable); its invariants reduce to "borrowed view, no heap members, nothrow copy" (the
-  `static_assert`s in `task.hpp` watch exactly these three things).
+- The cost: `CancelledError` thereby becomes a polymorphic type (with a virtual destructor, no
+  longer trivially copyable); its invariants reduce to "borrowed view, no heap members, nothrow
+  copy" (the `static_assert`s in `task.hpp` watch exactly these three things).
 
 Loading the `weave` and example/test libraries via `-sv_lib` (the VCS scenario) works the same way:
 the single copy of RTTI inside the library is shared through the dynamic linker.

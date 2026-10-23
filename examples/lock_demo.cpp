@@ -63,7 +63,7 @@ WEAVE_TEST(locks_demo) {
       queued.set();
       try {
         l.acquire();
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         std::printf("[locks_demo] waiter cancelled while queued\n");
         throw;  // Keep propagating (swallowing it would wrongly end the task as DONE)
       }
@@ -72,7 +72,7 @@ WEAVE_TEST(locks_demo) {
     waiter.cancel();  // Cancel a waiter that is sitting in the queue
     try {
       waiter.await();
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!l.locked()) throw std::logic_error("locks_demo: lock must stay with its owner");

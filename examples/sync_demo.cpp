@@ -40,7 +40,7 @@ WEAVE_TEST(sync_demo) {
 
   // ── gather(..., return_exceptions): waits for everything to land, then
   // returns results in input order ──────────────────────────────────────
-  //   DONE → nullptr; FAILED → its exception; CANCELLED → a wrapped Cancelled
+  //   DONE → nullptr; FAILED → its exception; CANCELLED → a wrapped CancelledError
   {
     Event block;
     auto ok = create_task("re_ok", [] {});
@@ -59,7 +59,7 @@ WEAVE_TEST(sync_demo) {
     try {
       std::rethrow_exception(results[2]);
       throw std::logic_error("sync_demo: unreachable");
-    } catch (const Cancelled& e) {
+    } catch (const CancelledError& e) {
       if (!e.msg() || *e.msg() != "cleanup")
         throw std::logic_error("sync_demo: CANCELLED keeps the cancel msg");
     }
@@ -68,7 +68,7 @@ WEAVE_TEST(sync_demo) {
   }
 
   // ── wait_for: returns normally on success; on timeout it cancels the
-  // task, waits for the cancellation to complete, then throws Timeout ───
+  // task, waits for the cancellation to complete, then throws TimeoutError ───
   {
     Event gate;
     auto fast = create_task("wait_for_fast", [&] { gate.wait(); });
@@ -81,7 +81,7 @@ WEAVE_TEST(sync_demo) {
     try {
       wait_for(slow, 1_ns);
       throw std::logic_error("sync_demo: wait_for must time out");
-    } catch (const Timeout&) {
+    } catch (const TimeoutError&) {
       // Expected path: after the timeout the task is cancelled and the cancellation completed
     }
     if (!slow.cancelled()) throw std::logic_error("sync_demo: timed-out task must be cancelled");
@@ -123,7 +123,7 @@ WEAVE_TEST(sync_demo) {
     try {
       wait_for(proxy, 1_ns);
       throw std::logic_error("sync_demo: shield proxy must time out");
-    } catch (const Timeout&) {
+    } catch (const TimeoutError&) {
       // Expected path
     }
     if (!proxy.cancelled()) throw std::logic_error("sync_demo: proxy should be cancelled");

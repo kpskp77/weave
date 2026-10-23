@@ -68,20 +68,20 @@ leg). **Touch the contract only when a new suspension shape is required.**
 - **Single blocking point**: every suspension goes through `detail::backend_wait()` → `port::wait`;
   nowhere else may introduce a suspension.
 - **Cooperative cancellation**: `cancel(msg)` only sets `cancel_armed` + records msg + triggers the
-  private abort event, and `Cancelled(msg)` is injected at the blocking point; if the body swallows
-  `Cancelled` and returns normally → the task is DONE. Killing processes is forbidden (it breaks RAII
-  unwinding); cascade cancellation of siblings passes an empty msg, while the injection point and the
-  rethrow at `await` preserve the original msg.
-- **The exception type hierarchy must not change**: `Cancelled` **does not derive** from
+  private abort event, and `CancelledError(msg)` is injected at the blocking point; if the body
+  swallows `CancelledError` and returns normally → the task is DONE. Killing processes is forbidden
+  (it breaks RAII unwinding); cascade cancellation of siblings passes an empty msg, while the
+  injection point and the rethrow at `await` preserve the original msg.
+- **The exception type hierarchy must not change**: `CancelledError` **does not derive** from
   `std::exception` (matching `BaseException`, so it is not silently swallowed by a backstop catch),
-  while `Timeout` **does derive** (matching `TimeoutError`).
+  while `TimeoutError` **does derive** (matching asyncio's `TimeoutError`, an ordinary `Exception`).
 - **`what()` for both exception types must be defined out-of-line in the library**
   (`src/core/sync.cpp` / `src/core/task.cpp`): it is the key function for both types, so the
   vtable/typeinfo is emitted exactly once in libweave.so and consumer TUs keep only undefined
   references. Writing it back as inline degrades typeinfo into a per-TU weak definition, and
   libc++abi compares by pointer → cross-DSO `catch` silently mismatches (neither compilation nor
-  linking reports anything). Therefore `Cancelled` is a polymorphic type with a virtual destructor
-  (no longer trivially copyable; the assertions became nothrow-copy + no heap members).
+  linking reports anything). Therefore `CancelledError` is a polymorphic type with a virtual
+  destructor (no longer trivially copyable; the assertions became nothrow-copy + no heap members).
 - **Event edge semantics**: `set()` snapshots the current waiters and triggers each one, and does not
   re-check the flag after releasing them; on **both paths** (success and cancellation) `wait()` must
   unlink its wake event from `wake_evs` before destroying it, otherwise a later `set()` would
@@ -92,7 +92,7 @@ leg). **Touch the contract only when a new suspension shape is required.**
   same non-suspending call (`held` stays true throughout, so there is no idle window and newcomers
   cannot jump the queue); each queued waiter holds a one-shot `Event` as the hand-off signal. If a
   waiter is cancelled after it has already been `granted` (cancellation and hand-off in the same
-  slot → the backend cancel leg wins, so it receives `Cancelled` instead of the lock), it must
+  slot → the backend cancel leg wins, so it receives `CancelledError` instead of the lock), it must
   `handoff()` to the next waiter, otherwise the lock vanishes permanently with the cancellation.
 - **`detail::on_scope_exit` is used for state that still has readers after the frame dies**:
   `Event::wait()` (`wake_evs` lives on the shared `Impl`), `AsCompleted::next()` (`waiting` lives on
@@ -100,14 +100,14 @@ leg). **Touch the contract only when a new suspension shape is required.**
   they are held by `shared_ptr` from the done_callbacks of unfinished child tasks, so they are still
   alive after the frame dies and those callbacks still read `waiting`/`signalled`).
 - **Whether flag reset is coupled with event destruction depends on whether cancellation escapes**:
-  `wait()` (asyncio.wait) is designed to propagate `Cancelled` as-is (without cancelling child
+  `wait()` (asyncio.wait) is designed to propagate `CancelledError` as-is (without cancelling child
   tasks); when it escapes, the child tasks are still pending and `st` is still held by their
   callbacks, so "clear `waiting` and then `destroy_event`" must be written as a pair inside the same
   guard — if split into "guard + straight-line code", the straight-line statement never runs on the
   cancellation path, and a child task completing later would `trigger` an already destroyed id (the
-  SystemC side throws `invalid event id`). `TaskGroup::wait()` differs: it catches `Cancelled` in
-  place, drains the siblings, and only then rethrows, so resetting the flag right after the `try` is
-  enough and the guard only needs to destroy the event.
+  SystemC side throws `invalid event id`). `TaskGroup::wait()` differs: it catches `CancelledError`
+  in place, drains the siblings, and only then rethrows, so resetting the flag right after the `try`
+  is enough and the guard only needs to destroy the event.
 - Guard destructors neither throw nor suspend; cleanup that needs to suspend (waiting for landing
   after a TaskGroup cascade cancellation) always stays in explicit code.
 - **Time**: internally int64 femtoseconds, `to_ticks` rounds up to guarantee sleeping at least long
@@ -120,7 +120,7 @@ leg). **Touch the contract only when a new suspension shape is required.**
 - **Failure propagation**: `gather` rethrows the first failure immediately in **completion order**
   and does not cancel siblings (cancelling siblings is TaskGroup semantics); if gather itself is
   cancelled it first cascade-cancels the unfinished tasks; `wait_for` timeout → cancel, wait for the
-  cancellation to complete, then throw `Timeout`.
+  cancellation to complete, then throw `TimeoutError`.
 
 ## Where new content goes
 
@@ -143,7 +143,9 @@ only in `src/core/*_internal.hpp`, never in public headers.
 - **Naming follows asyncio**: any primitive that has an asyncio counterpart must use the same name
   (`done`/`cancelled`/`cancel`/`get_name`, `create_task`, `sleep`,
   `Event::wait/set/clear/is_set`, `gather`, `wait_for`, `TaskGroup`, `shield`, `as_completed`,
-  `Cancelled`, `Timeout`), and new primitives are no exception — check asyncio first, do not invent.
+  `CancelledError`, `TimeoutError`), and new primitives are no exception — check asyncio first, do
+  not invent. The `Error` suffix is part of the name: `CancelledError` / `TimeoutError` /
+  `BrokenBarrierError` keep it, never shorten it to a bare state noun (`Cancelled`, `Timeout`).
   Project-specific concepts with no counterpart (`duration`, `WEAVE_TEST`, `weave::sc::run()`) follow
   C++ conventions; `detail::`/`g_*` are unconstrained.
 - **C++17 is the floor, not the ceiling**: the library itself is built as C++17
@@ -154,7 +156,7 @@ only in `src/core/*_internal.hpp`, never in public headers.
   own `-std=`. Public headers must compile standalone (explicitly include the headers they use, no
   reliance on transitive inclusion). Evaluated boundaries (`string_view` cannot replace parameters
   that need ownership, port wire-format sentinels stay negative, no `if constexpr` without a
-  type-dependent branch, `Cancelled::what()` must stay out-of-line to keep typeinfo unique per
+  type-dependent branch, `CancelledError::what()` must stay out-of-line to keep typeinfo unique per
   library) are covered in the "Language baseline" section of architecture.md.
 
 ## Test-writing conventions
@@ -196,11 +198,11 @@ stylua <changed .xmake>  # see .stylua.toml
 ## Pitfalls in this environment (already hit)
 
 - **The triggered state of an already triggered event lingers** (SystemC via `change_stamp`, SV via a
-  sticky flag): after a task catches `Cancelled` and blocks again on the same abort_ev, that would be
-  misdetected as a cancellation hit, so `backend_wait` must destroy and recreate `abort_ev` after
-  injecting cancellation. Likewise, combinators that use raw port events must use a waiting flag to
-  guarantee a trigger always has a waiter (a trigger with no waiter leaves an unconsumed delta
-  notification, and destroying that is undefined behaviour on the backend side).
+  sticky flag): after a task catches `CancelledError` and blocks again on the same abort_ev, that
+  would be misdetected as a cancellation hit, so `backend_wait` must destroy and recreate `abort_ev`
+  after injecting cancellation. Likewise, combinators that use raw port events must use a waiting
+  flag to guarantee a trigger always has a waiter (a trigger with no waiter leaves an unconsumed
+  delta notification, and destroying that is undefined behaviour on the backend side).
 - **SV's cancel leg cannot rely on a flag alone**: `weave_sv_wait` is `fork … join_any; disable
   fork;`, and when both legs trigger in the same time slot `join_any` may return before `ab_leg`
   executes, whereupon `disable fork` stops that leg — `ab_hit = 1` inside the leg never gets set and

@@ -104,23 +104,23 @@ WEAVE_TEST(gather_semantics) {
       throw std::logic_error("case3: peer should finish on its own");
   });
 
-  // case 4: a cancelled child task counts as a failure → gather throws Cancelled
+  // case 4: a cancelled child task counts as a failure → gather throws CancelledError
   run_case(__func__, "case4", [&] {
     Event block;
     auto victim = create_task("victim4", [&] { block.wait(); });
     [[maybe_unused]] auto killer = create_task("killer4", [&victim] { victim.cancel(); });
     try {
       gather(victim);
-      throw std::logic_error("case4: gather should throw Cancelled");
-    } catch (const Cancelled&) {
+      throw std::logic_error("case4: gather should throw CancelledError");
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!victim.cancelled()) throw std::logic_error("case4: victim should be cancelled");
   });
 
   // case 5: gather itself is cancelled → cancel all unfinished tasks first, then propagate
-  // Cancelled. The hand-off itself synchronises: when grp_ready.wait returns, grp has necessarily
-  // registered its callbacks and is blocked inside gather.
+  // CancelledError. The hand-off itself synchronises: when grp_ready.wait returns, grp has
+  // necessarily registered its callbacks and is blocked inside gather.
   run_case(__func__, "case5", [&] {
     Event block;
     Event grp_ready;
@@ -130,7 +130,7 @@ WEAVE_TEST(gather_semantics) {
       try {
         gather(child);
         throw std::logic_error("case5: unreachable");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Expected path: the outer cancellation propagates through gather
       }
     });
@@ -139,14 +139,14 @@ WEAVE_TEST(gather_semantics) {
     grp.await();
     try {
       child.await();
-      throw std::logic_error("case5: child should throw Cancelled");
-    } catch (const Cancelled&) {
+      throw std::logic_error("case5: child should throw CancelledError");
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!child.cancelled())
       throw std::logic_error("case5: outer cancel of gather must cancel pending children");
     if (grp.cancelled())
-      throw std::logic_error("case5: gatherer swallowed Cancelled and finished DONE");
+      throw std::logic_error("case5: gatherer swallowed CancelledError and finished DONE");
   });
 
   // case 6: a task was already failed when gather is called → the synchronous callback path
@@ -192,7 +192,7 @@ WEAVE_TEST(gather_semantics) {
 
   // case 9: return_exceptions form: mixed terminal states, returning only after everything has
   // landed, mapped in input order
-  //   DONE → nullptr; FAILED → its exception; CANCELLED → a wrapped Cancelled
+  //   DONE → nullptr; FAILED → its exception; CANCELLED → a wrapped CancelledError
   run_case(__func__, "case9", [&] {
     Event block;
     auto ok = create_task("re9_ok", [] {});
@@ -209,11 +209,11 @@ WEAVE_TEST(gather_semantics) {
       if (std::string(e.what()) != "re9_fail")
         throw std::logic_error("case9: wrong exception mapped");
     }
-    if (!res[2]) throw std::logic_error("case9: CANCELLED must map to Cancelled");
+    if (!res[2]) throw std::logic_error("case9: CANCELLED must map to CancelledError");
     try {
       std::rethrow_exception(res[2]);
       throw std::logic_error("case9: unreachable");
-    } catch (const Cancelled&) {
+    } catch (const CancelledError&) {
       // Expected path
     }
     // Returns only once everything has landed: victim is already terminal
@@ -232,7 +232,7 @@ WEAVE_TEST(gather_semantics) {
       try {
         (void)gather({child}, return_exceptions);  // Expected to throw: the result is meaningless
         throw std::logic_error("case10: unreachable");
-      } catch (const Cancelled&) {
+      } catch (const CancelledError&) {
         // Expected path
       }
     });
@@ -241,8 +241,8 @@ WEAVE_TEST(gather_semantics) {
     grp.await();
     try {
       child.await();
-      throw std::logic_error("case10: child should throw Cancelled");
-    } catch (const Cancelled&) {
+      throw std::logic_error("case10: child should throw CancelledError");
+    } catch (const CancelledError&) {
       // Expected path
     }
     if (!child.cancelled())

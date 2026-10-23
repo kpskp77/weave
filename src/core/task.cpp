@@ -46,7 +46,7 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
     me.cancel_armed = false;
     // Recreate the abort event: the "triggered" state of an already triggered event lingers on the
     // backend (SystemC compares via change_stamp, SV via a same-slot triggered flag), so a task
-    // that catches Cancelled and blocks on the same abort_ev again would be misdetected as a
+    // that catches CancelledError and blocks on the same abort_ev again would be misdetected as a
     // cancellation hit.
     port::destroy_event(me.abort_ev);
     me.abort_ev = port::create_event();
@@ -57,7 +57,7 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
 
 void dispatch_completed(TaskRecord& r) {
   if (r.state == TaskState::FAILED) std::rethrow_exception(r.eptr);
-  // Rethrow a Cancelled carrying the original msg for the CANCELLED terminal state (as in
+  // Rethrow a CancelledError carrying the original msg for the CANCELLED terminal state (as in
   // asyncio: whoever awaits a cancelled task receives the same CancelledError(msg))
   if (r.state == TaskState::CANCELLED) throw cancelled_with_msg(r.cancel_msg);
 }
@@ -138,23 +138,23 @@ void sleep(duration t) {
   detail::backend_wait(-1, detail::to_ticks(t));
 }
 
-// Out-of-line definition of Cancelled::what().
+// Out-of-line definition of CancelledError::what().
 // This definition (not the declaration) lives in the library and is the key function of the type:
 // the vtable and typeinfo are emitted only in this TU, and downstream TUs keep undefined
 // references that the dynamic linker resolves to the same copy. The message view always comes from
 // std::string::c_str(), so data() is guaranteed NUL-terminated and can be returned directly as a C
 // string.
-const char* Cancelled::what() const noexcept {
-  return msg_ ? msg_->data() : "weave::Cancelled";
+const char* CancelledError::what() const noexcept {
+  return msg_ ? msg_->data() : "weave::CancelledError";
 }
 
 namespace detail {
 
-Cancelled cancelled_with_msg(std::string_view msg) noexcept {
-  Cancelled c;
+CancelledError cancelled_with_msg(std::string_view msg) noexcept {
+  CancelledError c;
   // msg is a view of TaskRecord::cancel_msg, owned by the bookkeeping; the view is valid only for
   // this throw and the catches along the way (a TaskRecord is not destroyed before its task is
-  // terminal). An empty string counts as no msg (as in asyncio's None), and Cancelled::msg()
+  // terminal). An empty string counts as no msg (as in asyncio's None), and CancelledError::msg()
   // returns nullopt.
   if (!msg.empty()) c.msg_ = msg;
   return c;
@@ -178,8 +178,8 @@ extern "C" void weave_task_main(int task_id) {
     r.state = weave::detail::TaskState::RUNNING;
     try {
       r.body();
-      r.state = weave::detail::TaskState::DONE;  // Swallowing Cancelled and returning → DONE
-    } catch (const weave::Cancelled&) {
+      r.state = weave::detail::TaskState::DONE;  // Swallowing CancelledError and returning → DONE
+    } catch (const weave::CancelledError&) {
       r.state = weave::detail::TaskState::CANCELLED;
     } catch (...) {
       r.state = weave::detail::TaskState::FAILED;
