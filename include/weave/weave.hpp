@@ -15,9 +15,11 @@
 //   locks.hpp    communication primitives (Lock / LockGuard / Condition)
 //   semaphore.hpp communication primitives (Semaphore / SemaphoreGuard / BoundedSemaphore /
 //                  BoundedSemaphoreGuard)
+//   barrier.hpp  communication primitive (Barrier / BrokenBarrierError)
 //   sync.hpp     combinators (gather / wait_for / wait / shield / as_completed / TaskGroup)
 //   test.hpp     test registration (WEAVE_TEST)
 
+#include <weave/barrier.hpp>
 #include <weave/config.hpp>
 #include <weave/event.hpp>
 #include <weave/locks.hpp>

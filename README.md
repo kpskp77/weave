@@ -29,6 +29,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `Lock::acquire/release/locked` | `asyncio.Lock` | FIFO hand-off; `LockGuard` ≡ `async with lock` |
 | `Semaphore::acquire/release/locked` | `asyncio.Semaphore` | Counting semaphore; `SemaphoreGuard` ≡ `async with semaphore` |
 | `BoundedSemaphore::acquire/release/locked` | `asyncio.BoundedSemaphore` | Same as Semaphore; releasing past the bound throws `std::logic_error` (≡ `ValueError`) |
+| `Barrier::wait/abort/reset/parties/n_waiting/broken` | `asyncio.Barrier` | Fixed-party rendezvous; `wait()` returns this party's arrival index |
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | Default form (throws on first failure) |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | Returns `vector<exception_ptr>`, does not throw early |
 | `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ timeout semantics |
@@ -37,6 +38,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` blocks and yields in completion order |
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; first failure cancels siblings |
 | `Cancelled` / `Timeout` | `CancelledError` / `TimeoutError` | Cancellation does not derive from `std::exception` (matching the `BaseException` hierarchy); `Timeout` does derive |
+| `BrokenBarrierError` | `asyncio.BrokenBarrierError` | Barrier-broken/reset signal; derives from `std::runtime_error` (≡ `RuntimeError`) |
 | `WEAVE_TEST` + registry | pytest / assorted runners | No asyncio counterpart; driven by the backend bootstrap entry point |
 
 Planned extensions follow asyncio in the same one-to-one way: `Queue` and friends, see
@@ -58,7 +60,10 @@ Beyond the mapping table there are three structural differences; most misuse ste
 
 - `TaskGroup` has no `ExceptionGroup`: `wait()` rethrows the first failure (in completion order);
 - after `gather` returns early, later failures of the remaining tasks stay only in the task
-  bookkeeping (there is no Python "exception was never retrieved" warning).
+  bookkeeping (there is no Python "exception was never retrieved" warning);
+- `Barrier` has no `async with` form (a guard cannot hand back `wait()`'s index — call `wait()`
+  explicitly), and `abort()`/`reset()` are plain non-suspending member functions even though
+  asyncio spells them `async def`.
 
 ## Quick start
 
@@ -117,7 +122,8 @@ See the "Language baseline" section of [docs/architecture.md](docs/architecture.
 ## Directory layout
 
 ```
-include/weave/    Public API: weave.hpp (umbrella) + config/time/task/event/locks/sync/test[/sc]
+include/weave/    Public API: weave.hpp (umbrella) +
+                  config/time/task/event/locks/semaphore/barrier/sync/test[/sc]
 src/core/         Backend-agnostic core + port.hpp backend contract
 src/backend/      Backend adapters (exactly one, selected by macro): svdpi.cpp (default) / systemc.cpp
 sv/               SVDPI backend protocol (event table, three-legged wait, spawn, tb skeleton)
@@ -135,6 +141,7 @@ docs/             architecture.md / backends.md
 ## Roadmap
 
 - **Communication primitives**: Queue (`Lock` / `Condition` live in `include/weave/locks.hpp`,
-  `Semaphore` in `include/weave/semaphore.hpp`; further new headers go to queue.hpp)
+  `Semaphore` in `include/weave/semaphore.hpp`, `Barrier` in `include/weave/barrier.hpp`; further
+  new headers go to queue.hpp)
 - **Backends**: the contract is stable in `src/core/port.hpp`; both SVDPI and SystemC are verified
   on their respective toolchains

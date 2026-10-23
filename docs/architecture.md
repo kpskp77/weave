@@ -138,6 +138,7 @@ weave/event.hpp    Event
 weave/locks.hpp    Lock / LockGuard / Condition (communication primitive, built on Event)
 weave/semaphore.hpp Semaphore / SemaphoreGuard / BoundedSemaphore / BoundedSemaphoreGuard
                   (communication primitive, built on Event)
+weave/barrier.hpp Barrier / BrokenBarrierError (communication primitive, built on Condition)
 weave/sync.hpp     gather / wait_for / wait / shield / as_completed / TaskGroup
 weave/test.hpp     WEAVE_TEST registration
 weave/sc.hpp       SystemC backend bootstrap entry point
