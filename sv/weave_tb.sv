@@ -7,9 +7,9 @@ module weave_tb;
   import weave_pkg::*;
 
   initial begin
-    weave_run();  // Bootstrap C++: create and spawn the root task
-    weave_sv_wait_done();  // Suspend this process until the root task is terminal
-    if (weave_test_status() != 0) $fatal(1, "WEAVE TEST FAILED (status=%0d)", weave_test_status());
+    automatic int status;
+    weave_run(status);  // run C++ test and wait until the root task is terminal
+    if (status != 0) $fatal(1, "WEAVE TEST FAILED (status=%0d)", status);
     $display("WEAVE TEST PASSED");
     $finish;
   end

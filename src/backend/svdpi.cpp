@@ -7,7 +7,7 @@
 //
 // DPI boundary:
 //   imports (provided by SV): weave_sv_* — event table, three-legged wait, spawn
-//   exports (this file)     : weave_run / weave_test_status — tb bootstrap
+//   exports (this file)     : weave_start / weave_test_status — tb bootstrap
 //   exports (core)          : weave_task_main — task dispatch, reached indirectly by SV through
 //                             weave_sv_spawn's forked process
 
@@ -32,42 +32,22 @@ namespace weave {
 namespace port {
 
 void spawn(int task_id) {
-  svScope scope = svGetScope();
-  svSetScope(svGetScopeFromName("weave_pkg"));
   weave_sv_spawn(task_id);
-  svSetScope(scope);
 }
 void trigger(int ev_id) {
-  svScope scope = svGetScope();
-  svSetScope(svGetScopeFromName("weave_pkg"));
   weave_sv_trigger(ev_id);
-  svSetScope(scope);
 }
 int create_event() {
-  svScope scope = svGetScope();
-  svSetScope(svGetScopeFromName("weave_pkg"));
-  int ev_id = weave_sv_create_event();
-  svSetScope(scope);
-  return ev_id;
+  return weave_sv_create_event();
 }
 void destroy_event(int ev_id) {
-  svScope scope = svGetScope();
-  svSetScope(svGetScopeFromName("weave_pkg"));
   weave_sv_destroy_event(ev_id);
-  svSetScope(scope);
 }
 std::int64_t ticks_per_sec() {
-  svScope scope = svGetScope();
-  svSetScope(svGetScopeFromName("weave_pkg"));
-  std::int64_t ticks = weave_sv_ticks_per_sec();
-  svSetScope(scope);
-  return ticks;
+  return weave_sv_ticks_per_sec();
 }
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
-  svScope scope = svGetScope();
-  svSetScope(svGetScopeFromName("weave_pkg"));
   weave_sv_wait(ev_id, timeout_ticks, abort_id, status);
-  svSetScope(scope);
 }
 
 }  // namespace port
@@ -75,13 +55,10 @@ void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
 
 // ── DPI exports (called by the SV side) ────────────────────────────────────────
 
-extern "C" void weave_run() {
+extern "C" void weave_start() {
   const int done_ev = weave::detail::run_registered_test();
   if (done_ev >= 0) {
-    svScope scope = svGetScope();
-    svSetScope(svGetScopeFromName("weave_pkg"));
     weave_sv_set_root_done_ev(done_ev);
-    svSetScope(scope);
   }
 }
 

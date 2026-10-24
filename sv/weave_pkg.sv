@@ -2,7 +2,7 @@
 // DPI contract with src/backend/svdpi.cpp:
 //   export (C++→SV): spawn/trigger/event table/ticks/generic wait, forming the only blocking
 //                    mechanism
-//   import (SV→C++): weave_run bootstrap, weave_task_main task body, weave_test_status
+//   import (SV→C++): weave_start bootstrap, weave_task_main task body, weave_test_status
 //
 // Convention: this package's timeunit determines the conversion base for #() and the 1s literal;
 // the C++ side derives the fs→tick conversion from it (rounding up). A task suspension is an SV
@@ -20,9 +20,9 @@ package weave_pkg;
   int ev_next_id = 0;
   int root_done_ev = -1;
 
-  import "DPI-C" context function void weave_run();
+  import "DPI-C" context function void weave_start();
   import "DPI-C" context task weave_task_main(input int task_id);
-  import "DPI-C" context function int weave_test_status();
+  import "DPI-C" function int weave_test_status();
 
   export "DPI-C" function weave_sv_spawn;
   export "DPI-C" function weave_sv_trigger;
@@ -114,6 +114,14 @@ package weave_pkg;
   // Test wait chain: the harness suspends here until the root task finishes
   task automatic weave_sv_wait_done();
     wait (ev_table[root_done_ev].ev.triggered);
+  endtask
+
+  task automatic weave_run(output int status);
+    // weave_start is the only entrypoint of C++ code, calling inside weave_pkg,
+    // so there is no need to switch sv scope in C++
+    weave_start();  // Bootstrap C++: create and spawn the root task
+    weave_sv_wait_done();  // Suspend this process until the root task is terminal
+    status = weave_test_status();
   endtask
 
 endpackage
