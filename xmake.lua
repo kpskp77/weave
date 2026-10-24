@@ -258,3 +258,63 @@ task("examples", function()
     cprint("${bright green}Examples done (systemc + svdpi).${clear}")
   end)
 end)
+
+-- Public-header baseline check: every header under include/weave/ is compiled as its own
+-- translation unit (a file whose only content is `#include <weave/X.hpp>`) under
+-- -std=c++17 / c++20 / c++23 with the project's warning policy and -fsyntax-only, so "each public
+-- header compiles standalone under every supported standard" is a re-runnable check rather than a
+-- claim (docs/architecture.md, "Language baseline"). sc.hpp needs neither the SystemC include path
+-- nor WEAVE_BACKEND_SYSTEMC: it only declares weave::sc::run().
+task("headers", function()
+  set_menu({
+    usage = "xmake headers",
+    description = "Compile each public header standalone under C++17/20/23",
+  })
+  on_run(function()
+    import("core.project.config")
+    import("core.project.project")
+    config.load()
+    -- Same compiler as the build (the target toolchain knows it); CXX wins when set explicitly.
+    local cc = os.getenv("CXX")
+    if not cc then cc = project.target("weave_smoke_sc"):tool("cxx") end
+    local headers = os.files("include/weave/*.hpp")
+    table.sort(headers)
+    local tmpdir = path.join(os.tmpdir(), "weave_headers")
+    os.tryrm(tmpdir)
+    os.mkdir(tmpdir)
+    local checked = 0
+    for _, std in ipairs({ "c++17", "c++20", "c++23" }) do
+      -- An old host compiler may not know the standard at all: report SKIP instead of a failure
+      -- (same convention as the SVDPI driver without VCS).
+      local probe = path.join(tmpdir, "probe.cpp")
+      io.writefile(probe, "")
+      if os.execv(cc, { "-std=" .. std, "-fsyntax-only", probe }) ~= 0 then
+        print("==> -std=" .. std .. " SKIP (not supported by " .. cc .. ")")
+        goto continue
+      end
+      print("==> -std=" .. std)
+      for _, header in ipairs(headers) do
+        local tu = path.join(tmpdir, path.basename(header) .. ".cpp")
+        io.writefile(tu, "#include <weave/" .. path.filename(header) .. ">\n")
+        local code = os.execv(cc, {
+          "-std=" .. std,
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-fsyntax-only",
+          "-Iinclude",
+          tu,
+        })
+        if code ~= 0 then
+          os.raise(
+            header .. " is not clean under -std=" .. std .. " (exit " .. tostring(code) .. ")"
+          )
+        end
+        checked = checked + 1
+      end
+      ::continue::
+    end
+    os.tryrm(tmpdir)
+    cprint("${bright green}" .. checked .. " header x standard combinations clean${clear}")
+  end)
+end)

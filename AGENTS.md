@@ -20,6 +20,7 @@ C++ call stack freezes).
 ```bash
 xmake smoke      # Semantic self-checks: build smoke payloads + run each weave_smoke_* binary via xmake run
 xmake examples   # Example regression (independent): runs both the systemc and svdpi backends in one go
+xmake headers    # Public-header baseline: each include/weave/*.hpp compiled standalone under C++17/20/23
 ```
 
 - Cross-backend changes (`port.hpp`, backend files, `config.hpp`, xmake macro mapping) must be run
@@ -31,7 +32,9 @@ xmake f --backend=systemc && xmake smoke
 xmake f --backend=svdpi   # restore the default configuration
 ```
 
-- Public-header or example changes need only a single `xmake examples` run.
+- Public-header changes need `xmake headers` as well (every header compiled standalone under
+  C++17/20/23 with `-Wall -Wextra -Werror`); example-only changes need only a single
+  `xmake examples` run.
 - A new self-check binary must be named `weave_smoke_*` **and** added to the `xmake build` list of
   the `smoke` task; running always goes through `xmake run` (see the pitfalls below).
 - The `tests/` and `examples/` payloads are strictly separated: examples link `libweave.so` only via
@@ -43,14 +46,16 @@ xmake f --backend=svdpi   # restore the default configuration
 
 ```
 include/weave/    Public API: weave.hpp (umbrella) + config/time/task/event/sync/test[/sc]
-src/core/         Backend-agnostic: task/event/sync/time/registry + port.hpp (contract) + *_internal.hpp
+src/core/         Backend-agnostic: task/event/sync/time/registry + locks/queue/semaphore/barrier
+                  + port.hpp (contract) + *_internal.hpp
 src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAVE_BACKEND_* macros
 ```
 
-- Core bookkeeping **may only depend on the 7 primitives of `port.hpp`** and internal headers, and
-  must never reference DPI/SystemC/thread APIs directly.
+- Core bookkeeping **may only depend on `port.hpp`** — its 6 primitives (`spawn` / `create_event` /
+  `trigger` / `destroy_event` / `ticks_per_sec` / `wait`) plus the `weave_task_main` dispatch entry —
+  and internal headers, and must never reference DPI/SystemC/thread APIs directly.
 - Backend selection is a compile-time macro only (`config.hpp`, mutually exclusive, SVDPI by
-  default); `--backend=` merely defines it.
+  default); `--backend=` only picks it (and therefore the matching package).
 - A new backend = one macro-guarded `src/backend/*.cpp` implementing the port contract + a bootstrap
   entry point, with **zero changes to core code**.
 - **Touch the port contract only when a new suspension shape is required**; its four guarantees are

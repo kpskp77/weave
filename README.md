@@ -95,6 +95,7 @@ WEAVE_TEST(my_test) {
 ```bash
 xmake smoke      # Semantic self-checks: build smoke payloads + run each weave_smoke_* via xmake run (once per backend)
 xmake examples   # Example regression: runs both systemc and svdpi in one go
+xmake headers    # Public-header baseline: each public header compiled standalone under C++17/20/23
 ```
 
 The two have different responsibilities and neither is optional: the assertion bodies in `tests/`

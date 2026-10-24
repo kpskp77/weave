@@ -12,13 +12,14 @@ Weave has two layers, with a stable port contract in between:
 C++ test logic (WEAVE_TEST)
         │  public API (include/weave/)
         ▼
-core bookkeeping (src/core/) ── task/event/sync/time/registry
-        │  only dependency: port.hpp (7 primitives)
+core bookkeeping (src/core/) ── task/event/sync/time/registry + locks/queue/semaphore/barrier
+        │  only dependency: port.hpp (6 primitives + the weave_task_main dispatch entry)
         ▼
 backend adapters (src/backend/) ── svdpi.cpp (default) / systemc.cpp
         │
         ▼
-simulation kernel (VCS/IES/Xcelium, or SystemC)
+simulation kernel (VCS/IES driven automatically, SystemC locally; another DPI simulator only
+                    has to satisfy the same contract — Xcelium is untested)
 ```
 
 - The core layer may **only** depend on the primitives declared in `src/core/port.hpp`, and must
@@ -26,7 +27,8 @@ simulation kernel (VCS/IES/Xcelium, or SystemC)
 - A new backend = implement the port contract + provide a bootstrap entry point, with zero changes
   to core code.
 - The only switch for backend selection is a compile-time macro (`include/weave/config.hpp`,
-  mutually exclusive, SVDPI by default); xmake's `--backend=` merely defines that macro.
+  mutually exclusive, SVDPI by default); xmake's `--backend=` only picks that macro (and, as a
+  consequence, which of the two packages is linked).
 
 ## The port contract
 
@@ -41,8 +43,10 @@ guarantees in summary:
 3. **One-shot events**: `create/trigger/destroy`; `trigger` must never target an already destroyed
    id.
 4. **Single suspension point** `wait(ev, timeout, abort, status)`: a three-legged race
-   (event/timeout/cancel), with the **cancel leg winning** same-slot conflicts; a negative id
-   disables the corresponding leg.
+   (event/timeout/cancel), with the **cancel leg winning** same-slot conflicts. `ev_id < 0` drops
+   the event leg and `timeout_ticks < 0` drops the timeout leg, but **`abort_id` is always a live
+   id**: the SystemC adapter resolves it unconditionally (`event_by_id(abort_id)`), only the SV side
+   happens to tolerate a missing one.
 
 ## Key design decisions
 
@@ -57,14 +61,16 @@ most natural fit for a simulation kernel.
 ### Why cancellation is cooperative
 
 `cancel()` only sets a flag and wakes the task, injecting a `CancelledError` exception at the
-blocking point. SV `disable` / `process::kill()` are banned: killing at an arbitrary point tears the
-C++ call stack apart, RAII does not unwind, resources leak, and bookkeeping state is corrupted. This
-is isomorphic to asyncio's cooperative cancellation (`CancelledError` raised at await points,
-catchable and refusable). `cancel(msg)` matches asyncio 3.9+'s `Task.cancel(msg)`: msg is stored in
-the task bookkeeping, and the same msg is preserved both in the `CancelledError` injected at the
-blocking point and where later `await`/`gather` rethrow it; when a combinator cascade-cancels
-sibling tasks it passes an empty msg (msg belongs to the context of whoever initiated the
-cancellation).
+blocking point. Using SV `disable` / `process::kill()` on a *task* process is banned: killing at an
+arbitrary point tears the C++ call stack apart, RAII does not unwind, resources leak, and
+bookkeeping state is corrupted. (The single `disable fork` in the backend — the timer service's, see
+`sv/weave_pkg.sv` — only disables its own service-local legs and can never reach another waiter's
+frame; that is the documented exception, not a loophole.) This is isomorphic to asyncio's
+cooperative cancellation (`CancelledError` raised at await points, catchable and refusable).
+`cancel(msg)` matches asyncio 3.9+'s `Task.cancel(msg)`: msg is stored in the task bookkeeping, and
+the same msg is preserved both in the `CancelledError` injected at the blocking point and where
+later `await`/`gather` rethrow it; when a combinator cascade-cancels sibling tasks it passes an
+empty msg (msg belongs to the context of whoever initiated the cancellation).
 
 The type hierarchy of the cancellation signals also follows asyncio: `CancelledError` **deliberately
 does not derive from `std::exception`** (matching Python 3.8+, where `CancelledError` is a
@@ -77,11 +83,13 @@ timeout is a normal failure path that generic logging/backstop code may handle.
 ### Why Event is edge-triggered, not level-triggered
 
 `set()` snapshots the current waiters and triggers each one-shot wake event; being snapshotted means
-you are released, even if a `clear()` follows immediately. The rejected alternative — remember that
-`set()` happened and re-check the flag once the waiter resumes — loses the wakeup whenever set/clear
-land in the same scheduling step: the waiter resumes, reads `false` and blocks again. asyncio.Event
-settles it the same way (it sets the result of the futures that are in `_waiters` at `set()` time),
-so the snapshot itself is borrowed rather than invented; the weave-specific part is its price.
+you are released, even if a `clear()` follows immediately. The flag is still consulted on **entry**
+(`wait()` on an already-set event returns without suspending); what is edge-only is the decision
+*after* enqueueing. The rejected alternative — remember that `set()` happened and re-check the flag
+once the waiter resumes — loses the wakeup whenever set/clear land in the same scheduling step: the
+waiter resumes, reads `false` and blocks again. asyncio.Event settles it the same way (it sets the
+result of the futures that are in `_waiters` at `set()` time), so the snapshot itself is borrowed
+rather than invented; the weave-specific part is its price.
 
 The price cannot be avoided: each waiter blocks on its own one-shot backend event id, so on **both**
 return paths (success and cancellation) it must first unlink and then destroy that id, otherwise a
@@ -94,20 +102,23 @@ reasoning stays in the header comment of `src/core/event.cpp`.
 `release()` hands ownership to the head waiter (FIFO) **within the same non-suspending call**, with
 `held` staying true throughout: there is no "released but not yet taken over" window and `locked()`
 never briefly turns false in the hand-off gap. asyncio goes the other way, because its hand-off only
-completes once the woken waiter is re-scheduled: `release()` wakes the head and *then* lowers
-`_locked`, and the waiter raises it again after it resumes — so `locked()` reports `false` for a
-while although ownership is already in flight (a newcomer still cannot jump the queue, because the
-not-yet-removed future keeps its fast path closed). Handing over synchronously closes that window
-instead of documenting it, and because each queued waiter holds a one-shot `Event` as the hand-off
-signal, the lock stays composed of `Event` plus the single blocking point, with zero backend changes.
+completes once the woken waiter is re-scheduled: `release()` clears `_locked` and wakes the head
+(the order of those two statements differs across CPython versions — 3.6 lowers the flag first,
+3.12+ wakes first — so neither order should be relied on), and the waiter raises the flag again
+only after it resumes — so `locked()` reports `false` for a while although ownership is already in
+flight (a newcomer still cannot jump the queue, because the not-yet-removed future keeps its fast
+path closed). Handing over synchronously closes that window instead of documenting it, and because
+each queued waiter holds a one-shot `Event` as the hand-off signal, the lock stays composed of
+`Event` plus the single blocking point, with zero backend changes.
 
 Cancellation must not make the lock vanish, and here the shape does coincide with asyncio: if
 cancellation and hand-off land in the same delta (`release()` has just handed the lock to a waiter
-that is immediately `cancel()`ed; the backend cancel leg wins), that waiter receives `CancelledError`
-rather than the lock inside `acquire()`, and ownership must be handed on to the next waiter (see
-`handoff()` in `src/core/locks.cpp`). The cause differs, though: asyncio needs its extra
-`_wake_up_first()` because the woken future was already done, whereas here the shape is produced by
-port contract guarantee 4 (the cancel leg winning a same-slot conflict).
+that is immediately `cancel()`ed; the backend cancel leg wins), that waiter receives
+`CancelledError` rather than the lock inside `acquire()`, and ownership must be handed on to the
+next waiter (see `handoff()` in `src/core/locks.cpp`). The cause differs, though: asyncio re-wakes
+the queue head in `acquire()`'s `except CancelledError` branch because the future it was waiting on
+can already be resolved, whereas here the shape is produced by port contract guarantee 4 (the cancel
+leg winning a same-slot conflict).
 
 ### Time and precision
 
@@ -163,6 +174,12 @@ weave/sc.hpp       SystemC backend bootstrap entry point
 weave.hpp          umbrella: including this file alone yields the whole public API
 ```
 
+"Built on X" is an *implementation* dependency, not a header include: `locks.hpp` / `queue.hpp` /
+`semaphore.hpp` / `barrier.hpp` pull in no other weave header (only `<memory>`-class dependencies
+and `weave/event.hpp` for the queue), because the shared `Event` / `Condition` machinery lives in
+their `src/core/*.cpp` TUs. The include chain that does exist points downwards only (`task → time`,
+`sync → task + time`, `queue → event`).
+
 Core internal state lives only in `src/core/*_internal.hpp` (never in public headers, never outside
 src/).
 
@@ -186,9 +203,12 @@ compiles; not using coroutines is a design decision (see above).
   affects both backends and the `-sv_lib` boundary, and requires one `xmake smoke` run under each
   `--backend`.
 - **Callers using a newer standard** need no changes and require no build-config changes.
-- How it is verified: each public header gets a TU containing only `#include <weave/X.hpp>`, compiled
-  once under `-std=c++17` / `c++20` / `c++23` with `-Wall -Wextra -Werror -fsyntax-only` (`sc.hpp`
-  additionally needs the SystemC include path and `WEAVE_BACKEND_SYSTEMC`).
+- How it is verified: `xmake headers` writes one TU per public header containing only
+  `#include <weave/X.hpp>` and compiles it under `-std=c++17` / `c++20` / `c++23` with
+  `-Wall -Wextra -Werror -fsyntax-only`, using the same compiler as the build. A standard the host
+  compiler does not know is reported as SKIP (same convention as the SVDPI driver without VCS);
+  `sc.hpp` needs neither the SystemC include path nor `WEAVE_BACKEND_SYSTEMC` — it only declares
+  `weave::sc::run()`.
 
 Idioms already in use and to be kept by new code: `std::optional` (`CancelledError::msg()`, the
 `wait` timeout), `std::string_view`, `[[nodiscard]]` (pure queries and resource acquisition),
@@ -207,12 +227,14 @@ A few boundaries that have been evaluated — do not cross them again:
    the standard) — that trait is traded for catch correctness, see the "ABI notes" section of
    [backends.md](backends.md). Likewise, **do not move `CancelledError::what()` /
    `TimeoutError::what()` back to inline definitions**.
-2. **`std::optional` never enters the port wire format**: `ev_id < 0`, `timeout_ticks < 0`,
-   `abort_id < 0` are the convention with the SV DPI; changing it means touching
-   `sv/weave_pkg.sv` and both backends together.
-3. **No `if constexpr` without a type-dependent branch**; same for `if-init` — the iterators after
-   the `find` in `record()` / `event_by_id()` are needed afterwards, so forcing the idiom in only
-   makes it harder to read.
+2. **`std::optional` never enters the port wire format**: `ev_id < 0` / `timeout_ticks < 0` are the
+   convention with the SV DPI (that leg is absent); `abort_id` is always a live event id, so a new
+   backend may resolve it unconditionally — only the SV side happens to tolerate a missing one.
+   Changing any of this means touching `sv/weave_pkg.sv` and both backends together.
+3. **No `if constexpr` without a type-dependent branch**; same for `if-init` (neither is used
+   anywhere today — the bullet is a floor, not an invitation): the iterator after
+   `g_events.find()` in `event_by_id()` is needed afterwards, so forcing the idiom in only makes it
+   harder to read.
 4. **`constexpr` is also used as a compile-time guard**: an out-of-range time literal (`10000_s`) is a
    compile error rather than a silent wrap (`detail::fs_scaled` in `include/weave/time.hpp`); the
    corresponding runtime arithmetic guards (`detail::checked_add/sub/mul/div`) deliberately bound
