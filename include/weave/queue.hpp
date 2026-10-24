@@ -20,6 +20,7 @@
 // their vtable/typeinfo is emitted exactly once in libweave.so and a cross-DSO catch matches (see
 // the ABI notes in docs/backends.md, same as BrokenBarrierError).
 
+#include <algorithm>
 #include <cstddef>
 #include <deque>
 #include <functional>
