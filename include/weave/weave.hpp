@@ -13,6 +13,7 @@
 //   task.hpp     task primitives (Task / create_task / sleep / CancelledError)
 //   event.hpp    event primitive (Event)
 //   locks.hpp    communication primitives (Lock / LockGuard / Condition)
+//   queue.hpp    communication primitive (Queue / QueueEmpty / QueueFull)
 //   semaphore.hpp communication primitives (Semaphore / SemaphoreGuard / BoundedSemaphore /
 //                  BoundedSemaphoreGuard)
 //   barrier.hpp  communication primitive (Barrier / BrokenBarrierError)
@@ -23,6 +24,7 @@
 #include <weave/config.hpp>
 #include <weave/event.hpp>
 #include <weave/locks.hpp>
+#include <weave/queue.hpp>
 #include <weave/semaphore.hpp>
 #include <weave/sync.hpp>
 #include <weave/task.hpp>

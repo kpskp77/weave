@@ -137,6 +137,9 @@ weave/time.hpp     duration (int64 femtoseconds) + literals
 weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event
 weave/locks.hpp    Lock / LockGuard / Condition (communication primitive, built on Event)
+weave/queue.hpp    Queue<T> / QueueEmpty / QueueFull / QueueShutDown (communication primitive,
+                  built on Event; header-only template; the exception key functions live in
+                  src/core/queue.cpp)
 weave/semaphore.hpp Semaphore / SemaphoreGuard / BoundedSemaphore / BoundedSemaphoreGuard
                   (communication primitive, built on Event)
 weave/barrier.hpp Barrier / BrokenBarrierError (communication primitive, built on Condition)

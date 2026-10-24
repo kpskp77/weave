@@ -30,6 +30,10 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `Semaphore::acquire/release/locked` | `asyncio.Semaphore` | Counting semaphore; `SemaphoreGuard` ≡ `async with semaphore` |
 | `BoundedSemaphore::acquire/release/locked` | `asyncio.BoundedSemaphore` | Same as Semaphore; releasing past the bound throws `std::logic_error` (≡ `ValueError`) |
 | `Barrier::wait/abort/reset/parties/n_waiting/broken` | `asyncio.Barrier` | Fixed-party rendezvous; `wait()` returns this party's arrival index |
+| `Queue<T>::put/put_nowait/get/get_nowait` | `asyncio.Queue` | FIFO queue; bounded (`maxsize`) or unbounded; blocking calls queue in FIFO order |
+| `Queue<T>::qsize/empty/full/maxsize` | `asyncio.Queue` | State queries; `full()` is always false on an unbounded queue |
+| `Queue<T>::join/task_done` | `asyncio.Queue` | "All work processed" barrier; extra `task_done()` throws `std::logic_error` (≡ `ValueError`) |
+| `Queue<T>::shutdown(immediate)` | `asyncio.Queue.shutdown` (3.13+) | Closes puts, winds down gets; blocked callers get `QueueShutDown`; `immediate` drains and settles `join` |
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | Default form (throws on first failure) |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | Returns `vector<exception_ptr>`, does not throw early |
 | `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ timeout semantics |
@@ -39,10 +43,12 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; first failure cancels siblings |
 | `CancelledError` / `TimeoutError` | `CancelledError` / `TimeoutError` | Names match asyncio incl. the `Error` suffix; hierarchy as documented in [architecture.md](docs/architecture.md) |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | Barrier-broken/reset signal; derives from `std::runtime_error` (≡ `RuntimeError`) |
+| `QueueEmpty` / `QueueFull` | `asyncio.QueueEmpty` / `asyncio.QueueFull` | Thrown by the `*_nowait` forms; derive from `std::runtime_error` (≡ ordinary `Exception`) |
+| `QueueShutDown` | `asyncio.QueueShutDown` (3.13+) | Thrown by put/get on a shut-down queue; derives from `std::runtime_error` (≡ ordinary `Exception`) |
 | `WEAVE_TEST` + registry | pytest / assorted runners | No asyncio counterpart; driven by the backend bootstrap entry point |
 
-Planned extensions follow asyncio in the same one-to-one way: `Queue` and friends, see
-[roadmap](#roadmap).
+Further extensions follow asyncio in the same one-to-one way: `LifoQueue` / `PriorityQueue`,
+see [roadmap](#roadmap).
 
 ### Model differences (versus Python, must read)
 
@@ -141,8 +147,8 @@ docs/             architecture.md / backends.md
 
 ## Roadmap
 
-- **Communication primitives**: Queue (`Lock` / `Condition` live in `include/weave/locks.hpp`,
-  `Semaphore` in `include/weave/semaphore.hpp`, `Barrier` in `include/weave/barrier.hpp`; further
-  new headers go to queue.hpp)
+- **Communication primitives**: `Queue` lives in `include/weave/queue.hpp` (`Lock` / `Condition`
+  in `include/weave/locks.hpp`, `Semaphore` in `include/weave/semaphore.hpp`, `Barrier` in
+  `include/weave/barrier.hpp`); `LifoQueue` / `PriorityQueue` remain on the asyncio list
 - **Backends**: the contract is stable in `src/core/port.hpp`; both SVDPI and SystemC are verified
   on their respective toolchains
