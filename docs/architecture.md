@@ -183,63 +183,6 @@ their `src/core/*.cpp` TUs. The include chain that does exist points downwards o
 Core internal state lives only in `src/core/*_internal.hpp` (never in public headers, never outside
 src/).
 
-## Language baseline: C++17 and up
-
-**C++17 is the floor, not a ceiling.** The library itself is built as C++17 (`set_languages("c++17")`
-is the only switch), and every public capability must be complete under C++17 — this is guaranteed by
-the regression run. At the same time the public headers must be directly includable by callers using
-a **newer standard**: they avoid constructs whose meaning changes across standards or that are
-deprecated/removed, so under `-std=c++20` / `c++23` they are as `-Wall -Wextra -Werror` clean as
-under C++17.
-
-17 was chosen as the floor because the needed feature set (`std::optional` / `std::string_view` /
-`inline` variables / if-init / `[[nodiscard]]` / structured bindings / relaxed `constexpr`) is all
-available. **C++20+ features are never required** (concepts, ranges, coroutines, `std::format`,
-`std::span`, designated initializers, `std::move_only_function`): partly for the VCS DPI-side host
-compiler and the SystemC 3.x toolchain, partly so that whatever `-std=` the caller picks still
-compiles; not using coroutines is a design decision (see above).
-
-- **Raising the floor** (e.g. changing `set_languages` to c++20) counts as a cross-backend change: it
-  affects both backends and the `-sv_lib` boundary, and requires one `xmake smoke` run under each
-  `--backend`.
-- **Callers using a newer standard** need no changes and require no build-config changes.
-- How it is verified: `xmake headers` writes one TU per public header containing only
-  `#include <weave/X.hpp>` and compiles it under `-std=c++17` / `c++20` / `c++23` with
-  `-Wall -Wextra -Werror -fsyntax-only`, using the same compiler as the build. A standard the host
-  compiler does not know is reported as SKIP (same convention as the SVDPI driver without VCS);
-  `sc.hpp` needs neither the SystemC include path nor `WEAVE_BACKEND_SYSTEMC` — it only declares
-  `weave::sc::run()`.
-
-Idioms already in use and to be kept by new code: `std::optional` (`CancelledError::msg()`, the
-`wait` timeout), `std::string_view`, `[[nodiscard]]` (pure queries and resource acquisition),
-`[[maybe_unused]]`, `inline constexpr`, structured bindings, `std::exchange`, `unique_ptr` (backend
-event table), `static_assert` + `std::is_invocable_v` / `std::is_nothrow_copy_constructible_v`.
-
-A few boundaries that have been evaluated — do not cross them again:
-
-1. **Owning parameters stay `std::string`**: `create_task(name)`, `TaskGroup::create_task`,
-   `Task::cancel(msg)`, `register_test(name)`. `CancelledError::msg_` is a borrowed view pointing at
-   `TaskRecord::cancel_msg`, and `what()` relies on `std::string`'s NUL termination. `CancelledError`
-   must have no heap members and must copy nothrow (it is thrown across the `-sv_lib` boundary); the
-   message-carrying construction goes through exactly one path, `detail::cancelled_with_msg`. **It is
-   no longer trivially copyable**: `what()` is the key function, defined out-of-line in the library,
-   which keeps the typeinfo unique per library (polymorphic classes are not trivially copyable per
-   the standard) — that trait is traded for catch correctness, see the "ABI notes" section of
-   [backends.md](backends.md). Likewise, **do not move `CancelledError::what()` /
-   `TimeoutError::what()` back to inline definitions**.
-2. **`std::optional` never enters the port wire format**: `ev_id < 0` / `timeout_ticks < 0` are the
-   convention with the SV DPI (that leg is absent); `abort_id` is always a live event id, so a new
-   backend may resolve it unconditionally — only the SV side happens to tolerate a missing one.
-   Changing any of this means touching `sv/weave_pkg.sv` and both backends together.
-3. **No `if constexpr` without a type-dependent branch**; same for `if-init` (neither is used
-   anywhere today — the bullet is a floor, not an invitation): the iterator after
-   `g_events.find()` in `event_by_id()` is needed afterwards, so forcing the idiom in only makes it
-   harder to read.
-4. **`constexpr` is also used as a compile-time guard**: an out-of-range time literal (`10000_s`) is a
-   compile error rather than a silent wrap (`detail::fs_scaled` in `include/weave/time.hpp`); the
-   corresponding runtime arithmetic guards (`detail::checked_add/sub/mul/div`) deliberately bound
-   via division instead of `__int128`, keeping the public headers free of any compiler extensions.
-
 ## Scope
 
 Weave focuses on concurrency orchestration and does not cover all of EDA verification. **Not

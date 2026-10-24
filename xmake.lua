@@ -263,8 +263,8 @@ end)
 -- translation unit (a file whose only content is `#include <weave/X.hpp>`) under
 -- -std=c++17 / c++20 / c++23 with the project's warning policy and -fsyntax-only, so "each public
 -- header compiles standalone under every supported standard" is a re-runnable check rather than a
--- claim (docs/architecture.md, "Language baseline"). sc.hpp needs neither the SystemC include path
--- nor WEAVE_BACKEND_SYSTEMC: it only declares weave::sc::run().
+-- claim (README.md, "Language standard"). sc.hpp needs neither the SystemC include path nor
+-- WEAVE_BACKEND_SYSTEMC: it only declares weave::sc::run().
 task("headers", function()
   set_menu({
     usage = "xmake headers",

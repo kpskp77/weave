@@ -122,8 +122,6 @@ verified to compile cleanly under C++17/20/23.
 - **Not using C++20 coroutines is a design decision, not a standard limitation**: suspension is
   carried by the simulation kernel, independently of the standard version.
 
-See the "Language baseline" section of [docs/architecture.md](docs/architecture.md) for details.
-
 ## Directory layout
 
 ```
@@ -139,6 +137,6 @@ docs/             architecture.md / backends.md
 
 ## Further reading
 
-- [docs/architecture.md](docs/architecture.md): design decisions and implementation constraints (why no coroutines, cancellation, edge semantics, time, language baseline)
+- [docs/architecture.md](docs/architecture.md): design decisions and implementation constraints (why no coroutines, cancellation, edge semantics, time)
 - [docs/backends.md](docs/backends.md): DPI protocol, SystemC integration, ABI notes, guide to adding a backend
 - [AGENTS.md](AGENTS.md): build/verification conventions and invariants for AI coding assistants

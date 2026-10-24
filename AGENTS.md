@@ -116,8 +116,7 @@ layering (dependencies point downwards): config → time → task/event → sync
   `weave::sc::run()`) follow C++ conventions; `detail::`/`g_*` are unconstrained.
 - **C++17 is the floor, not the ceiling**: the library is built as C++17 and its public capabilities
   must be complete there — never treat C++20+ features as required — while the public headers must
-  also compile cleanly under C++20/23 with `-Wall -Wextra -Werror`, each one standalone. The
-  evaluated boundaries are listed in the "Language baseline" section of architecture.md.
+  also compile cleanly under C++20/23 with `-Wall -Wextra -Werror`, each one standalone.
 
 ## Test-writing conventions
 
