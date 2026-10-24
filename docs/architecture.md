@@ -74,30 +74,40 @@ cancellation — swallowing it would make the task wrongly finish as DONE and br
 from `std::exception`** (matching asyncio's `TimeoutError`, an ordinary `Exception`), because a
 timeout is a normal failure path that generic logging/backstop code may handle.
 
-### Edge semantics of Event
+### Why Event is edge-triggered, not level-triggered
 
 `set()` snapshots the current waiters and triggers each one-shot wake event; being snapshotted means
-you are released (even if a `clear()` follows immediately). This matches SV event trigger semantics
-and avoids the "set then instantly clear loses the wakeup" race. Implementation detail: on return
-from the wait (on **both** paths, success and cancellation) a waiter must first unlink and then
-destroy its own wake event, otherwise a later `set()` would trigger an already destroyed id — that
-cleanup is carried by a single `detail::scope_exit` guard, with the ordering written inside the
-lambda body.
+you are released, even if a `clear()` follows immediately. The rejected alternative — remember that
+`set()` happened and re-check the flag once the waiter resumes — loses the wakeup whenever set/clear
+land in the same scheduling step: the waiter resumes, reads `false` and blocks again. asyncio.Event
+settles it the same way (it sets the result of the futures that are in `_waiters` at `set()` time),
+so the snapshot itself is borrowed rather than invented; the weave-specific part is its price.
 
-### Hand-off semantics of Lock
+The price cannot be avoided: each waiter blocks on its own one-shot backend event id, so on **both**
+return paths (success and cancellation) it must first unlink and then destroy that id, otherwise a
+later `set()` triggers an already destroyed id. That ordering is the invariant (one
+`detail::scope_exit` carries it, with the order written inside the lambda body); its per-code
+reasoning stays in the header comment of `src/core/event.cpp`.
+
+### Why Lock hands ownership off inside release()
 
 `release()` hands ownership to the head waiter (FIFO) **within the same non-suspending call**, with
-`held` staying true throughout: there is no "released but not yet taken over" window, `locked()`
-never briefly turns false in the hand-off gap, and a newcomer `acquire()` cannot jump the queue.
-Each queued waiter holds a one-shot `Event` as the hand-off signal, so the whole lock is composed of
-`Event` plus the single blocking point, with zero backend changes.
+`held` staying true throughout: there is no "released but not yet taken over" window and `locked()`
+never briefly turns false in the hand-off gap. asyncio goes the other way, because its hand-off only
+completes once the woken waiter is re-scheduled: `release()` wakes the head and *then* lowers
+`_locked`, and the waiter raises it again after it resumes — so `locked()` reports `false` for a
+while although ownership is already in flight (a newcomer still cannot jump the queue, because the
+not-yet-removed future keeps its fast path closed). Handing over synchronously closes that window
+instead of documenting it, and because each queued waiter holds a one-shot `Event` as the hand-off
+signal, the lock stays composed of `Event` plus the single blocking point, with zero backend changes.
 
-Cancellation must not make the lock vanish. If cancellation and hand-off land in the same delta
-(`release()` has just handed the lock to some waiter, which is immediately `cancel()`ed; the backend
-cancel leg wins), that waiter receives `CancelledError` rather than the lock inside `acquire()` — in
-that case ownership must be handed on to the next waiter (see `handoff()` in `src/core/locks.cpp`). This
-is equivalent to asyncio doing an extra `_wake_up_first()` in `acquire()`'s `except
-CancelledError` branch.
+Cancellation must not make the lock vanish, and here the shape does coincide with asyncio: if
+cancellation and hand-off land in the same delta (`release()` has just handed the lock to a waiter
+that is immediately `cancel()`ed; the backend cancel leg wins), that waiter receives `CancelledError`
+rather than the lock inside `acquire()`, and ownership must be handed on to the next waiter (see
+`handoff()` in `src/core/locks.cpp`). The cause differs, though: asyncio needs its extra
+`_wake_up_first()` because the woken future was already done, whereas here the shape is produced by
+port contract guarantee 4 (the cancel leg winning a same-slot conflict).
 
 ### Time and precision
 
