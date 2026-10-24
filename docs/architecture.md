@@ -103,8 +103,11 @@ CancelledError` branch.
 
 Internally int64 femtoseconds (10⁻¹⁵ s, matching SV's maximum precision); values are rounded up by
 `ticks_per_sec()` when submitted to the backend — guaranteeing "sleep at least this long" rather
-than possibly too short. `sleep(0)` is special-cased to 0 ticks (a zero-time yield in the backend,
-≡ `asyncio.sleep(0)`).
+than possibly too short. `sleep(0)` clamps to 0 ticks, which still passes through the single
+blocking point: the caller really suspends and hands the scheduling step over, while the simulated
+clock does not advance (≡ `asyncio.sleep(0)`). The zero-tick wait is not a no-op that skips the
+port — a sleep that returns without suspending would defeat every pure-yield loop (pinned by
+`tests/task_semantics.cpp` case10/case11).
 
 **Arithmetic**: `duration` supports `+ - * /` (including `k * d`, `d * k`, `d += …` and other
 compound assignments, plus `duration / duration` yielding an integer multiple), so that delays can

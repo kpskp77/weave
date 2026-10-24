@@ -138,7 +138,10 @@ Task create_task(std::string name, F&& body) {
 }
 
 // ── Time waits ──────────────────────────────────────────────────────────
-// sleep(0) is special-cased to a zero-time yield (corresponding to asyncio.sleep(0)).
+// sleep(0) is a zero-time yield (corresponding to asyncio.sleep(0)): the caller is really
+// suspended and the scheduling step is handed over, but the simulated time does not advance. The
+// hand-over is not optional bookkeeping — it is what makes a pure-yield loop fair, so
+// tests/task_semantics.cpp pins it (case10/case11); an implementation may not turn it into a no-op.
 void sleep(duration t);
 
 }  // namespace weave

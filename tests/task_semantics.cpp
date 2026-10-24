@@ -1,13 +1,16 @@
 // Task primitive semantic self-check: create_task scheduling timing, the various cancel paths
 // (PENDING skips the body / injection at the blocking point / refusing cancellation), cancel
 // idempotence on terminal tasks, handle attributes (valid/get_name), and sleep(0)'s zero-time
-// yield.
+// yield (it must really hand control over, on every call — case6 only proves that a 0-tick wait
+// returns, case10/case11 pin the hand-over itself).
 // Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
 // case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp and is regressed
 // by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
+#include <memory>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 #include <weave/weave.hpp>
 
 #include "case_runner.hpp"
@@ -114,7 +117,8 @@ WEAVE_TEST(task_semantics) {
   });
 
   // case 6: sleep(0) is a zero-time yield — no deadlock, the task progresses as usual (the child
-  // sleeps 0 then sets the flag)
+  // sleeps 0 then sets the flag). Note: this only proves that the 0-tick wait returns; it does not
+  // prove that it suspended (a sleep(0) implemented as a no-op passes it) — that is case10/case11.
   run_case(__func__, "case6", [&] {
     Event done;
     auto t = create_task("zero_sleep", [&] {
@@ -205,6 +209,40 @@ WEAVE_TEST(task_semantics) {
       // Expected path
     }
     if (!victim.cancelled()) throw std::logic_error("case9: victim must be CANCELLED");
+  });
+
+  // case 10: sleep(0) really hands control over, like asyncio.sleep(0) (which yields to the event
+  // loop, so already-scheduled tasks run before the sleeper resumes). The child is merely
+  // *scheduled* by create_task (case1: it must not run before the parent suspends), so it can have
+  // run only if the sleeper really suspended — it is already finished when the sleeper resumes. A
+  // sleep(0) that short-circuits out of the port (0 ticks is an already-expired timeout leg, so
+  // returning without waiting is the tempting optimisation) leaves the flag false here.
+  run_case(__func__, "case10", [&] {
+    // shared_ptr, not a captured reference: on the failure path the child is still PENDING and
+    // would resume after this frame dies, so a reference capture would be a use-after-free
+    auto ran = std::make_shared<bool>(false);
+    auto child = create_task("yielded_to", [ran] { *ran = true; });
+    sleep(0_ns);
+    if (!*ran)
+      throw std::logic_error("case10: sleep(0) must yield so an already scheduled task runs first");
+    child.await();  // Already terminal: returns without suspending
+    if (!child.done()) throw std::logic_error("case10: the yielded-to task must be complete");
+  });
+
+  // case 11: the yield happens on *every* call, not only on the first one — each round schedules a
+  // fresh observer and sleeps 0, and that round's observer must have run when the sleeper resumes
+  // (an implementation whose zero-time yield is a one-shot state is caught from round 1 on).
+  run_case(__func__, "case11", [&] {
+    const int rounds = 3;
+    auto ran = std::make_shared<int>(0);  // shared_ptr for the same reason as case10
+    std::vector<Task> observers;
+    for (int i = 0; i < rounds; ++i) {
+      observers.push_back(create_task("round_observer", [ran] { ++*ran; }));
+      sleep(0_ns);
+      if (*ran != i + 1)
+        throw std::logic_error("case11: every sleep(0) must yield, not only the first");
+    }
+    for (auto& t : observers) t.await();  // All terminal already; drains the handles
   });
 
   report(__func__);
