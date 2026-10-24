@@ -10,6 +10,8 @@
 // regressed by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 #include <vector>
 #include <weave/weave.hpp>
 
@@ -540,6 +542,134 @@ WEAVE_TEST(queue_semantics) {
       threw = true;
     }
     if (!threw) throw std::logic_error("case13: drained immediate shutdown must close gets");
+  });
+
+  // case 14: LifoQueue — same engine as Queue, but the most recently put item comes out first;
+  // the bound, the nowait signals, the blocking put, and the shutdown release all behave
+  // identically to Queue
+  run_case(__func__, "case14", [&] {
+    LifoQueue<int> q(2);
+    if (!q.empty() || q.full() || q.maxsize() != 2)
+      throw std::logic_error("case14: fresh LifoQueue must be empty, not full");
+    q.put_nowait(1);
+    q.put_nowait(2);
+    if (!q.full()) throw std::logic_error("case14: the bound must apply to LifoQueue");
+    bool threw_full = false;
+    try {
+      q.put_nowait(3);
+    } catch (const QueueFull&) {
+      threw_full = true;
+    }
+    if (!threw_full) throw std::logic_error("case14: put_nowait past maxsize must throw");
+    if (q.get_nowait() != 2)
+      throw std::logic_error("case14: LifoQueue must hand out the most recent item first");
+    q.put(3);  // The blocking put works with the variant store
+    if (q.get_nowait() != 3 || q.get_nowait() != 1)
+      throw std::logic_error("case14: LifoQueue order must be strictly last-in-first-out");
+    bool threw_empty = false;
+    try {
+      q.get_nowait();
+    } catch (const QueueEmpty&) {
+      threw_empty = true;
+    }
+    if (!threw_empty) throw std::logic_error("case14: empty LifoQueue must throw QueueEmpty");
+
+    // A blocked getter is released by shutdown with QueueShutDown, same as Queue
+    Event r, caught;
+    auto waiter = create_task("q14_waiter", [&] {
+      r.set();
+      try {
+        q.get();
+        throw std::logic_error("case14: getter must not pass after shutdown");
+      } catch (const QueueShutDown&) {
+        caught.set();
+        throw;
+      }
+    });
+    r.wait();
+    q.shutdown();
+    caught.wait();
+    try {
+      waiter.await();
+      throw std::logic_error("case14: shut-down waiter must end FAILED");
+    } catch (const QueueShutDown&) {
+      // Expected path
+    }
+
+    // A blocked getter receives the item a later put hands in (retrieval order = LIFO)
+    LifoQueue<int> q2;
+    Event r2, got;
+    auto w2 = create_task("q14_w2", [&] {
+      r2.set();
+      if (q2.get() != 10) throw std::logic_error("case14: blocked getter must receive the put");
+      got.set();
+    });
+    r2.wait();
+    q2.put_nowait(10);
+    got.wait();
+    w2.await();
+  });
+
+  // case 15: PriorityQueue — same engine as Queue, but entries come out lowest-first (≡
+  // CPython's heapq min-heap); (priority, data) pairs compare lexicographically like CPython
+  // tuples, including tie-breaking on the second element
+  run_case(__func__, "case15", [&] {
+    using Entry = std::pair<int, int>;  // (priority, data)
+    PriorityQueue<Entry> q;
+    q.put_nowait({2, 20});
+    q.put_nowait({1, 10});
+    q.put_nowait({3, 30});
+    if (q.get_nowait() != std::make_pair(1, 10) || q.get_nowait() != std::make_pair(2, 20) ||
+        q.get_nowait() != std::make_pair(3, 30))
+      throw std::logic_error("case15: PriorityQueue must retrieve lowest-first");
+    // Ties break on the second element, ≡ tuple comparison
+    q.put_nowait({1, 12});
+    q.put_nowait({1, 11});
+    if (q.get_nowait() != std::make_pair(1, 11) || q.get_nowait() != std::make_pair(1, 12))
+      throw std::logic_error("case15: equal priorities must tie-break on the data member");
+
+    // A blocked getter receives the lowest item of the puts that follow
+    PriorityQueue<int> q2;
+    Event r, got;
+    int received = -1;
+    auto w = create_task("q15_w", [&] {
+      r.set();
+      received = q2.get();
+      got.set();
+    });
+    r.wait();
+    q2.put_nowait(7);
+    got.wait();
+    if (received != 7) throw std::logic_error("case15: blocked getter must receive the put");
+    w.await();
+    q2.put_nowait(9);
+    q2.put_nowait(3);
+    if (q2.get_nowait() != 3 || q2.get_nowait() != 9)
+      throw std::logic_error("case15: heap order must hold across interleaved puts");
+
+    // The bound applies, and immediate shutdown drains in retrieval order and settles join
+    PriorityQueue<int> q3(2);
+    q3.put_nowait(5);
+    q3.put_nowait(1);
+    if (!q3.full()) throw std::logic_error("case15: the bound must apply to PriorityQueue");
+    Event rj, joined;
+    auto joiner = create_task("q15_j", [&] {
+      rj.set();
+      q3.join();
+      joined.set();
+    });
+    rj.wait();          // Blocked in join (unfinished == 2)
+    q3.shutdown(true);  // Drains 1 then 5, unfinished → 0, joiner released
+    joined.wait();
+    joiner.await();
+    if (!q3.empty()) throw std::logic_error("case15: immediate shutdown must drain the heap");
+    bool threw = false;
+    try {
+      q3.get_nowait();
+    } catch (const QueueShutDown&) {
+      threw = true;
+    }
+    if (!threw) throw std::logic_error("case15: drained shut-down get must throw");
   });
 
   report(__func__);

@@ -1,13 +1,20 @@
-// Common communication-primitive usage: Queue<T> (a FIFO queue, asyncio.Queue).
+// Common communication-primitive usage: Queue<T> / PriorityQueue<T> / LifoQueue<T> (asyncio.Queue
+// and its two subclasses — one engine, three retrieval orders).
 //   · producer/consumer with join/task_done: join() returns only after the consumer has
 //     task_done()'d every item
 //   · bounded queue: put() suspends while the queue is full and is released by a get
 //   · a queued getter is cancelled: the item stays in the queue for the next getter
+//   · shutdown (Python 3.13+): blocked getters are released with QueueShutDown, and the queue
+//     closes to further puts
+//   · PriorityQueue: entries come out lowest-first (a min-heap, ≡ CPython's heapq); entries are
+//     typically (priority, data) pairs, compared lexicographically like Python tuples
+//   · LifoQueue: the most recently put item comes out first
 // Synchronisation relies entirely on event passing, and nothing assumes "what should happen after
 // sleeping this long".
 
 #include <cstdio>
 #include <stdexcept>
+#include <utility>
 #include <weave/weave.hpp>
 
 using namespace weave;
@@ -113,6 +120,59 @@ WEAVE_TEST(queue_demo) {
     }
     if (!threw) throw std::logic_error("queue_demo: put after shutdown must throw");
     std::printf("[queue_demo] shutdown ok: queue is closed to further puts\n");
+  }
+
+  // ── PriorityQueue: the lowest priority comes out first ────────────────
+  {
+    PriorityQueue<std::pair<int, int>> q;  // (priority, data)
+    q.put_nowait({2, 200});
+    q.put_nowait({1, 100});
+    q.put_nowait({3, 300});
+    for (int expect : {1, 2, 3}) {
+      const auto entry = q.get_nowait();
+      if (entry.first != expect) throw std::logic_error("queue_demo: priority order violated");
+      std::printf("[queue_demo] served (priority=%d, data=%d)\n", entry.first, entry.second);
+    }
+    std::printf("[queue_demo] PriorityQueue lowest-first order ok\n");
+  }
+
+  // ── LifoQueue: the most recent item comes out first ───────────────────
+  {
+    LifoQueue<int> q;
+    q.put_nowait(1);
+    q.put_nowait(2);
+    q.put_nowait(3);
+    for (int expect : {3, 2, 1}) {
+      if (q.get_nowait() != expect) throw std::logic_error("queue_demo: LIFO order violated");
+    }
+    std::printf("[queue_demo] LifoQueue order ok\n");
+  }
+
+  // ── a bounded PriorityQueue: put blocks while full; shutdown releases it ──
+  {
+    PriorityQueue<int> q(1);
+    q.put_nowait(42);  // Full
+    Event queued;
+    auto producer = create_task("pq_producer", [&] {
+      queued.set();
+      try {
+        q.put(7);  // Blocks: the queue is full
+        throw std::logic_error("queue_demo: putter must not pass after shutdown");
+      } catch (const QueueShutDown&) {
+        std::printf("[queue_demo] blocked putter released by shutdown\n");
+        throw;
+      }
+    });
+    queued.wait();
+    q.shutdown();
+    try {
+      producer.await();
+    } catch (const QueueShutDown&) {
+      // Expected path
+    }
+    if (q.get_nowait() != 42)
+      throw std::logic_error("queue_demo: queued item must survive shutdown");
+    std::printf("[queue_demo] bounded PriorityQueue + shutdown ok\n");
   }
 
   std::printf("[queue_demo] done\n");

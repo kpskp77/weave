@@ -31,6 +31,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `BoundedSemaphore::acquire/release/locked` | `asyncio.BoundedSemaphore` | Same as Semaphore; releasing past the bound throws `std::logic_error` (≡ `ValueError`) |
 | `Barrier::wait/abort/reset/parties/n_waiting/broken` | `asyncio.Barrier` | Fixed-party rendezvous; `wait()` returns this party's arrival index |
 | `Queue<T>::put/put_nowait/get/get_nowait` | `asyncio.Queue` | FIFO queue; bounded (`maxsize`) or unbounded; blocking calls queue in FIFO order |
+| `PriorityQueue<T>::*` / `LifoQueue<T>::*` | `asyncio.PriorityQueue` / `asyncio.LifoQueue` | Same API as `Queue`; lowest-first (min-heap ≡ heapq) / last-in-first-out |
 | `Queue<T>::qsize/empty/full/maxsize` | `asyncio.Queue` | State queries; `full()` is always false on an unbounded queue |
 | `Queue<T>::join/task_done` | `asyncio.Queue` | "All work processed" barrier; extra `task_done()` throws `std::logic_error` (≡ `ValueError`) |
 | `Queue<T>::shutdown(immediate)` | `asyncio.Queue.shutdown` (3.13+) | Closes puts, winds down gets; blocked callers get `QueueShutDown`; `immediate` drains and settles `join` |
@@ -147,8 +148,9 @@ docs/             architecture.md / backends.md
 
 ## Roadmap
 
-- **Communication primitives**: `Queue` lives in `include/weave/queue.hpp` (`Lock` / `Condition`
-  in `include/weave/locks.hpp`, `Semaphore` in `include/weave/semaphore.hpp`, `Barrier` in
-  `include/weave/barrier.hpp`); `LifoQueue` / `PriorityQueue` remain on the asyncio list
+- **Communication primitives**: `Queue` / `PriorityQueue` / `LifoQueue` live in
+  `include/weave/queue.hpp` (`Lock` / `Condition` in `include/weave/locks.hpp`, `Semaphore` in
+  `include/weave/semaphore.hpp`, `Barrier` in `include/weave/barrier.hpp`); the asyncio queue
+  family — including the 3.13 `shutdown()` — is covered
 - **Backends**: the contract is stable in `src/core/port.hpp`; both SVDPI and SystemC are verified
   on their respective toolchains
