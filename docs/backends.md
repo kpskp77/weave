@@ -24,11 +24,15 @@ Manual builds: just define the corresponding macro; with no macro defined,
 The DPI boundary (`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`):
 
 - **imports (provided by SV)**: `weave_sv_spawn` (creates a process via fork...join_none),
-  `weave_sv_trigger`, `weave_sv_create_event` / `destroy_event` (event table),
-  `weave_sv_ticks_per_sec`, `weave_sv_set_root_done_ev`, `weave_sv_wait` (three-legged wait, the only
-  blocking primitive).
+  `weave_sv_trigger` (one-shot wakeup: fires the event and marks the waiters registered on that id),
+  `weave_sv_create_event` / `destroy_event` (event table), `weave_sv_ticks_per_sec`,
+  `weave_sv_set_root_done_ev`, `weave_sv_wait` (three-legged wait, the only blocking primitive:
+  register in the package's waiter registry, suspend in a single `wait (w_state[wd] != 0)`, timeout
+  leg covered by the persistent timer service — never `fork … join_any`, see the "Pitfalls" section
+  of [../AGENTS.md](../AGENTS.md)).
 - **exports (provided by C++)**: `weave_task_main` (task dispatch, reachable from SV via
-  weave_sv_spawn), `weave_run` / `weave_test_status` (tb bootstrap).
+  weave_sv_spawn), `weave_start` / `weave_test_status` (tb bootstrap; the package's `weave_run` task
+  calls them, so the DPI scope is already `weave_pkg` and no `svSetScope` is needed).
 
 How to run it by hand (for manual debugging; `xmake examples` / `xmake smoke` perform the same steps
 automatically):

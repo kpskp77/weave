@@ -6,6 +6,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <weave/weave.hpp>
 
 #include "case_runner.hpp"
@@ -118,6 +119,37 @@ WEAVE_TEST(as_completed_semantics) {
     } catch (const std::logic_error& e) {
       if (std::string(e.what()).find("no more tasks") == std::string::npos) throw;
     }
+  });
+
+  // case 7: one raw wake event reused by consecutive waits inside a single time slot.
+  // as_completed() creates its wake event once and every next() re-waits on that same id, so the
+  // releases and the next() calls below all happen at the same simulation time (nothing in this
+  // case sleeps). This is the canonical shape a backend must support: each wait may only be
+  // released by a trigger that happens *after* it started waiting. A backend that reports an older
+  // trigger of the reused id as a fresh hit (the SV `triggered` flag is sticky for the whole time
+  // slot) makes next() spin in a zero-delay loop here instead of returning — simv then sits at 100%
+  // CPU with $time frozen, which is exactly the SVDPI hang this case guards against.
+  run_case(__func__, "case7", [&] {
+    constexpr int kTasks = 5;
+    // Each task captures its own gate *by value* (Event is a shared handle), so a failure below can
+    // throw without leaving a pending task pointing at this frame.
+    Event gates[kTasks];
+    std::vector<Task> tasks;
+    tasks.reserve(kTasks);
+    for (int i = 0; i < kTasks; ++i)
+      tasks.push_back(
+          create_task("ac7_" + std::to_string(i), [gate = gates[i]]() mutable { gate.wait(); }));
+    auto ac = as_completed({tasks[0], tasks[1], tasks[2], tasks[3], tasks[4]});
+    // Release one task at a time, alternating with next(): every next() blocks on the same reused
+    // wake event and must be released only by the completion of the task released just before.
+    const int order[kTasks] = {2, 4, 1, 3, 0};
+    for (const int idx : order) {
+      gates[idx].set();
+      const Task produced = ac.next();
+      if (produced.get_name() != "ac7_" + std::to_string(idx))
+        throw std::logic_error("case7: production order must follow the release order");
+    }
+    if (ac.pending()) throw std::logic_error("case7: all tasks must have been produced");
   });
 
   report(__func__);

@@ -203,13 +203,31 @@ stylua <changed .xmake>  # see .stylua.toml
   after injecting cancellation. Likewise, combinators that use raw port events must use a waiting
   flag to guarantee a trigger always has a waiter (a trigger with no waiter leaves an unconsumed
   delta notification, and destroying that is undefined behaviour on the backend side).
-- **SV's cancel leg cannot rely on a flag alone**: `weave_sv_wait` is `fork … join_any; disable
-  fork;`, and when both legs trigger in the same time slot `join_any` may return before `ab_leg`
-  executes, whereupon `disable fork` stops that leg — `ab_hit = 1` inside the leg never gets set and
-  cancel precedence (port contract guarantee 4) is lost. So the cancel leg instead checks
-  `ev_table[abort_id].ev.triggered` (the same test as `ab.triggered()` in systemc.cpp). Regression:
-  `task_semantics` case9 (same-slot cancel must beat the event leg), `lock_semantics` case6
-  (same-slot cancel + hand-off → ownership is transferred).
+- **SV has no atomic "register + yield" wait primitive, and the SVDPI wait is therefore not built
+  from `fork … join_any`** (that shape was removed on purpose; do not reintroduce it). Two
+  independent traps made it unusable: (a) forked legs are scheduled in a later delta, so the
+  registration is not atomic — a trigger can land in between, and a `disable fork` issued by one wait
+  kills the not-yet-started legs of *other* waits (the run then stops making progress), while
+  `disable <leg>` instead makes VCS report `Error-[FENCE-STACK-CORRUPTION]`; (b) the only observation
+  primitive, `wait (ev.triggered)`, is sticky for the whole time slot, so a trigger *older* than the
+  wait reads as a fresh hit. The core legitimately reuses one raw event id across consecutive waits
+  of the same combinator (`AsCompleted`'s wake_ev, `wait`'s wake_ev, `TaskGroup`'s wake_ev/drain_ev),
+  so with sticky observation such a wait never blocks and the C++ side spins in a zero-delay loop
+  (`$time` frozen in simv.log, simv at 100% CPU — exactly how `as_completed` case1 died). So
+  `weave_sv_wait` = a synchronous registry write inside `weave_sv_trigger` (the `sc_event::notify`
+  analogue: it marks the waiters registered on that id) plus a single `wait (w_state[wd] != 0)` for
+  the suspension. `@ev` / `@(ev_table[id].ev)` is *not* an alternative: on VCS O-2018.09 a trigger on
+  a class-member event never wakes an `@` wait (the legs block forever and the simulation ends
+  silently at 0 ps).
+- **SV timeouts are owned by the persistent timer service, never by a per-wait `#delay` leg**: a
+  `join_none` child reads its captured ids only when it starts, i.e. possibly after the waiter's
+  frame is gone. The service sleeps until the earliest deadline and is woken early through
+  `timer_poke_gen` — a level *counter*, not an event, so a deadline registered while the service is
+  between "scan the deadlines" and "go to sleep" cannot be lost; its `disable fork` is local because
+  it is a standalone process with no DPI call on its stack. Wait ids are never recycled, so a late
+  deadline can never hit a newer waiter. Same-slot cancel precedence still comes from the sticky
+  `ev_table[abort_id].ev.triggered` test (the `ab.triggered()` analogue): `task_semantics` case9,
+  `lock_semantics` case6.
 - xmake-repo's SystemC looks for `sc_main` with **C linkage**: the entry point must be `extern "C"`
   (see `tests/sc_main.cpp`).
 - **SystemC self-checks must be run through `xmake run`**: `add_packages(systemc)` does not produce an
