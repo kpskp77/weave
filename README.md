@@ -9,7 +9,7 @@ suspension point.
 Weave focuses on concurrency orchestration (tasks, time, events, combinators, timeouts,
 cancellation, state queries); it does not provide DUT signal access, bus drivers/monitors, UVM
 components, transactions/coverage, TLM modelling, or the simulation kernel itself. Those are
-provided by existing tools such as SystemVerilog/UVM/cocotb/SystemC, and Weave plugs C++ test
+provided by existing tools such as SystemVerilog/UVM/SystemC, and Weave plugs C++ test
 behaviour into them behind one uniform interface.
 
 ## C++ ↔ asyncio mapping
@@ -21,20 +21,17 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 |---|---|---|
 | `create_task(name, fn)` | `asyncio.create_task(coro)` | fn is a plain function; scheduled, not run immediately |
 | `task.await()` | `await task` | FAILED rethrows its exception; CANCELLED throws `CancelledError` |
-| `task.cancel()` / `task.cancel(msg)` | `task.cancel(msg)` | Cooperative; msg matches asyncio 3.9+, preserved both on injection and on rethrow at `await` |
+| `task.cancel(msg)` | `task.cancel(msg)` | Cooperative; msg matches asyncio 3.9+, preserved both on injection and on rethrow at `await` |
 | `task.done()` / `task.cancelled()` | `task.done()` / `task.cancelled()` | |
 | `task.get_name()` | `task.get_name()` | |
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` yields for zero time |
-| `Event::wait/set/clear` | `asyncio.Event` | set/clear races use edge semantics |
-| `Lock::acquire/release/locked` | `asyncio.Lock` | FIFO hand-off; `LockGuard` ≡ `async with lock` |
-| `Semaphore::acquire/release/locked` | `asyncio.Semaphore` | Counting semaphore; `SemaphoreGuard` ≡ `async with semaphore` |
-| `BoundedSemaphore::acquire/release/locked` | `asyncio.BoundedSemaphore` | Same as Semaphore; releasing past the bound throws `std::logic_error` (≡ `ValueError`) |
-| `Barrier::wait/abort/reset/parties/n_waiting/broken` | `asyncio.Barrier` | Fixed-party rendezvous; `wait()` returns this party's arrival index |
-| `Queue<T>::put/put_nowait/get/get_nowait` | `asyncio.Queue` | FIFO queue; bounded (`maxsize`) or unbounded; blocking calls queue in FIFO order |
-| `PriorityQueue<T>::*` / `LifoQueue<T>::*` | `asyncio.PriorityQueue` / `asyncio.LifoQueue` | Same API as `Queue`; lowest-first (min-heap ≡ heapq) / last-in-first-out |
-| `Queue<T>::qsize/empty/full/maxsize` | `asyncio.Queue` | State queries; `full()` is always false on an unbounded queue |
-| `Queue<T>::join/task_done` | `asyncio.Queue` | "All work processed" barrier; extra `task_done()` throws `std::logic_error` (≡ `ValueError`) |
-| `Queue<T>::shutdown(immediate)` | `asyncio.Queue.shutdown` (3.13+) | Closes puts, winds down gets; blocked callers get `QueueShutDown`; `immediate` drains and settles `join` |
+| `Event` | `asyncio.Event` | set/clear races use edge semantics |
+| `Lock` | `asyncio.Lock` | FIFO hand-off; `LockGuard` ≡ `async with lock` |
+| `Semaphore` | `asyncio.Semaphore` | Counting semaphore; `SemaphoreGuard` ≡ `async with semaphore` |
+| `BoundedSemaphore` | `asyncio.BoundedSemaphore` | Same as Semaphore; releasing past the bound throws `std::logic_error` (≡ `ValueError`); `BoundedSemaphoreGuard` ≡ `async with bounded_semaphore` |
+| `Barrier` | `asyncio.Barrier` | Fixed-party rendezvous |
+| `Queue<T>` | `asyncio.Queue` | FIFO queue; bounded (`maxsize`) or unbounded; blocking calls queue in FIFO order |
+| `PriorityQueue<T>` / `LifoQueue<T>` | `asyncio.PriorityQueue` / `asyncio.LifoQueue` | Same API as `Queue`; lowest-first (min-heap ≡ heapq) / last-in-first-out |
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | Default form (throws on first failure) |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | Returns `vector<exception_ptr>`, does not throw early |
 | `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ timeout semantics |
@@ -42,35 +39,40 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `shield(t)` | `asyncio.shield(aw)` | Returns a proxy task; cancellation/timeout stops at the proxy |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` blocks and yields in completion order |
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; first failure cancels siblings |
-| `CancelledError` / `TimeoutError` | `CancelledError` / `TimeoutError` | Names match asyncio incl. the `Error` suffix; hierarchy as documented in [architecture.md](docs/architecture.md) |
+| `CancelledError` | `asyncio.CancelledError` | Cancel signal; does NOT derive from `std::exception`, check more details in [docs/architecture.md](docs/architecture.md) |
+| `TimeoutError` | `TimeoutError` | Timeout signal; derives from `std::exception` |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | Barrier-broken/reset signal; derives from `std::runtime_error` (≡ `RuntimeError`) |
-| `QueueEmpty` / `QueueFull` | `asyncio.QueueEmpty` / `asyncio.QueueFull` | Thrown by the `*_nowait` forms; derive from `std::runtime_error` (≡ ordinary `Exception`) |
-| `QueueShutDown` | `asyncio.QueueShutDown` (3.13+) | Thrown by put/get on a shut-down queue; derives from `std::runtime_error` (≡ ordinary `Exception`) |
+| `QueueEmpty` / `QueueFull` / `QueueShutDown` | `asyncio.QueueEmpty` / `asyncio.QueueFull` / `asyncio.QueueShutDown` | Thrown by the `*_nowait` forms; derive from `std::runtime_error` (≡ `RuntimeError`) |
 | `WEAVE_TEST` + registry | pytest / assorted runners | No asyncio counterpart; driven by the backend bootstrap entry point |
-
-Further extensions follow asyncio in the same one-to-one way: `LifoQueue` / `PriorityQueue`,
-see [roadmap](#roadmap).
 
 ### Model differences (versus Python, must read)
 
 Beyond the mapping table there are three structural differences; most misuse stems from these:
 
-- **No coroutine / await**: the combinators are ordinary blocking calls inside a task context, not
-  awaitables; `gather(...)` blocks until completion and does not return a future.
+- **No coroutine / await**: the combinators are ordinary blocking calls, not awaitables, and need a
+  task context (outside one they throw `std::logic_error`). Nothing returns a future: the default
+  `gather(...)` blocks until the tasks land or the first failure/cancellation and returns nothing.
 - **No event loop object**: scheduling is carried by the simulation kernel. A task created by
-  `create_task` starts running only **after the parent task reaches its next blocking point**
-  (matching asyncio's scheduling timing).
-- **Cancellation never tears down the call stack**: cooperative cancellation plus a ban on killing
-  the simulation process means C++ RAII always unwinds normally (unlike thread cancellation).
+  `create_task` starts running only **after the parent reaches its next real suspension point (or
+  finishes)**, matching asyncio's `create_task` timing.
+- **Cancellation never tears down the call stack**: `cancel()` only arms a flag and wakes the task,
+  and `CancelledError` is injected at the blocking point, so the stack unwinds through ordinary
+  exception propagation and RAII always runs; killing a simulation process (`process::kill()`, SV
+  `disable`) is banned, so nothing is ever torn down asynchronously.
 
 ### Known deviations
 
-- `TaskGroup` has no `ExceptionGroup`: `wait()` rethrows the first failure (in completion order);
-- after `gather` returns early, later failures of the remaining tasks stay only in the task
-  bookkeeping (there is no Python "exception was never retrieved" warning);
-- `Barrier` has no `async with` form (a guard cannot hand back `wait()`'s index — call `wait()`
-  explicitly), and `abort()`/`reset()` are plain non-suspending member functions even though
-  asyncio spells them `async def`.
+- `TaskGroup` has no `ExceptionGroup`: `wait()` rethrows the first failure — the first FAILED in
+  completion order while it still waits (children that had already landed before the `wait()` call
+  are replayed in creation order);
+- after `gather` returns early, later failures of the remaining tasks are reported nowhere: they
+  stay retrievable through the task handle, and there is no "exception was never retrieved"
+  diagnostic at all (asyncio suppresses it here too — `gather`'s `_done_callback` marks the
+  leftovers retrieved — but does warn about a task nobody ever awaits);
+- `Barrier` has no `async with` form: a guard cannot hand `wait()`'s index back to the body, which
+  Python's `async with barrier` can (it returns `wait()`'s index), so call `wait()` explicitly;
+  `abort()`/`reset()` are plain non-suspending member functions even though asyncio spells them
+  `async def`.
 
 ## Quick start
 
@@ -100,13 +102,7 @@ and the programs in `examples/` are never compiled into each other's payloads; e
 the way a user would use the library (public headers only, linking `libweave.so`, genuinely
 crossing the DSO boundary). Artifacts land in `build/<plat>/<arch>/<mode>/`; without VCS/IES the
 SVDPI driver prints SKIP and returns 0 (equivalent to a compile-only check). Backend switching, the
-SystemC bootstrap entry point, manual VCS runs, and adding a new backend are covered in
-[docs/backends.md](docs/backends.md).
-
-> Linking `libweave.so` into **your own executable** needs **no** RTTI visibility/export flags
-> (`-fvisibility=default` / `-rdynamic` are not required): `what()` for both exception types is the
-> key function, defined out-of-line in the library, so the typeinfo exists exactly once in the
-> library and consumers only keep undefined references (see the "ABI notes" section of backends.md).
+SystemC bootstrap entry point, and adding a new backend are covered in [docs/backends.md](docs/backends.md).
 
 ## Language standard: C++17 and up
 
@@ -145,12 +141,3 @@ docs/             architecture.md / backends.md
 - [docs/architecture.md](docs/architecture.md): design decisions and implementation constraints (why no coroutines, cancellation, edge semantics, time, language baseline)
 - [docs/backends.md](docs/backends.md): DPI protocol, SystemC integration, ABI notes, guide to adding a backend
 - [AGENTS.md](AGENTS.md): build/verification conventions and invariants for AI coding assistants
-
-## Roadmap
-
-- **Communication primitives**: `Queue` / `PriorityQueue` / `LifoQueue` live in
-  `include/weave/queue.hpp` (`Lock` / `Condition` in `include/weave/locks.hpp`, `Semaphore` in
-  `include/weave/semaphore.hpp`, `Barrier` in `include/weave/barrier.hpp`); the asyncio queue
-  family — including the 3.13 `shutdown()` — is covered
-- **Backends**: the contract is stable in `src/core/port.hpp`; both SVDPI and SystemC are verified
-  on their respective toolchains
