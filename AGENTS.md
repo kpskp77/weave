@@ -186,7 +186,7 @@ only in `src/core/*_internal.hpp`, never in public headers.
 ```bash
 clang-format -i <changed .cpp/.hpp>                                        # Google base, see .clang-format
 verible-verilog-format --inplace --flagfile=.verible-format <changed .sv>  # see .verible-format
-stylua <changed .xmake>  # see .stylua.toml
+stylua <changed .xmake>                                                    # see .stylua.toml
 ```
 
 - Only format the files you changed; no unrelated whole-repository reshuffles. The two config files
