@@ -1,5 +1,7 @@
 # Weave
 
+English | [简体中文](docs/README_zh.md)
+
 A **behaviour orchestration layer** between C++ test logic and EDA simulation kernels. The API is
 modelled after Python asyncio, but does not use C++20 coroutines — blocking semantics are carried
 entirely by the backend: every task runs in a simulation process context (an SV process or a
@@ -39,7 +41,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `shield(t)` | `asyncio.shield(aw)` | Returns a proxy task; cancellation/timeout stops at the proxy |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` blocks and yields in completion order |
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; first failure cancels siblings |
-| `CancelledError` | `asyncio.CancelledError` | Cancel signal; does NOT derive from `std::exception`, check more details in [docs/architecture.md](docs/architecture.md) |
+| `CancelledError` | `asyncio.CancelledError` | Cancel signal; does NOT derive from `std::exception`, check more details in [architecture](docs/architecture.md) |
 | `TimeoutError` | `TimeoutError` | Timeout signal; derives from `std::exception` |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | Barrier-broken/reset signal; derives from `std::runtime_error` (≡ `RuntimeError`) |
 | `QueueEmpty` / `QueueFull` / `QueueShutDown` | `asyncio.QueueEmpty` / `asyncio.QueueFull` / `asyncio.QueueShutDown` | Thrown by the `*_nowait` forms; derive from `std::runtime_error` (≡ `RuntimeError`) |
@@ -103,7 +105,7 @@ and the programs in `examples/` are never compiled into each other's payloads; e
 the way a user would use the library (public headers only, linking `libweave.so`, genuinely
 crossing the DSO boundary). Artifacts land in `build/<plat>/<arch>/<mode>/`; without VCS/IES the
 SVDPI driver prints SKIP and returns 0 (equivalent to a compile-only check). Backend switching, the
-SystemC bootstrap entry point, and adding a new backend are covered in [docs/backends.md](docs/backends.md).
+SystemC bootstrap entry point, and adding a new backend are covered in [backends](docs/backends.md).
 
 ## Language standard: C++17 and up
 
@@ -132,11 +134,10 @@ src/backend/      Backend adapters (exactly one, selected by macro): svdpi.cpp (
 sv/               SVDPI backend protocol (event table, three-legged wait, spawn, tb skeleton)
 examples/         Per-domain demos of the whole public API + one end-to-end case (xmake examples regression)
 tests/            Semantic self-check assertion bodies (xmake smoke regression)
-docs/             architecture.md / backends.md
+docs/             architecture.md / backends.md and Chinese version of README_zh.md / architecture_zh.md / backends_zh.md
 ```
 
 ## Further reading
 
-- [docs/architecture.md](docs/architecture.md): design decisions and implementation constraints (why no coroutines, cancellation, edge semantics, time)
-- [docs/backends.md](docs/backends.md): DPI protocol, SystemC integration, ABI notes, guide to adding a backend
-- [AGENTS.md](AGENTS.md): build/verification conventions and invariants for AI coding assistants
+- [architecture](docs/architecture.md): design decisions and implementation constraints (why no coroutines, cancellation, edge semantics, time)
+- [backends](docs/backends.md): DPI protocol, SystemC integration, ABI notes, guide to adding a backend

@@ -1,9 +1,9 @@
 # AGENTS.md
 
 For AI coding assistants working in this repository: the build/verification commands and the rules
-every change must preserve. Rationale lives elsewhere — [README.md](README.md) (positioning,
-C++↔asyncio mapping), [docs/architecture.md](docs/architecture.md) (design decisions),
-[docs/backends.md](docs/backends.md) (DPI/SystemC backend, ABI notes) — and each rule's per-code
+every change must preserve. Rationale lives elsewhere — [README](README.md) (positioning,
+C++↔asyncio mapping), [architecture](docs/architecture.md) (design decisions),
+[backends](docs/backends.md) (DPI/SystemC backend, ABI notes) — and each rule's per-code
 reason is in the header comment of the file it names.
 
 ## The project in one sentence
