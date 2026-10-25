@@ -81,6 +81,7 @@ target("weave_smoke_sc", function()
     "tests/taskgroup_semantics.cpp",
     "tests/wait_for_semantics.cpp",
     "tests/wait_semantics.cpp",
+    "tests/performance_semantics.cpp",
     "tests/sc_main.cpp"
   )
   add_packages("systemc")
@@ -110,7 +111,8 @@ target("weave_smoke_svdpi", function()
     "tests/task_semantics.cpp",
     "tests/taskgroup_semantics.cpp",
     "tests/wait_for_semantics.cpp",
-    "tests/wait_semantics.cpp"
+    "tests/wait_semantics.cpp",
+    "tests/performance_semantics.cpp"
   )
   add_packages("svdpi")
 end)
