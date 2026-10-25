@@ -27,9 +27,13 @@ The DPI boundary (`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`):
   `weave_sv_trigger` (one-shot wakeup: fires the event and marks the waiters registered on that id),
   `weave_sv_create_event` / `destroy_event` (event table), `weave_sv_ticks_per_sec`,
   `weave_sv_set_root_done_ev`, `weave_sv_wait` (three-legged wait, the only blocking primitive:
-  register in the package's waiter registry, suspend in a single `wait (w_state[wd] != 0)`, timeout
-  leg covered by the persistent timer service — never `fork … join_any`, see the "Pitfalls" section
-  of [../AGENTS.md](../AGENTS.md)).
+  register in the package's waiter registry, suspend on the waiter's own wakeup event
+  `if (w_state[wd] == 0) @(w_evt[wd])` — a durable flag plus a per-waiter edge, because a
+  level-sensitive `wait` on the registry array costs O(N²) on VCS (see the `sv/weave_pkg.sv`
+  header); the timeout leg is covered by the persistent timer service, whose deadlines sit in a
+  min-heap so "find the earliest" and "drain the expired" are O(log N) each rather than the
+  O(armed) two-scan — never `fork … join_any`, see the "Pitfalls" section of
+  [../AGENTS.md](../AGENTS.md)).
 - **exports (provided by C++)**: `weave_task_main` (task dispatch, reachable from SV via
   weave_sv_spawn), `weave_start` / `weave_test_status` (tb bootstrap; the package's `weave_run` task
   calls them, so the DPI scope is already `weave_pkg` and no `svSetScope` is needed).

@@ -152,10 +152,15 @@ stylua <changed .xmake>                                                    # see
 - **A triggered event's state lingers**: `backend_wait` therefore destroys and recreates `abort_ev`
   after injecting cancellation, and combinators using raw port events need a waiting flag so a
   trigger always has a waiter.
-- **Never rebuild the SV wait from `fork … join_any`** (nor from `@ev`): it is a synchronous
-  registry write in `weave_sv_trigger` plus a single `wait (w_state[wd] != 0)`, and **timeouts
-  belong to the persistent timer service**, never to a per-wait `#delay` leg. Postmortem: the
-  `sv/weave_pkg.sv` header.
+- **Never rebuild the SV wait from `fork … join_any`** (nor observe an event-table entry through
+  `@ev`): it is a synchronous registry write in `weave_sv_trigger` plus a durable waiter flag
+  observed as `if (w_state[wd] == 0) @(w_evt[wd])` on the waiter's own event — **never** a
+  level-sensitive `wait (w_state[wd] != 0)`, which makes VCS re-evaluate every waiter on every
+  registration (O(N²): ~10⁴ live waits already looks like a hang, $time frozen) — and **timeouts
+  belong to the persistent timer service**, never to a per-wait `#delay` leg. The timer service's
+  deadlines must live in a min-heap, never `foreach`-scanned per wake: the two-scan form is
+  O(armed) per wake, also quadratic over staggered deadlines. Postmortem: the `sv/weave_pkg.sv`
+  header.
 - xmake-repo's SystemC looks for `sc_main` with **C linkage** (see `tests/sc_main.cpp`).
 - **SystemC self-checks must be run through `xmake run`**: `add_packages(systemc)` produces no rpath,
   and `xmake run` is what injects the package `LD_LIBRARY_PATH`.
