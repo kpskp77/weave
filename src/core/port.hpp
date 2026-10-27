@@ -20,7 +20,7 @@
 //      ev_id < 0 means no event leg; timeout_ticks < 0 means no timeout leg.
 //
 // Backend bootstrap entry points (not part of the port contract, each backend picks its own form):
-//   SVDPI  : extern "C" void weave_run()          —— called by sv/weave_tb.sv
+//   SVDPI  : extern "C" void weave_start()        —— called from systemverilog
 //   SystemC : int weave::sc::run()                 —— called from sc_main
 
 #include <cstdint>

@@ -1,6 +1,6 @@
 // SVDPI backend VCS driver (reusable across different -sv_lib payloads).
-// The same driver is compiled once per target, differing only in three macros: payload library
-// name, work directory, and diagnostic tag:
+// The same driver is compiled once per target, differing only in the payload library name and its
+// work directory (WEAVE_SVDPI_LIB / WEAVE_SVDPI_WORK; the two SV source paths are shared):
 //   weave_smoke_svdpi_driver    → libweave_smoke_svdpi (the assertion bodies in tests/)
 //   weave_examples_svdpi_driver → libweave_examples_svdpi (the programs in examples/)
 // Both run on a real VCS kernel, covering the DPI glue in svdpi.cpp: scope switching,
@@ -10,7 +10,8 @@
 // Flow:
 //   1. locate vcs ($VCS_HOME/bin/vcs or PATH); if not found, print SKIP and exit 0
 //      (SVDPI verification is skipped without a VCS/IES environment, see AGENTS.md);
-//   2. compile sv/weave_pkg.sv + sv/weave_tb.sv in a dedicated work directory;
+//   2. compile the SVDPI protocol (sv/weave_pkg.sv) and this directory's testbench top
+//      (tests/weave_tb.sv) in a dedicated work directory;
 //   3. run simv with the payload given by -sv_lib, using the output marker
 //      "WEAVE TEST PASSED" as the pass criterion (the $fatal failure path in the tb does not
 //      necessarily exit non-zero, so the marker is authoritative).
@@ -29,8 +30,11 @@
 #include <iostream>
 #include <string>
 
-#ifndef WEAVE_SVDPI_SV_DIR
-#error "WEAVE_SVDPI_SV_DIR must be defined (path to sv/ sources)"
+#ifndef WEAVE_SVDPI_PKG_DIR
+#error "WEAVE_SVDPI_PKG_DIR must be defined (directory holding weave_pkg.sv)"
+#endif
+#ifndef WEAVE_SVDPI_TB
+#error "WEAVE_SVDPI_TB must be defined (path to the testbench top, tests/weave_tb.sv)"
 #endif
 #ifndef WEAVE_SVDPI_LIB
 #error "WEAVE_SVDPI_LIB must be defined (-sv_lib basename, e.g. libweave_smoke_svdpi)"
@@ -124,8 +128,8 @@ int main() {
 
   alarm(kWatchdogSec);
 
-  const std::string pkg = std::string(WEAVE_SVDPI_SV_DIR) + "/weave_pkg.sv";
-  const std::string tb = std::string(WEAVE_SVDPI_SV_DIR) + "/weave_tb.sv";
+  const std::string pkg = std::string(WEAVE_SVDPI_PKG_DIR) + "/weave_pkg.sv";
+  const std::string tb = WEAVE_SVDPI_TB;
   if (run("\"" + vcs + "\" -full64 -sverilog -LDFLAGS \"-Wl,--export-dynamic\" \"" + pkg + "\" \"" +
           tb + "\"") != 0) {
     std::cerr << kTag << "vcs compile failed" << std::endl;

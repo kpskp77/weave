@@ -118,9 +118,9 @@ target("weave_smoke_svdpi", function()
 end)
 
 -- The SVDPI VCS driver (tests/svdpi_driver.cpp) is compiled into several targets that differ only
--- in their payload parameters; each locates VCS → compiles the sv/ skeleton → runs simv with the
--- -sv_lib payload → judges Pass by the output marker, and prints SKIP and exits 0 when VCS/IES is
--- unavailable (see AGENTS.md).
+-- in their payload parameters; each locates VCS → compiles sv/weave_pkg.sv + tests/weave_tb.sv →
+-- runs simv with the -sv_lib payload → judges Pass by the output marker, and prints SKIP and exits 0
+-- when VCS/IES is unavailable (see AGENTS.md).
 --
 -- This target is the "self-check" payload (a binary whose name starts with weave_smoke_, so xmake
 -- smoke picks it up). No dependency on the payload is declared: once the payload library is linked
@@ -133,7 +133,8 @@ target("weave_smoke_svdpi_driver", function()
   set_kind("binary")
   add_files("tests/svdpi_driver.cpp")
   add_defines(
-    'WEAVE_SVDPI_SV_DIR="$(projectdir)/sv"',
+    'WEAVE_SVDPI_PKG_DIR="$(projectdir)/sv"',
+    'WEAVE_SVDPI_TB="$(projectdir)/tests/weave_tb.sv"',
     'WEAVE_SVDPI_LIB="libweave_smoke_svdpi"',
     'WEAVE_SVDPI_WORK="svdpi_smoke_work"'
   )
@@ -159,8 +160,9 @@ target("weave_examples_sc", function()
   add_packages("systemc")
 end)
 
--- SVDPI shared-library form: loaded into VCS together with libweave.so via -sv_lib, bootstrapped
--- by weave_run/weave_sv_wait_done in sv/weave_tb.sv. This is also the payload for the VCS-side
+-- SVDPI shared-library form: loaded into VCS together with libweave.so via -sv_lib; the bootstrap
+-- entry weave_start (imported by sv/weave_pkg.sv, called from its weave_run task, which
+-- tests/weave_tb.sv calls) starts the registered tests. This is also the payload for the VCS-side
 -- example regression, and the very library the manual VCS run in the docs loads.
 target("weave_examples_svdpi", function()
   set_warnings("all", "extra", "error")
@@ -184,7 +186,8 @@ target("weave_examples_svdpi_driver", function()
   set_kind("binary")
   add_files("tests/svdpi_driver.cpp")
   add_defines(
-    'WEAVE_SVDPI_SV_DIR="$(projectdir)/sv"',
+    'WEAVE_SVDPI_PKG_DIR="$(projectdir)/sv"',
+    'WEAVE_SVDPI_TB="$(projectdir)/tests/weave_tb.sv"',
     'WEAVE_SVDPI_LIB="libweave_examples_svdpi"',
     'WEAVE_SVDPI_WORK="svdpi_examples_work"'
   )

@@ -131,9 +131,10 @@ include/weave/    Public API: weave.hpp (umbrella) +
                   config/time/task/event/locks/semaphore/barrier/sync/test[/sc]
 src/core/         Backend-agnostic core + port.hpp backend contract
 src/backend/      Backend adapters (exactly one, selected by macro): svdpi.cpp (default) / systemc.cpp
-sv/               SVDPI backend protocol (event table, three-legged wait, spawn, tb skeleton)
+sv/               SVDPI backend protocol, SV side (event table, three-legged wait, spawn)
 examples/         Per-domain demos of the whole public API + one end-to-end case (xmake examples regression)
-tests/            Semantic self-check assertion bodies (xmake smoke regression)
+tests/            Semantic self-check assertion bodies + the VCS driver with its SV testbench top
+                  (xmake smoke regression)
 docs/             architecture.md / backends.md and Chinese version of README_zh.md / architecture_zh.md / backends_zh.md
 ```
 

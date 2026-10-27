@@ -121,7 +121,7 @@ int run() {
   const int done_ev = detail::run_registered_test();
   if (done_ev < 0) return -1;
   // Reporting process: waits for the root task's terminal state, prints the result and stops the
-  // simulation (≡ sv/weave_tb.sv). sc_event has no memory: if the root task is already terminal
+  // simulation. sc_event has no memory: if the root task is already terminal
   // before the reporting process's first wait (e.g. the first test fails at delta 0), the delta
   // notification would be missed — so check the state first and only wait when it is not terminal;
   // no other process can interleave between the state check and the wait (single active process),

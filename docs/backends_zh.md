@@ -7,7 +7,7 @@
 
 | 宏 | 后端 | Bootstrap 入口 | 状态 |
 |---|---|---|---|
-| `WEAVE_BACKEND_SVDPI`（默认） | SystemVerilog DPI（VCS/IES/Xcelium） | `extern "C" void weave_run()`，由 sv/weave_tb.sv 调用 | 已在真实 VCS 内核上验证（weave_smoke_svdpi_driver；无 VCS 时自动 SKIP） |
+| `WEAVE_BACKEND_SVDPI`（默认） | SystemVerilog DPI（VCS/IES/Xcelium） | `extern "C" void weave_start()`，由 sv/weave_pkg.sv 里的 `weave_run` 任务调用 | 已在真实 VCS 内核上验证（weave_smoke_svdpi_driver；无 VCS 时自动 SKIP） |
 | `WEAVE_BACKEND_SYSTEMC` | SystemC（xmake-repo 3.0.2） | `int weave::sc::run()`，由 sc_main 调用 | 已在真实内核上验证（weave_smoke_sc） |
 
 切换方式：
@@ -38,7 +38,7 @@ DPI 边界（`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`）：
 手工运行方式（用于手动调试；`xmake examples` / `xmake smoke` 会自动执行同样的步骤）：
 
 ```bash
-vcs -full64 -sverilog sv/weave_pkg.sv sv/weave_tb.sv \
+vcs -full64 -sverilog sv/weave_pkg.sv tests/weave_tb.sv \
     -sv_lib build/linux/x86_64/release/weave \
     -sv_lib build/linux/x86_64/release/weave_examples_svdpi
 ./simv   # 预期输出："WEAVE TEST PASSED"
@@ -51,8 +51,8 @@ vcs -full64 -sverilog sv/weave_pkg.sv sv/weave_tb.sv \
 | `weave_smoke_svdpi_driver` | `libweave_smoke_svdpi` | `tests/` 断言体 | `xmake smoke` |
 | `weave_examples_svdpi_driver` | `libweave_examples_svdpi` | `examples/` 程序 | `xmake examples` |
 
-两者都自行定位 vcs、编译上述骨架、运行 simv，并以输出标记 `WEAVE TEST PASSED` 判定通过；当找不到
-vcs（`VCS_HOME`/`PATH`）时，它们打印 SKIP 并以 0 退出。
+两者都自行定位 vcs、编译 `sv/weave_pkg.sv` 与 `tests/weave_tb.sv`、运行 simv，并以输出标记
+`WEAVE TEST PASSED` 判定通过；当找不到 vcs（`VCS_HOME`/`PATH`）时，它们打印 SKIP 并以 0 退出。
 
 ## SystemC 后端
 

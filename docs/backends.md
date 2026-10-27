@@ -7,7 +7,7 @@ document is for people who need to switch, integrate, or add a backend.
 
 | Macro | Backend | Bootstrap entry | Status |
 |---|---|---|---|
-| `WEAVE_BACKEND_SVDPI` (default) | SystemVerilog DPI (VCS/IES/Xcelium) | `extern "C" void weave_run()`, called by sv/weave_tb.sv | Verified on a real VCS kernel (weave_smoke_svdpi_driver; auto-SKIPs without VCS) |
+| `WEAVE_BACKEND_SVDPI` (default) | SystemVerilog DPI (VCS/IES/Xcelium) | `extern "C" void weave_start()`, called from the `weave_run` task in sv/weave_pkg.sv | Verified on a real VCS kernel (weave_smoke_svdpi_driver; auto-SKIPs without VCS) |
 | `WEAVE_BACKEND_SYSTEMC` | SystemC (xmake-repo 3.0.2) | `int weave::sc::run()`, called from sc_main | Verified on a real kernel (weave_smoke_sc) |
 
 Switching:
@@ -42,7 +42,7 @@ How to run it by hand (for manual debugging; `xmake examples` / `xmake smoke` pe
 automatically):
 
 ```bash
-vcs -full64 -sverilog sv/weave_pkg.sv sv/weave_tb.sv \
+vcs -full64 -sverilog sv/weave_pkg.sv tests/weave_tb.sv \
     -sv_lib build/linux/x86_64/release/weave \
     -sv_lib build/linux/x86_64/release/weave_examples_svdpi
 ./simv   # expected output: "WEAVE TEST PASSED"
@@ -56,8 +56,9 @@ differ only in payload:
 | `weave_smoke_svdpi_driver` | `libweave_smoke_svdpi` | `tests/` assertion bodies | `xmake smoke` |
 | `weave_examples_svdpi_driver` | `libweave_examples_svdpi` | `examples/` programs | `xmake examples` |
 
-Both locate vcs themselves, compile the skeleton above, run simv, and judge Pass by the output marker
-`WEAVE TEST PASSED`; when vcs cannot be found (`VCS_HOME`/`PATH`) they print SKIP and exit with 0.
+Both locate vcs themselves, compile `sv/weave_pkg.sv` plus `tests/weave_tb.sv`, run simv, and judge
+Pass by the output marker `WEAVE TEST PASSED`; when vcs cannot be found (`VCS_HOME`/`PATH`) they
+print SKIP and exit with 0.
 
 ## The SystemC backend
 

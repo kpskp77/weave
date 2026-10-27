@@ -115,9 +115,9 @@ include/weave/    公共 API：weave.hpp（伞头）+
                   config/time/task/event/locks/semaphore/barrier/sync/test[/sc]
 src/core/         与后端无关的核心 + port.hpp 后端契约
 src/backend/      后端适配器（恰好一个，由宏选择）：svdpi.cpp（默认）/ systemc.cpp
-sv/               SVDPI 后端协议（事件表、三腿 wait、spawn、tb 骨架）
+sv/               SVDPI 后端协议的 SV 侧（事件表、三腿 wait、spawn）
 examples/         按领域划分的公共 API 演示 + 一个端到端用例（xmake examples 回归）
-tests/            语义自检断言体（xmake smoke 回归）
+tests/            语义自检断言体 + VCS 驱动及其 SV 测试顶层（xmake smoke 回归）
 docs/             architecture.md / backends.md 及其中文版 README_zh.md / architecture_zh.md / backends_zh.md
 ```
 

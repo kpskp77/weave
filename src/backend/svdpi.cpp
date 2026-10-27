@@ -3,7 +3,7 @@
 #if defined(WEAVE_BACKEND_SVDPI)
 
 // SVDPI backend (default): maps the port contract onto the DPI primitives exported by
-// sv/weave_pkg.sv, and provides the bootstrap entries the SV test skeleton (sv/weave_tb.sv) needs.
+// sv/weave_pkg.sv, and provides the bootstrap entries the testbench top needs.
 //
 // DPI boundary:
 //   imports (provided by SV): weave_sv_* — event table, three-legged wait, spawn
