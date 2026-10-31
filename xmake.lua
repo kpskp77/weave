@@ -4,10 +4,10 @@
 --
 -- Target grouping (keep same-kind targets adjacent, do not interleave):
 --   weave           core library (backend chosen by --backend)
---   smoke payloads  weave_smoke_sc / weave_smoke_svdpi / weave_smoke_svdpi_driver
---   examples        weave_examples_sc (systemc) / weave_examples_svdpi (svdpi)
--- Regression entries: xmake smoke (tests/ semantic self-checks), xmake examples (examples/
--- programs); the two are independent.
+--   smoke payloads  weave_smoke_sc / weave_smoke_svdpi (+ weave_smoke_svdpi_vcs phony runner)
+--   examples        weave_examples_sc (systemc) / weave_examples_svdpi (svdpi, + phony runner)
+-- Regression entries live in the justfile (just smoke / just examples / just headers); this file
+-- defines build targets only, and the two regressions are independent.
 
 set_project("weave")
 set_version("0.1.0")
@@ -51,7 +51,7 @@ target("weave", function()
   end
 end)
 
--- ── smoke payloads (tests/; run by xmake smoke) ──────────────────────────────
+-- ── smoke payloads (tests/; run by just smoke) ───────────────────────────────
 
 -- SystemC self-check: runs the core semantic assertions on a real SystemC kernel.
 -- SystemC comes from xmake-repo (add_requires("systemc"), installed automatically before building
@@ -117,37 +117,36 @@ target("weave_smoke_svdpi", function()
   add_packages("svdpi")
 end)
 
--- The SVDPI VCS driver (tests/svdpi_driver.cpp) is compiled into several targets that differ only
--- in their payload parameters; each locates VCS → compiles sv/weave_pkg.sv + tests/weave_tb.sv →
--- runs simv with the -sv_lib payload → judges Pass by the output marker, and prints SKIP and exits 0
+-- The SVDPI VCS run is a phony target executing tests/svdpi/run.sh (the simlog arrangement):
+-- the script locates VCS → compiles sv/weave_pkg.sv + tests/weave_tb.sv → runs simv with the
+-- payload via -sv_root/-sv_lib → judges Pass by the output marker, and prints SKIP and exits 0
 -- when VCS/IES is unavailable (see AGENTS.md).
 --
--- This target is the "self-check" payload (a binary whose name starts with weave_smoke_, so xmake
--- smoke picks it up). No dependency on the payload is declared: once the payload library is linked
--- into the driver, the dynamic loader refuses to load it before main() runs, because of the
--- undefined DPI symbols inside it (svGetScope and friends, which only VCS's simv is supposed to
--- provide) — the SKIP branch would be unreachable. At run time the driver looks for the payload
--- next to itself (WEAVE_SVDPI_LIB); the build order is guaranteed by xmake smoke's build list.
-target("weave_smoke_svdpi_driver", function()
-  set_warnings("all", "extra", "error")
-  set_kind("binary")
-  add_files("tests/svdpi_driver.cpp")
-  add_defines(
-    'WEAVE_SVDPI_PKG_DIR="$(projectdir)/sv"',
-    'WEAVE_SVDPI_TB="$(projectdir)/tests/weave_tb.sv"',
-    'WEAVE_SVDPI_LIB="libweave_smoke_svdpi"',
-    'WEAVE_SVDPI_WORK="svdpi_smoke_work"'
-  )
+-- Unlike the former C++ driver binary, a phony target carries no link step, so the dependency on
+-- the payload library is declared normally and the build order is guaranteed by xmake itself.
+-- The "self-check" name prefix (weave_smoke_) marks the payload as part of the smoke regression;
+-- the justfile's smoke recipe runs it through `xmake run` like a binary (a phony target's on_run
+-- is invoked by xmake run, which also builds its deps).
+target("weave_smoke_svdpi_vcs", function()
+  set_kind("phony")
+  set_default(false)
+  add_deps("weave_smoke_svdpi")
+  on_run(function(target)
+    os.execv("bash", {
+      path.join(os.projectdir(), "tests/svdpi/run.sh"),
+      target:dep("weave_smoke_svdpi"):targetfile(),
+    })
+  end)
 end)
 
--- ── examples payloads (examples/; run by xmake examples) ─────────────────────
+-- ── examples payloads (examples/; run by just examples) ─────────────────────
 
 -- The example regression is built the way a **user** would: only examples/*.cpp are compiled, the
 -- example code may use nothing but the public API in include/weave/, and it links libweave.so via
 -- add_deps("weave") (never inlining core sources), so it genuinely crosses the DSO boundary. Both
--- forms are always defined (not gated on --backend): xmake examples switches configurations within
--- a single invocation and runs each of them, so the task process must be able to look up both
--- targets.
+-- forms are always defined (not gated on --backend): just examples switches configurations
+-- within a single recipe (xmake f between the two runs), so both target definitions must be
+-- resolvable regardless of the current --backend.
 --   weave_examples_sc    systemc → an executable, run locally
 --   weave_examples_svdpi svdpi   → a shared library, loaded into VCS via -sv_lib
 
@@ -172,154 +171,17 @@ target("weave_examples_svdpi", function()
   add_files("examples/*.cpp")
 end)
 
--- The VCS driver for the examples: the same tests/svdpi_driver.cpp as weave_smoke_svdpi_driver,
--- with the payload swapped for libweave_examples_svdpi. It is not named weave_smoke_* — the
--- example regression is independent of xmake smoke.
--- **No dependency is declared**: {links = false} / {order = true} would both drag in libweave.so's
--- link dependencies through the payload (which itself has add_deps("weave")), and libweave.so's
--- DPI symbols can only be provided by VCS's simv — the driver would fail at load time with
--- "cannot locate symbol svGetScope", never reaching the SKIP branch. The driver only looks for the
--- payload by path at run time, so no build-time dependency is needed; xmake examples explicitly
--- builds the payload before the driver.
-target("weave_examples_svdpi_driver", function()
-  set_warnings("all", "extra", "error")
-  set_kind("binary")
-  add_files("tests/svdpi_driver.cpp")
-  add_defines(
-    'WEAVE_SVDPI_PKG_DIR="$(projectdir)/sv"',
-    'WEAVE_SVDPI_TB="$(projectdir)/tests/weave_tb.sv"',
-    'WEAVE_SVDPI_LIB="libweave_examples_svdpi"',
-    'WEAVE_SVDPI_WORK="svdpi_examples_work"'
-  )
-end)
-
--- ── regression tasks ─────────────────────────────────────────────────────────
-
--- Regression entry: build the three smoke payloads, then run each weave_smoke_* self-check
--- binary with `xmake run`.
--- A new self-check target is run by this task only if its name starts with weave_smoke_ (and it
--- is a binary), and it must also be added to the build list below (xmake run injects the
--- package's LD_LIBRARY_PATH, since systemc has no rpath).
-task("smoke", function()
-  set_menu({
-    usage = "xmake smoke",
-    description = "Build all targets and run all self-check binaries (full regression)",
-  })
-  on_run(function()
-    import("core.project.config")
-    import("core.project.project")
-    config.load()
-    os.execv(
-      "xmake",
-      { "build", "weave_smoke_sc", "weave_smoke_svdpi", "weave_smoke_svdpi_driver" }
-    )
-    for _, target in pairs(project.targets()) do
-      local name = target:name()
-      if target:get("kind") == "binary" and name:match("^weave_smoke_") then
-        print("==> " .. name)
-        local code = os.execv("xmake", { "run", name })
-        if code ~= 0 then os.raise(name .. " failed (exit " .. tostring(code) .. ")") end
-      end
-    end
-    cprint("${bright green}All smoke tests passed.${clear}")
-  end)
-end)
-
--- Example regression entry (independent of xmake smoke; payloads described above).
-task("examples", function()
-  set_menu({
-    usage = "xmake examples",
-    description = "Build and run examples on both backends (independent of smoke)",
-  })
-  on_run(function()
-    import("core.project.config")
-    import("core.project.project")
-    config.load()
-    -- Run both backends: the example targets are always defined, and switching --backend only
-    -- makes the `weave` library (the one weave_examples_* links) rebuild for the chosen backend.
-    -- The configuration is restored afterwards.
-    local saved = config.get("backend")
-
-    -- SystemC: an executable, run locally on a real kernel.
-    os.execv("xmake", { "f", "--backend=systemc" })
-    os.execv("xmake", { "build", "weave_examples_sc" })
-    print("==> [systemc] weave_examples_sc")
-    local code = os.execv("xmake", { "run", "weave_examples_sc" })
-    if code ~= 0 then
-      os.execv("xmake", { "f", "--backend=" .. saved })
-      os.raise("weave_examples_sc failed (exit " .. tostring(code) .. ")")
-    end
-
-    -- SVDPI: shared library + VCS driver. The driver itself prints SKIP and returns 0 when VCS is
-    --     unavailable, so without SVDPI support this step amounts to a compile-only check.
-    os.execv("xmake", { "f", "--backend=svdpi" })
-    os.execv("xmake", { "build", "weave_examples_svdpi", "weave_examples_svdpi_driver" })
-    print("==> [svdpi] weave_examples_svdpi + driver")
-    local vcs_code = os.execv("xmake", { "run", "weave_examples_svdpi_driver" })
-    os.execv("xmake", { "f", "--backend=" .. saved })
-    if vcs_code ~= 0 then
-      os.raise("weave_examples_svdpi failed (exit " .. tostring(vcs_code) .. ")")
-    end
-    cprint("${bright green}Examples done (systemc + svdpi).${clear}")
-  end)
-end)
-
--- Public-header baseline check: every header under include/weave/ is compiled as its own
--- translation unit (a file whose only content is `#include <weave/X.hpp>`) under
--- -std=c++17 / c++20 / c++23 with the project's warning policy and -fsyntax-only, so "each public
--- header compiles standalone under every supported standard" is a re-runnable check rather than a
--- claim (README.md, "Language standard"). sc.hpp needs neither the SystemC include path nor
--- WEAVE_BACKEND_SYSTEMC: it only declares weave::sc::run().
-task("headers", function()
-  set_menu({
-    usage = "xmake headers",
-    description = "Compile each public header standalone under C++17/20/23",
-  })
-  on_run(function()
-    import("core.project.config")
-    import("core.project.project")
-    config.load()
-    -- Same compiler as the build (the target toolchain knows it); CXX wins when set explicitly.
-    local cc = os.getenv("CXX")
-    if not cc then cc = project.target("weave_smoke_sc"):tool("cxx") end
-    local headers = os.files("include/weave/*.hpp")
-    table.sort(headers)
-    local tmpdir = path.join(os.tmpdir(), "weave_headers")
-    os.tryrm(tmpdir)
-    os.mkdir(tmpdir)
-    local checked = 0
-    for _, std in ipairs({ "c++17", "c++20", "c++23" }) do
-      -- An old host compiler may not know the standard at all: report SKIP instead of a failure
-      -- (same convention as the SVDPI driver without VCS).
-      local probe = path.join(tmpdir, "probe.cpp")
-      io.writefile(probe, "")
-      if os.execv(cc, { "-std=" .. std, "-fsyntax-only", probe }) ~= 0 then
-        print("==> -std=" .. std .. " SKIP (not supported by " .. cc .. ")")
-        goto continue
-      end
-      print("==> -std=" .. std)
-      for _, header in ipairs(headers) do
-        local tu = path.join(tmpdir, path.basename(header) .. ".cpp")
-        io.writefile(tu, "#include <weave/" .. path.filename(header) .. ">\n")
-        local code = os.execv(cc, {
-          "-std=" .. std,
-          "-Wall",
-          "-Wextra",
-          "-Werror",
-          "-fsyntax-only",
-          "-Iinclude",
-          tu,
-        })
-        if code ~= 0 then
-          os.raise(
-            header .. " is not clean under -std=" .. std .. " (exit " .. tostring(code) .. ")"
-          )
-        end
-        checked = checked + 1
-      end
-      ::continue::
-    end
-    os.tryrm(tmpdir)
-    cprint("${bright green}" .. checked .. " header x standard combinations clean${clear}")
+-- The VCS run for the examples: the same tests/svdpi/run.sh as weave_smoke_svdpi_vcs, with the
+-- payload swapped for libweave_examples_svdpi. It is not named weave_smoke_* — the example
+-- regression is independent of the smoke regression (just smoke).
+target("weave_examples_svdpi_vcs", function()
+  set_kind("phony")
+  set_default(false)
+  add_deps("weave_examples_svdpi")
+  on_run(function(target)
+    os.execv("bash", {
+      path.join(os.projectdir(), "tests/svdpi/run.sh"),
+      target:dep("weave_examples_svdpi"):targetfile(),
+    })
   end)
 end)

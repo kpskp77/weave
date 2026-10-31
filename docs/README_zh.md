@@ -86,9 +86,9 @@ WEAVE_TEST(my_test) {
 ## 构建与运行
 
 ```bash
-xmake smoke      # 语义自检：构建 smoke payload，并通过 xmake run 逐个运行 weave_smoke_*（每个后端各跑一次）
-xmake examples   # 示例回归：一次跑通 systemc 与 svdpi 两个后端
-xmake headers    # 公共头基线：每个公共头在 C++17/20/23 下独立编译
+just smoke      # 语义自检：构建 smoke payload，并通过 xmake run 逐个运行 weave_smoke_*（每个后端各跑一次）
+just examples   # 示例回归：一次跑通 systemc 与 svdpi 两个后端
+just headers    # 公共头基线：每个公共头在 C++17/20/23 下独立编译
 ```
 
 两者职责不同，且缺一不可：`tests/` 中的断言体与 `examples/` 中的程序永远不会被编译进对方的
@@ -116,8 +116,8 @@ include/weave/    公共 API：weave.hpp（伞头）+
 src/core/         与后端无关的核心 + port.hpp 后端契约
 src/backend/      后端适配器（恰好一个，由宏选择）：svdpi.cpp（默认）/ systemc.cpp
 sv/               SVDPI 后端协议的 SV 侧（事件表、三路 wait、spawn）
-examples/         按领域划分的公共 API 演示 + 一个端到端用例（xmake examples 回归）
-tests/            语义自检断言体 + VCS 驱动及其 SV 测试顶层（xmake smoke 回归）
+examples/         按领域划分的公共 API 演示 + 一个端到端用例（just examples 回归）
+tests/            语义自检断言体 + VCS 运行脚本及其 SV 测试顶层（just smoke 回归）
 docs/             architecture.md / backends.md 及其中文版 README_zh.md / architecture_zh.md / backends_zh.md
 ```
 

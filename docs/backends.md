@@ -7,7 +7,7 @@ document is for people who need to switch, integrate, or add a backend.
 
 | Macro | Backend | Bootstrap entry | Status |
 |---|---|---|---|
-| `WEAVE_BACKEND_SVDPI` (default) | SystemVerilog DPI (VCS/IES/Xcelium) | `extern "C" void weave_start()`, called from the `weave_run` task in sv/weave_pkg.sv | Verified on a real VCS kernel (weave_smoke_svdpi_driver; auto-SKIPs without VCS) |
+| `WEAVE_BACKEND_SVDPI` (default) | SystemVerilog DPI (VCS/IES/Xcelium) | `extern "C" void weave_start()`, called from the `weave_run` task in sv/weave_pkg.sv | Verified on a real VCS kernel (weave_smoke_svdpi_vcs; auto-SKIPs without VCS) |
 | `WEAVE_BACKEND_SYSTEMC` | SystemC (xmake-repo 3.0.2) | `int weave::sc::run()`, called from sc_main | Verified on a real kernel (weave_smoke_sc) |
 
 Switching:
@@ -38,7 +38,7 @@ The DPI boundary (`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`):
   weave_sv_spawn), `weave_start` / `weave_test_status` (tb bootstrap; the package's `weave_run` task
   calls them, so the DPI scope is already `weave_pkg` and no `svSetScope` is needed).
 
-How to run it by hand (for manual debugging; `xmake examples` / `xmake smoke` perform the same steps
+How to run it by hand (for manual debugging; `just examples` / `just smoke` perform the same steps
 automatically):
 
 ```bash
@@ -48,17 +48,19 @@ vcs -full64 -sverilog sv/weave_pkg.sv tests/weave_tb.sv \
 ./simv   # expected output: "WEAVE TEST PASSED"
 ```
 
-Automated regression: `tests/svdpi_driver.cpp` is the only VCS driver, compiled into two targets that
-differ only in payload:
+Automated regression: `tests/svdpi/run.sh` is the only VCS runner (a bash script in the simlog
+arrangement), executed by two phony xmake targets that differ only in payload:
 
 | Target | `-sv_lib` payload | Contents | Entry |
 |---|---|---|---|
-| `weave_smoke_svdpi_driver` | `libweave_smoke_svdpi` | `tests/` assertion bodies | `xmake smoke` |
-| `weave_examples_svdpi_driver` | `libweave_examples_svdpi` | `examples/` programs | `xmake examples` |
+| `weave_smoke_svdpi_vcs` | `libweave_smoke_svdpi` | `tests/` assertion bodies | `just smoke` |
+| `weave_examples_svdpi_vcs` | `libweave_examples_svdpi` | `examples/` programs | `just examples` |
 
-Both locate vcs themselves, compile `sv/weave_pkg.sv` plus `tests/weave_tb.sv`, run simv, and judge
-Pass by the output marker `WEAVE TEST PASSED`; when vcs cannot be found (`VCS_HOME`/`PATH`) they
-print SKIP and exit with 0.
+Being phony, the targets carry no link step, so each declares its payload as a normal
+`add_deps` (unlike the former C++ driver binary, which could not link the payload because of its
+undefined DPI symbols). The script locates vcs (`VCS_HOME`/`PATH`), compiles `sv/weave_pkg.sv` plus
+`tests/weave_tb.sv`, runs simv with the payload, and judges Pass by the output marker
+`WEAVE TEST PASSED`; when vcs cannot be found it prints SKIP and exits with 0.
 
 ## The SystemC backend
 
@@ -119,5 +121,5 @@ the single copy of RTTI inside the library is shared through the dynamic linker.
    entry point of your choice (see svdpi.cpp / systemc.cpp).
 3. xmake mapping: add a value to the `--backend` option, compare `get_config` inside the target to
    define the macro and the dependencies.
-4. Regression: `xmake smoke` must be fully green (name any new self-check target `weave_smoke_*` and
-   add it to the build list of the `smoke` task).
+4. Regression: `just smoke` must be fully green (name any new self-check target `weave_smoke_*` and
+   add it to the `smoke` recipe in the `justfile`).

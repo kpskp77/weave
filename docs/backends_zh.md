@@ -7,7 +7,7 @@
 
 | 宏 | 后端 | Bootstrap 入口 | 状态 |
 |---|---|---|---|
-| `WEAVE_BACKEND_SVDPI`（默认） | SystemVerilog DPI（VCS/IES/Xcelium） | `extern "C" void weave_start()`，由 sv/weave_pkg.sv 中的 `weave_run` 任务调用 | 已在真实 VCS 内核上验证（weave_smoke_svdpi_driver；无 VCS 时自动 SKIP） |
+| `WEAVE_BACKEND_SVDPI`（默认） | SystemVerilog DPI（VCS/IES/Xcelium） | `extern "C" void weave_start()`，由 sv/weave_pkg.sv 中的 `weave_run` 任务调用 | 已在真实 VCS 内核上验证（weave_smoke_svdpi_vcs；无 VCS 时自动 SKIP） |
 | `WEAVE_BACKEND_SYSTEMC` | SystemC（xmake-repo 3.0.2） | `int weave::sc::run()`，由 sc_main 调用 | 已在真实内核上验证（weave_smoke_sc） |
 
 切换方式：
@@ -35,7 +35,7 @@ DPI 边界（`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`）：
   `weave_start` / `weave_test_status`（tb bootstrap；包里的 `weave_run` 任务会调用它们，所以
   DPI 作用域已经是 `weave_pkg`，无需 `svSetScope`）。
 
-手动运行方式（用于调试；`xmake examples` / `xmake smoke` 会自动执行同样的步骤）：
+手动运行方式（用于调试；`just examples` / `just smoke` 会自动执行同样的步骤）：
 
 ```bash
 vcs -full64 -sverilog sv/weave_pkg.sv tests/weave_tb.sv \
@@ -44,15 +44,18 @@ vcs -full64 -sverilog sv/weave_pkg.sv tests/weave_tb.sv \
 ./simv   # 预期输出："WEAVE TEST PASSED"
 ```
 
-自动化回归：`tests/svdpi_driver.cpp` 是唯一的 VCS 驱动，被编译进两个只有 payload 不同的目标：
+自动化回归：`tests/svdpi/run.sh` 是唯一的 VCS 运行脚本（仿 simlog 项目的做法），由两个只有
+payload 不同的 phony xmake 目标执行：
 
 | 目标 | `-sv_lib` payload | 内容 | 入口 |
 |---|---|---|---|
-| `weave_smoke_svdpi_driver` | `libweave_smoke_svdpi` | `tests/` 断言体 | `xmake smoke` |
-| `weave_examples_svdpi_driver` | `libweave_examples_svdpi` | `examples/` 程序 | `xmake examples` |
+| `weave_smoke_svdpi_vcs` | `libweave_smoke_svdpi` | `tests/` 断言体 | `just smoke` |
+| `weave_examples_svdpi_vcs` | `libweave_examples_svdpi` | `examples/` 程序 | `just examples` |
 
-两者都自行定位 vcs、编译 `sv/weave_pkg.sv` 与 `tests/weave_tb.sv`、运行 simv，并以输出中是否出现
-`WEAVE TEST PASSED` 判定通过；找不到 vcs（`VCS_HOME` / `PATH`）时，它们打印 SKIP 并以 0 退出。
+由于是 phony 目标，不存在链接步骤，因此各自用普通的 `add_deps` 声明对 payload 的依赖（旧的
+C++ 驱动二进制则无法链接 payload——其中的 DPI 符号是未定义的）。脚本自行定位 vcs
+（`VCS_HOME` / `PATH`）、编译 `sv/weave_pkg.sv` 与 `tests/weave_tb.sv`、运行 simv，并以输出中是否出现
+`WEAVE TEST PASSED` 判定通过；找不到 vcs 时打印 SKIP 并以 0 退出。
 
 ## SystemC 后端
 
@@ -102,5 +105,5 @@ linkage：每个用到该类型的翻译单元都会发出一个弱定义；又�
 2. 创建 `src/backend/<name>.cpp`，整个文件用 `#if defined(WEAVE_BACKEND_<NAME>)` 保护，实现
    7 个 `weave::port` 原语，外加一个自选的 bootstrap 入口点（参考 svdpi.cpp / systemc.cpp）。
 3. xmake 映射：给 `--backend` 选项加一个取值，在目标内比较 `get_config` 来定义宏与依赖。
-4. 回归：`xmake smoke` 必须全绿（新增自检目标请命名为 `weave_smoke_*`，并加入 `smoke` 任务的构建
-   列表）。
+4. 回归：`just smoke` 必须全绿（新增自检目标请命名为 `weave_smoke_*`，并加入 justfile 的 `smoke`
+   配方）。

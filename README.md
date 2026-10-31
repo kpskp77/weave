@@ -95,16 +95,17 @@ WEAVE_TEST(my_test) {
 ## Build and run
 
 ```bash
-xmake smoke      # Semantic self-checks: build smoke payloads + run each weave_smoke_* via xmake run (once per backend)
-xmake examples   # Example regression: runs both systemc and svdpi in one go
-xmake headers    # Public-header baseline: each public header compiled standalone under C++17/20/23
+just smoke      # Semantic self-checks: build smoke payloads + run each weave_smoke_* via xmake run (once per backend)
+just examples   # Example regression: runs both systemc and svdpi in one go
+just headers    # Public-header baseline: each public header compiled standalone under C++17/20/23
 ```
 
 The two have different responsibilities and neither is optional: the assertion bodies in `tests/`
 and the programs in `examples/` are never compiled into each other's payloads; examples are built
 the way a user would use the library (public headers only, linking `libweave.so`, genuinely
 crossing the DSO boundary). Artifacts land in `build/<plat>/<arch>/<mode>/`; without VCS/IES the
-SVDPI driver prints SKIP and returns 0 (equivalent to a compile-only check). Backend switching, the
+SVDPI runner script prints SKIP and returns 0 (equivalent to a compile-only check). Backend
+switching, the
 SystemC bootstrap entry point, and adding a new backend are covered in [backends](docs/backends.md).
 
 ## Language standard: C++17 and up
@@ -132,9 +133,9 @@ include/weave/    Public API: weave.hpp (umbrella) +
 src/core/         Backend-agnostic core + port.hpp backend contract
 src/backend/      Backend adapters (exactly one, selected by macro): svdpi.cpp (default) / systemc.cpp
 sv/               SVDPI backend protocol, SV side (event table, three-legged wait, spawn)
-examples/         Per-domain demos of the whole public API + one end-to-end case (xmake examples regression)
-tests/            Semantic self-check assertion bodies + the VCS driver with its SV testbench top
-                  (xmake smoke regression)
+examples/         Per-domain demos of the whole public API + one end-to-end case (just examples regression)
+tests/            Semantic self-check assertion bodies + the VCS runner script (tests/svdpi/run.sh)
+                  with its SV testbench top (just smoke regression)
 docs/             architecture.md / backends.md and Chinese version of README_zh.md / architecture_zh.md / backends_zh.md
 ```
 

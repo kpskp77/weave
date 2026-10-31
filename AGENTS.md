@@ -18,29 +18,34 @@ C++ call stack freezes).
 **Principle: after every change, regress every case — no cherry-picking, no skipping.**
 
 ```bash
-xmake smoke      # Semantic self-checks: build smoke payloads + run each weave_smoke_* binary via xmake run
-xmake examples   # Example regression (independent): runs both the systemc and svdpi backends in one go
-xmake headers    # Public-header baseline: each include/weave/*.hpp compiled standalone under C++17/20/23
+just smoke      # Semantic self-checks: build smoke payloads + run each weave_smoke_* via xmake run (once per backend)
+just examples   # Example regression (independent): runs both the systemc and svdpi backends in one go
+just headers    # Public-header baseline: each include/weave/*.hpp compiled standalone under C++17/20/23
 ```
 
-- Cross-backend changes (`port.hpp`, backend files, `config.hpp`, xmake macro mapping) must be run
-  once under each configuration:
+The regression recipes live in the `justfile`; the build targets they invoke live in `xmake.lua`
+(xmake defines no custom tasks — `xmake smoke` and friends no longer exist).
+
+- Cross-backend changes (`port.hpp`, backend files, `config.hpp`, xmake macro mapping) are covered
+  by `just smoke` and `just examples`, which each switch `--backend` themselves (systemc first,
+  then svdpi, restoring the default svdpi configuration). To regress one backend by hand:
 
 ```bash
-xmake f --backend=svdpi   && xmake smoke
-xmake f --backend=systemc && xmake smoke
+xmake f --backend=svdpi   && xmake run weave_smoke_svdpi_vcs
+xmake f --backend=systemc && xmake run weave_smoke_sc
 xmake f --backend=svdpi   # restore the default configuration
 ```
 
-- Public-header changes need `xmake headers` as well (every header compiled standalone under
+- Public-header changes need `just headers` as well (every header compiled standalone under
   C++17/20/23 with `-Wall -Wextra -Werror`); example-only changes need only a single
-  `xmake examples` run.
-- A new self-check binary must be named `weave_smoke_*` **and** added to the `xmake build` list of
-  the `smoke` task; running always goes through `xmake run` (see the pitfalls below).
+  `just examples` run.
+- A new self-check target (a `weave_smoke_*` binary, or a `weave_smoke_*` phony target whose
+  `on_run` executes a script, like `weave_smoke_svdpi_vcs`) must also be added to the `smoke`
+  recipe in the `justfile`; running always goes through `xmake run` (see the pitfalls below).
 - The `tests/` and `examples/` payloads are strictly separated: examples link `libweave.so` only via
   `add_deps("weave")` (never inlining core sources) and are not compiled into any `weave_smoke_*`
   payload; the reverse holds too.
-- Without VCS/IES the SVDPI driver prints SKIP and returns 0, i.e. a compile-only check.
+- Without VCS/IES `tests/svdpi/run.sh` prints SKIP and returns 0, i.e. a compile-only check.
 
 ## Architecture: core/backend separation
 
