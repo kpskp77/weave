@@ -1,4 +1,4 @@
-#include <weave/config.hpp>
+#include "../core/config.hpp"
 
 #if defined(WEAVE_BACKEND_SVDPI)
 

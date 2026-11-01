@@ -25,7 +25,7 @@ just examples   # Example regression (independent): runs both the systemc and sv
 The regression recipes live in the `justfile`; the build targets they invoke live in `xmake.lua`
 (xmake defines no custom tasks — `xmake smoke` and friends no longer exist).
 
-- Cross-backend changes (`port.hpp`, backend files, `config.hpp`, xmake macro mapping) are covered
+- Cross-backend changes (`port.hpp`, backend files, `src/core/config.hpp`, xmake macro mapping) are covered
   by `just smoke` and `just examples`, which each switch `--backend` themselves (systemc first,
   then svdpi, restoring the default svdpi configuration). To regress one backend by hand:
 
@@ -47,17 +47,19 @@ xmake f --backend=svdpi   # restore the default configuration
 ## Architecture: core/backend separation
 
 ```
-include/weave/    Public API: weave.hpp (umbrella) + config/time/task/event/sync/test[/sc]
+include/weave/    Public API: weave.hpp (umbrella) + time/task/event/sync/test[/sc]
 src/core/         Backend-agnostic: task/event/sync/time/registry + locks/queue/semaphore/barrier
-                  + port.hpp (contract) + *_internal.hpp
+                  + port.hpp (contract) + config.hpp (backend-selection macro, internal)
+                  + *_internal.hpp
 src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAVE_BACKEND_* macros
 ```
 
 - Core bookkeeping **may only depend on `port.hpp`** — its 6 primitives (`spawn` / `create_event` /
   `trigger` / `destroy_event` / `ticks_per_sec` / `wait`) plus the `weave_task_main` dispatch entry —
   and internal headers, and must never reference DPI/SystemC/thread APIs directly.
-- Backend selection is a compile-time macro only (`config.hpp`, mutually exclusive, SVDPI by
-  default); `--backend=` only picks it (and therefore the matching package).
+- Backend selection is a compile-time macro only (`src/core/config.hpp`, mutually exclusive, SVDPI
+  by default); `--backend=` only picks it (and therefore the matching package). The public headers
+  never branch on the macro, so it is not part of the installed API.
 - A new backend = one macro-guarded `src/backend/*.cpp` implementing the port contract + a bootstrap
   entry point, with **zero changes to core code**.
 - **Touch the port contract only when a new suspension shape is required**; its four guarantees are
@@ -101,13 +103,13 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
 |---|---|
 | New sync primitive (TaskGroup/shield/as_completed/…) | `include/weave/sync.hpp` + `src/core/sync.cpp` |
 | New communication primitive (Queue/Lock/Semaphore/…) | New public header `include/weave/<domain>.hpp` + add the include to the umbrella |
-| New backend | `src/backend/<name>.cpp` (macro-guarded) + macro in `config.hpp` + xmake mapping |
+| New backend | `src/backend/<name>.cpp` (macro-guarded) + macro in `src/core/config.hpp` + xmake mapping |
 | New self-check assertions | `tests/<domain>_semantics.cpp`, added to both `weave_smoke_sc` and `weave_smoke_svdpi` |
 | New example | `examples/<domain>_demo.cpp` (picked up automatically by glob, no xmake.lua change needed) |
 
 Principle: **a primitive composable from "task bookkeeping + Event + three-legged wait" goes into the
 core layer; only a new suspension shape justifies touching the port contract.** Public header
-layering (dependencies point downwards): config → time → task/event → sync → test, umbrella
+layering (dependencies point downwards): time → task/event → sync → test, umbrella
 `weave.hpp` last; core internal state lives only in `src/core/*_internal.hpp`.
 
 ## Naming and language baseline

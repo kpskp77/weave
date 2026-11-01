@@ -10,14 +10,14 @@
 -- defines build targets only, and the two regressions are independent.
 
 set_project("weave")
-set_version("0.1.0")
+set_version("1.0.3")
 
 add_rules("mode.debug", "mode.release")
 set_languages("c++17")
 
 -- Backend selection: svdpi (default) / systemc.
 -- The matching macros WEAVE_BACKEND_SVDPI / WEAVE_BACKEND_SYSTEMC are defined by the targets;
--- with no macro defined, include/weave/config.hpp defaults to SVDPI.
+-- with no macro defined, src/core/config.hpp defaults to SVDPI.
 option("backend", function()
   set_showmenu(true)
   set_default("svdpi")
@@ -46,6 +46,7 @@ end
 target("weave", function()
   set_kind("shared")
   set_warnings("all", "extra", "error")
+  add_headerfiles("include/(weave/*.hpp)")
   add_includedirs("include", { public = true })
   add_files("src/**.cpp")
   add_packages("simlog", { public = true })

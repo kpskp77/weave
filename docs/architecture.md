@@ -26,8 +26,9 @@ simulation kernel (VCS/IES driven automatically, SystemC locally; another DPI si
   never reference DPI / SystemC / thread APIs directly.
 - A new backend = implement the port contract + provide a bootstrap entry point, with zero changes
   to core code.
-- The only switch for backend selection is a compile-time macro (`include/weave/config.hpp`,
-  mutually exclusive, SVDPI by default); xmake's `--backend=` only picks that macro (and, as a
+- The only switch for backend selection is a compile-time macro (`src/core/config.hpp`,
+  mutually exclusive, SVDPI by default); the public headers never branch on it, so it is internal
+  to the library build; xmake's `--backend=` only picks that macro (and, as a
   consequence, which of the two packages is linked).
 
 ## The port contract
@@ -156,7 +157,6 @@ be computed from runtime variables (`rounds * 100_ns`). Three constraints:
 Dependencies point downwards, and every public header must compile standalone:
 
 ```
-weave/config.hpp    backend selection macro (SVDPI by default)
 weave/time.hpp     duration (int64 femtoseconds) + literals
 weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event

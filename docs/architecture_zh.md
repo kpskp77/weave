@@ -23,7 +23,8 @@ C++ 测试逻辑 (WEAVE_TEST)
 
 - 核心层**只能**依赖 `src/core/port.hpp` 中声明的原语，绝不能直接引用 DPI / SystemC / 线程 API。
 - 新增后端 = 实现端口契约 + 提供一个 bootstrap 入口点，核心代码零改动。
-- 后端选择只有一个开关，即编译期宏（`include/weave/config.hpp`，互斥，默认 SVDPI）；xmake 的
+- 后端选择只有一个开关，即编译期宏（`src/core/config.hpp`，互斥，默认 SVDPI；公共头不依赖
+  该宏，因此它不属于对外 API）；xmake 的
   `--backend=` 只是选择该宏（并因此决定链接两个包中的哪一个）。
 
 ## 端口契约
@@ -122,7 +123,6 @@ case10/case11 固定）。
 依赖只向下指，且每个公共头都必须能独立编译：
 
 ```
-weave/config.hpp   后端选择宏（默认 SVDPI）
 weave/time.hpp     duration（int64 飞秒）+ 字面量
 weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event

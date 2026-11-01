@@ -16,7 +16,7 @@
 xmake f --backend=systemc && xmake   # 默认是 svdpi
 ```
 
-手工构建：只需定义对应宏；未定义任何宏时，`include/weave/config.hpp` 默认选择 SVDPI。
+手工构建：只需定义对应宏；未定义任何宏时，`src/core/config.hpp` 默认选择 SVDPI。
 
 ## SVDPI 后端
 
@@ -101,7 +101,7 @@ linkage：每个用到该类型的翻译单元都会发出一个弱定义；又�
 
 ## 新增后端
 
-1. 在 `include/weave/config.hpp` 中加入一个宏（包括互斥检查与默认逻辑）。
+1. 在 `src/core/config.hpp` 中加入一个宏（包括互斥检查与默认逻辑）。
 2. 创建 `src/backend/<name>.cpp`，整个文件用 `#if defined(WEAVE_BACKEND_<NAME>)` 保护，实现
    7 个 `weave::port` 原语，外加一个自选的 bootstrap 入口点（参考 svdpi.cpp / systemc.cpp）。
 3. xmake 映射：给 `--backend` 选项加一个取值，在目标内比较 `get_config` 来定义宏与依赖。

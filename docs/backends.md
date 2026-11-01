@@ -17,7 +17,7 @@ xmake f --backend=systemc && xmake   # default is svdpi
 ```
 
 Manual builds: just define the corresponding macro; with no macro defined,
-`include/weave/config.hpp` defaults to SVDPI.
+`src/core/config.hpp` defaults to SVDPI.
 
 ## The SVDPI backend
 
@@ -114,7 +114,7 @@ the single copy of RTTI inside the library is shared through the dynamic linker.
 
 ## Adding a backend
 
-1. Add a macro to `include/weave/config.hpp` (including the mutual-exclusion check and default
+1. Add a macro to `src/core/config.hpp` (including the mutual-exclusion check and default
    logic).
 2. Create `src/backend/<name>.cpp`, the whole file guarded by
    `#if defined(WEAVE_BACKEND_<NAME>)`, implementing the 7 `weave::port` primitives plus a bootstrap

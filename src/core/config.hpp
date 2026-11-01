@@ -1,11 +1,14 @@
 #pragma once
 
 // Backend selection: a compile-time macro, exactly one of the two; the build system defines the
-// matching macro via `xmake f --backend=...`.
+// matching macro via `xmake f --backend=...`. Internal build contract only — the public headers
+// never branch on these macros, so this header is not part of the installed API (contrast with
+// every other header in include/weave/).
 //   WEAVE_BACKEND_SVDPI    SystemVerilog DPI backend (default; VCS/IES/Xcelium)
 //   WEAVE_BACKEND_SYSTEMC  SystemC backend (sc_spawn/sc_event; entry point weave::sc::run())
 //
-// For hand-written builds, define neither macro and this header enables SVDPI by default.
+// For hand-written builds of the library itself, define neither macro and this header enables
+// SVDPI by default.
 
 #if defined(WEAVE_BACKEND_SVDPI) && defined(WEAVE_BACKEND_SYSTEMC)
 #error "define at most one of WEAVE_BACKEND_SVDPI / WEAVE_BACKEND_SYSTEMC"

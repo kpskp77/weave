@@ -2,7 +2,7 @@
 
 // Backend port contract: the only backend interface the core bookkeeping layer (src/core)
 // depends on. Each backend implements it once under src/backend/, selected at compile time by the
-// WEAVE_BACKEND_* macros (see include/weave/config.hpp; SVDPI by default).
+// WEAVE_BACKEND_* macros (see config.hpp in this directory; SVDPI by default).
 //
 // Semantics every backend must guarantee:
 //   1. Process model: spawn(id) creates an independent simulation process that executes

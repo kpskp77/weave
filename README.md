@@ -128,8 +128,8 @@ verified to compile cleanly under C++17/20/23.
 
 ```
 include/weave/    Public API: weave.hpp (umbrella) +
-                  config/time/task/event/locks/semaphore/barrier/sync/test[/sc]
-src/core/         Backend-agnostic core + port.hpp backend contract
+                  time/task/event/locks/semaphore/barrier/sync/test[/sc]
+src/core/         Backend-agnostic core + port.hpp backend contract + config.hpp (internal macro)
 src/backend/      Backend adapters (exactly one, selected by macro): svdpi.cpp (default) / systemc.cpp
 sv/               SVDPI backend protocol, SV side (event table, three-legged wait, spawn)
 examples/         Per-domain demos of the whole public API + one end-to-end case (just examples regression)
