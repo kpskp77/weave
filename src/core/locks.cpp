@@ -8,6 +8,7 @@
 #include <weave/locks.hpp>
 
 #include "core_internal.hpp"
+#include "trace.hpp"
 
 namespace weave {
 
@@ -39,12 +40,15 @@ struct Lock::Impl {
   void handoff() {
     if (waiters.empty()) {
       held = false;
+      weave::detail::trace_locks()->trace("lock: released (no waiters)");
       return;
     }
     const std::shared_ptr<Waiter> next = std::move(waiters.front());
     waiters.pop_front();
     next->granted = true;
     next->ev.set();  // held stays true: ownership transfers directly, never passing through idle
+    weave::detail::trace_locks()->trace("lock: handed to next waiter ({} still queued)",
+                                        waiters.size());
   }
 };
 
@@ -174,6 +178,7 @@ void Condition::notify(std::size_t n) {
   if (!impl_->mutex.locked())
     throw std::logic_error("weave: Condition.notify() on un-acquired lock");
   auto& q = impl_->waiters;
+  detail::trace_locks()->trace("condition: notify up to {} waiter(s) ({} queued)", n, q.size());
   while (n > 0 && !q.empty()) {
     const std::shared_ptr<Impl::Waiter> next = std::move(q.front());
     q.pop_front();  // Dequeue before releasing: the woken waiter is no longer in the queue when

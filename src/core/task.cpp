@@ -8,6 +8,7 @@
 #include <weave/task.hpp>
 
 #include "core_internal.hpp"
+#include "trace.hpp"
 
 namespace weave {
 namespace detail {
@@ -34,9 +35,13 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
   if (me.cancel_armed) {       // A cancellation issued while suspended is injected at the next
                                // blocking point
     me.cancel_armed = false;
+    trace_task()->debug("task {} '{}': CancelledError injected at blocking point ({})", g_current,
+                        me.name, me.cancel_msg.empty() ? "no reason" : me.cancel_msg);
     throw cancelled_with_msg(me.cancel_msg);
   }
   me.state = TaskState::WAITING;
+  trace_task()->trace("task {} '{}': suspend on ev={} timeout={}", g_current, me.name, ev_id,
+                      timeout_ticks < 0 ? "none" : std::to_string(timeout_ticks));
   const int saved = g_current;  // Slices of other tasks overwrite g_current while we are suspended
   int status = 0;
   port::wait(ev_id, timeout_ticks, me.abort_ev, &status);  // ← the only suspension point
@@ -50,8 +55,12 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
     // cancellation hit.
     port::destroy_event(me.abort_ev);
     me.abort_ev = port::create_event();
+    trace_task()->debug("task {} '{}': woken by cancellation, injecting CancelledError ({})",
+                        g_current, me.name, me.cancel_msg.empty() ? "no reason" : me.cancel_msg);
     throw cancelled_with_msg(me.cancel_msg);
   }
+  trace_task()->trace("task {} '{}': resumed by {}", g_current, me.name,
+                      status == WS_TIMEOUT ? "timeout" : "event");
   return status;
 }
 
@@ -105,10 +114,14 @@ void Task::cancel(std::string msg) const {
     case detail::TaskState::PENDING:  // The body never runs (intercepted at the task entry)
     case detail::TaskState::RUNNING:  // Injected at the next blocking point
       r.cancel_armed = true;
+      detail::trace_task()->debug("task {} '{}': cancellation armed ({})", id_, r.name,
+                                  r.cancel_msg.empty() ? "no reason" : r.cancel_msg);
       break;
     case detail::TaskState::WAITING:  // Woken immediately and injected at the blocking point
       r.cancel_armed = true;
       port::trigger(r.abort_ev);
+      detail::trace_task()->debug("task {} '{}': cancellation armed, abort event triggered ({})",
+                                  id_, r.name, r.cancel_msg.empty() ? "no reason" : r.cancel_msg);
       break;
     default:
       break;
@@ -131,6 +144,7 @@ Task create_task(std::string name, std::function<void()> body) {
   r.done_ev = port::create_event();
   detail::g_tasks.push_back(std::move(r));  // Index = id - 1
   port::spawn(id);
+  detail::trace_task()->debug("task {} '{}': spawned", id, detail::record(id).name);
   return Task(id);
 }
 
@@ -174,16 +188,28 @@ extern "C" void weave_task_main(int task_id) {
     // The cancellation happened before the body was first scheduled: the body never runs
     r.cancel_armed = false;
     r.state = weave::detail::TaskState::CANCELLED;
+    weave::detail::trace_task()->debug("task {} '{}': cancelled before first run", task_id, r.name);
   } else {
     r.state = weave::detail::TaskState::RUNNING;
+    weave::detail::trace_task()->trace("task {} '{}': running", task_id, r.name);
     try {
       r.body();
       r.state = weave::detail::TaskState::DONE;  // Swallowing CancelledError and returning → DONE
-    } catch (const weave::CancelledError&) {
+      weave::detail::trace_task()->debug("task {} '{}': done", task_id, r.name);
+    } catch (const weave::CancelledError& e) {
       r.state = weave::detail::TaskState::CANCELLED;
+      weave::detail::trace_task()->debug("task {} '{}': cancelled ({})", task_id, r.name,
+                                         e.msg().value_or("no reason"));
+    } catch (const std::exception& e) {
+      r.state = weave::detail::TaskState::FAILED;
+      r.eptr = std::current_exception();
+      weave::detail::trace_task()->debug("task {} '{}': failed: {}", task_id, r.name, e.what());
     } catch (...) {
       r.state = weave::detail::TaskState::FAILED;
       r.eptr = std::current_exception();
+      // Not a std::exception (CancelledError is caught above): no what() to print
+      weave::detail::trace_task()->debug("task {} '{}': failed (non-standard exception)", task_id,
+                                         r.name);
     }
   }
   weave::detail::g_current = saved;

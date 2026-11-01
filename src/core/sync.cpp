@@ -15,6 +15,7 @@
 #include <weave/sync.hpp>
 
 #include "core_internal.hpp"
+#include "trace.hpp"
 
 namespace weave {
 
@@ -69,12 +70,18 @@ void gather_impl(std::initializer_list<Task> tasks) {
     // The cascade-cancelled sibling tasks do not carry the gather caller's msg (that is the parent
     // task's context; the siblings were cancelled alongside it and the msg belongs to whoever
     // initiated the cancellation), so an empty string is passed.
+    detail::trace_sync()->debug("gather: cancelled, cascade-cancelling unfinished tasks");
     for (const Task& t : tasks) {
       if (!t.done()) t.cancel();
     }
     throw;
   }
-  if (st->failed) dispatch_completed(record(st->first_failed_id));
+  if (st->failed) {
+    auto& failed = record(st->first_failed_id);
+    detail::trace_sync()->debug("gather: task {} '{}' failed first, rethrowing",
+                                st->first_failed_id, failed.name);
+    dispatch_completed(failed);
+  }
 }
 
 }  // namespace detail
@@ -140,6 +147,8 @@ void wait_for(const Task& task, duration timeout) {
   // TimeoutError: cancel and wait for the cancellation to complete (asyncio semantics), then throw
   // TimeoutError. The cancellation carries a msg stating the reason (matching asyncio 3.12+: the
   // internal cancellation on timeout is tagged with its origin).
+  detail::trace_sync()->debug("wait_for: task {} '{}' timed out, cancelling it",
+                              detail::task_id(task), r.name);
   task.cancel("wait_for timeout");
   detail::backend_wait(r.done_ev, -1);
   throw TimeoutError{};
@@ -363,6 +372,13 @@ void TaskGroup::wait() {
     // First FAILED or the waiter was cancelled: cancel all unfinished siblings (matching asyncio
     // TaskGroup). The cascade-cancelled siblings do not carry the caller's msg (msg belongs to the
     // context of whoever initiated the cancellation).
+    if (st->failed)
+      detail::trace_sync()->debug(
+          "TaskGroup: task {} '{}' failed, cancelling unfinished "
+          "siblings",
+          st->first_failed, detail::record(st->first_failed).name);
+    else
+      detail::trace_sync()->debug("TaskGroup: waiter cancelled, cancelling unfinished children");
     for (const Task& t : children) {
       if (!t.done()) t.cancel();
     }

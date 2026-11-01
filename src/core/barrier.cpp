@@ -31,6 +31,7 @@
 #include <weave/locks.hpp>
 
 #include "core_internal.hpp"
+#include "trace.hpp"
 
 namespace weave {
 
@@ -61,6 +62,7 @@ struct Barrier::Impl {
       // state moves to DRAINING, so arrivals belonging to the next generation wait until this one
       // has left (generations never overlap).
       state = State::DRAINING;
+      detail::trace_barrier()->trace("barrier: tripped by arrival {}/{}", index + 1, parties);
       cond.notify_all();
       return index;
     }
@@ -119,13 +121,18 @@ void Barrier::abort() {
   Impl& s = *impl_;
   s.cond.acquire();
   s.state = State::BROKEN;  // Sticky: no automatic recovery, only reset() clears it
-  s.cond.notify_all();      // The parties inside fail with BrokenBarrierError
+  detail::trace_barrier()->debug(
+      "barrier: aborted, {} parties inside fail with "
+      "BrokenBarrierError",
+      s.count);
+  s.cond.notify_all();  // The parties inside fail with BrokenBarrierError
   s.cond.release();
 }
 
 void Barrier::reset() {
   Impl& s = *impl_;
   s.cond.acquire();
+  detail::trace_barrier()->debug("barrier: reset ({} parties inside)", s.count);
   if (s.count > 0) {
     // Parties are inside: they fail, and the last one to leave returns the state to FILLING (see
     // leave()). Keeping RESETTING sticky until then is what stops the failed generation's parties

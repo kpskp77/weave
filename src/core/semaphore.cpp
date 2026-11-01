@@ -23,6 +23,8 @@
 #include <weave/event.hpp>
 #include <weave/semaphore.hpp>
 
+#include "trace.hpp"
+
 namespace weave {
 namespace {
 
@@ -52,12 +54,15 @@ struct SemaphoreCore {
   void handoff() {
     if (waiters.empty()) {
       ++value;
+      detail::trace_semaphore()->trace("semaphore: permit returned to count (now {})", value);
       return;
     }
     const std::shared_ptr<Waiter> next = std::move(waiters.front());
     waiters.pop_front();
     next->granted = true;
     next->ev.set();
+    detail::trace_semaphore()->trace("semaphore: permit handed to next waiter ({} still queued)",
+                                     waiters.size());
   }
 
   // Acquires one permit: taken synchronously while the count is > 0 (no suspension, no yield);

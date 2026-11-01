@@ -35,9 +35,7 @@ xmake f --backend=systemc && xmake run weave_smoke_sc
 xmake f --backend=svdpi   # restore the default configuration
 ```
 
-- Public-header changes need `just headers` as well (every header compiled standalone under
-  C++17/20/23 with `-Wall -Wextra -Werror`); example-only changes need only a single
-  `just examples` run.
+- Example-only changes need only a single `just examples` run.
 - A new self-check target (a `weave_smoke_*` binary, or a `weave_smoke_*` phony target whose
   `on_run` executes a script, like `weave_smoke_svdpi_vcs`) must also be added to the `smoke`
   recipe in the `justfile`; running always goes through `xmake run` (see the pitfalls below).
@@ -166,8 +164,13 @@ stylua <changed .xmake>                                                    # see
   O(armed) per wake, also quadratic over staggered deadlines. Postmortem: the `sv/weave_pkg.sv`
   header.
 - xmake-repo's SystemC looks for `sc_main` with **C linkage** (see `tests/sc_main.cpp`).
-- **SystemC self-checks must be run through `xmake run`**: `add_packages(systemc)` produces no rpath,
-  and `xmake run` is what injects the package `LD_LIBRARY_PATH`.
+- **Every run goes through `xmake run` — never work around the missing rpath** (mandatory): xmake
+  adds no rpath for package libs (`add_packages(systemc/simlog/…)`), and `xmake run` is what injects
+  the package `LD_LIBRARY_PATH`. The injection is inherited by child processes, so the phony VCS
+  runners (`tests/svdpi/run.sh` → `simv`, loading the payloads via `-sv_lib`) resolve
+  libsimlog.so / libsystemc.so exactly this way. Do **not** bake package libdirs into rpath
+  (`add_rpathdirs`/`after_load` hacks) to make direct execution work — running a payload outside
+  `xmake run` (plain `./simv`, `./binary`, manual VCS invocations) is unsupported.
 - This xmake version: `add_requires` may only appear at top-level scope (never after option/target
   definitions, scope leakage); `has_config(name, value)` is unreliable for set_values options — use
   `get_config(name) == "..."`.

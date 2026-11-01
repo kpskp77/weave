@@ -7,6 +7,7 @@
 #include <weave/event.hpp>
 
 #include "core_internal.hpp"
+#include "trace.hpp"
 
 namespace weave {
 
@@ -24,6 +25,7 @@ bool Event::is_set() const noexcept {
 void Event::set() {
   impl_->flag = true;
   const auto pending = std::exchange(impl_->wake_evs, {});  // Snapshot the current waiters
+  detail::trace_event()->trace("event set: snapshot has {} waiter(s)", pending.size());
   for (int w : pending) port::trigger(w);
 }
 
@@ -32,7 +34,10 @@ void Event::clear() noexcept {
 }
 
 void Event::wait() {
-  if (impl_->flag) return;  // Already set: pass straight through
+  if (impl_->flag) {
+    detail::trace_event()->trace("event wait: already set, passing through");
+    return;
+  }
   const int w = port::create_event();
   auto& v = impl_->wake_evs;
   // The cleanup covers both the success and the exception path, and must unlink before
@@ -45,6 +50,7 @@ void Event::wait() {
     port::destroy_event(w);
   });
   v.push_back(w);
+  detail::trace_event()->trace("event wait: queued as wake ev {} ({} in snapshot)", w, v.size());
   // Edge semantics: being snapshotted by set() is enough to be released, the flag is not rechecked.
   detail::backend_wait(w, -1);
 }

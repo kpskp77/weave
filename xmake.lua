@@ -6,7 +6,7 @@
 --   weave           core library (backend chosen by --backend)
 --   smoke payloads  weave_smoke_sc / weave_smoke_svdpi (+ weave_smoke_svdpi_vcs phony runner)
 --   examples        weave_examples_sc (systemc) / weave_examples_svdpi (svdpi, + phony runner)
--- Regression entries live in the justfile (just smoke / just examples / just headers); this file
+-- Regression entries live in the justfile (just smoke / just examples); this file
 -- defines build targets only, and the two regressions are independent.
 
 set_project("weave")
@@ -14,11 +14,6 @@ set_version("0.1.0")
 
 add_rules("mode.debug", "mode.release")
 set_languages("c++17")
-
--- SystemC backend dependency (an xmake-repo package; for a local install, replace this with
--- add_includedirs/add_linkdirs/add_links pointing at the installation)
-add_requires("systemc", { configs = { shared = true } })
-add_requires("svdpi")
 
 -- Backend selection: svdpi (default) / systemc.
 -- The matching macros WEAVE_BACKEND_SVDPI / WEAVE_BACKEND_SYSTEMC are defined by the targets;
@@ -30,6 +25,14 @@ option("backend", function()
   set_description("Simulation backend")
 end)
 
+-- Add dependencies
+add_requires("simlog", { configs = { shared = true, backend = get_config("backend") } })
+if get_config("backend") == "systemc" then
+  add_requires("systemc", { configs = { shared = true } })
+else
+  add_requires("svdpi")
+end
+
 -- Warning policy: every target uses -Wall -Wextra with warnings as errors (set_warnings' error
 -- level maps to -Werror). Third-party package headers are pulled in via -isystem by add_packages
 -- and are unaffected.
@@ -37,11 +40,15 @@ end)
 -- ── core library ─────────────────────────────────────────────────────────────
 
 -- src/core backend-agnostic bookkeeping + the backend adapter selected by macro in src/backend
+-- The simlog package is public: libweave.so's core sources carry the debug/trace instrumentation
+-- (src/core/trace.hpp), so consumers that link the library inherit the simlog link (the examples
+-- link libweave.so and load it into a simulator via -sv_lib).
 target("weave", function()
   set_kind("shared")
   set_warnings("all", "extra", "error")
   add_includedirs("include", { public = true })
   add_files("src/**.cpp")
+  add_packages("simlog", { public = true })
   if get_config("backend") == "systemc" then
     add_packages("systemc")
     add_defines("WEAVE_BACKEND_SYSTEMC")
@@ -61,8 +68,9 @@ end)
 -- Examples are not compiled into this payload: they are built the way a user would and link
 -- libweave, see the examples payloads below.
 target("weave_smoke_sc", function()
-  set_warnings("all", "extra", "error")
   set_kind("binary")
+  set_default(false)
+  set_warnings("all", "extra", "error")
   add_includedirs("include")
   add_defines("WEAVE_BACKEND_SYSTEMC")
   add_files(
@@ -84,7 +92,7 @@ target("weave_smoke_sc", function()
     "tests/performance_semantics.cpp",
     "tests/sc_main.cpp"
   )
-  add_packages("systemc")
+  add_packages("systemc", "simlog")
 end)
 
 -- SVDPI self-check library: shares the same set of assertion bodies (tests/*_semantics.cpp) with
@@ -92,8 +100,9 @@ end)
 -- pinned to SVDPI explicitly, independently of the --backend configuration, so the DPI path is
 -- regressed under both configurations.
 target("weave_smoke_svdpi", function()
-  set_warnings("all", "extra", "error")
   set_kind("shared")
+  set_default(false)
+  set_warnings("all", "extra", "error")
   add_includedirs("include")
   add_defines("WEAVE_BACKEND_SVDPI")
   add_files(
@@ -114,7 +123,7 @@ target("weave_smoke_svdpi", function()
     "tests/wait_semantics.cpp",
     "tests/performance_semantics.cpp"
   )
-  add_packages("svdpi")
+  add_packages("svdpi", "simlog")
 end)
 
 -- The SVDPI VCS run is a phony target executing tests/svdpi/run.sh (the simlog arrangement):
@@ -151,8 +160,9 @@ end)
 --   weave_examples_svdpi svdpi   → a shared library, loaded into VCS via -sv_lib
 
 target("weave_examples_sc", function()
-  set_warnings("all", "extra", "error")
   set_kind("binary")
+  set_default(false)
+  set_warnings("all", "extra", "error")
   add_deps("weave")
   add_rpathdirs("$ORIGIN")
   add_files("examples/*.cpp", "tests/sc_main.cpp")
@@ -164,8 +174,9 @@ end)
 -- tests/weave_tb.sv calls) starts the registered tests. This is also the payload for the VCS-side
 -- example regression, and the very library the manual VCS run in the docs loads.
 target("weave_examples_svdpi", function()
-  set_warnings("all", "extra", "error")
   set_kind("shared")
+  set_default(false)
+  set_warnings("all", "extra", "error")
   add_deps("weave")
   add_rpathdirs("$ORIGIN")
   add_files("examples/*.cpp")

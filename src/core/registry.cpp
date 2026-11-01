@@ -5,6 +5,7 @@
 #include <weave/test.hpp>
 
 #include "core_internal.hpp"
+#include "trace.hpp"
 
 namespace weave {
 
@@ -30,6 +31,7 @@ int run_registered_test() {
   // as a future extension.
   Task root = create_task("weave_root", [] {
     for (const auto& [name, fn] : registry()) {
+      detail::trace_registry()->debug("test '{}' start", name);
       Task t = create_task(name, fn);
       t.await();
     }
