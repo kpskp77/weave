@@ -20,7 +20,6 @@ C++ call stack freezes).
 ```bash
 just smoke      # Semantic self-checks: build smoke payloads + run each weave_smoke_* via xmake run (once per backend)
 just examples   # Example regression (independent): runs both the systemc and svdpi backends in one go
-just headers    # Public-header baseline: each include/weave/*.hpp compiled standalone under C++17/20/23
 ```
 
 The regression recipes live in the `justfile`; the build targets they invoke live in `xmake.lua`

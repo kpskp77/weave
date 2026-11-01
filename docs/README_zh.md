@@ -88,7 +88,6 @@ WEAVE_TEST(my_test) {
 ```bash
 just smoke      # 语义自检：构建 smoke payload，并通过 xmake run 逐个运行 weave_smoke_*（每个后端各跑一次）
 just examples   # 示例回归：一次跑通 systemc 与 svdpi 两个后端
-just headers    # 公共头基线：每个公共头在 C++17/20/23 下独立编译
 ```
 
 两者职责不同，且缺一不可：`tests/` 中的断言体与 `examples/` 中的程序永远不会被编译进对方的
