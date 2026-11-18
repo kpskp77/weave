@@ -105,8 +105,10 @@ WEAVE_TEST(my_test) {
 
 A deadlock never times out, so the last resort is `weave::debug`: `debug::snapshot()` returns the
 task wait graph — which backend event each live task is blocked on, and for how long in **simulation**
-time — and `debug::dump(tag)` prints it on stderr, one line per task. Neither suspends nor changes
-state, so both are callable from a done callback or the harness chain. A snapshot describes a hang;
+time — and `debug::dump(tag)` logs it through simlog (`weave.debug`, info level), one line per
+task. Neither suspends nor changes state, so both are callable from a done callback or the harness
+chain, and the dump shares the core trace's stream, sim-time stamp and `SIMLOG_LEVEL` switch
+(`SIMLOG_LEVEL="weave*=debug"` for the lifecycle trace). A snapshot describes a hang;
 it does not prove a cycle (any party may `set()` an `Event`, so "who should wake this" is not
 recorded anywhere). See [architecture](docs/architecture.md#deadlock-diagnostics-only-the-edges-the-core-can-see).
 

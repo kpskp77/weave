@@ -2,12 +2,16 @@
 // Backend-agnostic — the elapsed time comes from the clock query (port::now_ticks via
 // weave::now_ticks), never from a wall clock: simulation time is virtual, and in SVDPI a wall clock
 // has no relation to it at all.
+//
+// dump() reports through simlog ("weave.debug", info) instead of stderr: the lines are about
+// simulation state, so they carry the same sim-time stamp as the rest of the trace and obey the
+// same SIMLOG_LEVEL switch.
 
 #include <algorithm>
-#include <cstdio>
 #include <weave/debug.hpp>
 
 #include "core_internal.hpp"
+#include "trace.hpp"
 
 namespace weave {
 namespace debug {
@@ -38,26 +42,29 @@ Snapshot snapshot() {
 void dump(const char* tag) noexcept {
   const char* prefix = (tag != nullptr && tag[0] != '\0') ? tag : "weave";
   try {
+    const auto log = detail::trace_debug();
     const Snapshot snap = snapshot();
-    std::fprintf(stderr, "[%s] weave snapshot: %zu waiting task(s), %zu live task(s)\n", prefix,
-                 snap.waiters.size(), snap.pending_tasks.size());
+    log->info("[{}] weave snapshot: {} waiting task(s), {} live task(s)", prefix,
+              snap.waiters.size(), snap.pending_tasks.size());
     for (const Waiter& w : snap.waiters) {
       const long long age = static_cast<long long>(w.since.count());
       if (w.ev_id >= 0)
-        std::fprintf(stderr, "[%s]   waiting: task %d '%s' on ev %d for %lld fs\n", prefix,
-                     w.task_id, w.task_name.c_str(), w.ev_id, age);
+        log->info("[{}]   waiting: task {} '{}' on ev {} for {} fs", prefix, w.task_id, w.task_name,
+                  w.ev_id, age);
       else
-        std::fprintf(stderr, "[%s]   waiting: task %d '%s' on its timeout leg for %lld fs\n",
-                     prefix, w.task_id, w.task_name.c_str(), age);
+        log->info("[{}]   waiting: task {} '{}' on its timeout leg for {} fs", prefix, w.task_id,
+                  w.task_name, age);
     }
     for (const std::string& name : snap.pending_tasks) {
-      std::fprintf(stderr, "[%s]   live: task '%s'\n", prefix, name.c_str());
+      log->info("[{}]   live: task '{}'", prefix, name);
     }
-    std::fflush(stderr);
   } catch (...) {
-    // Diagnostics must never be the reason a run dies (allocation failure on a huge wait graph).
-    std::fprintf(stderr, "[%s] weave snapshot: unavailable\n", prefix);
-    std::fflush(stderr);
+    // Diagnostics must never be the reason a run dies (allocation failure, or a logger that cannot
+    // format). Nothing to report through: logging itself is what failed.
+    try {
+      detail::trace_debug()->info("[{}] weave snapshot: unavailable", prefix);
+    } catch (...) {
+    }
   }
 }
 

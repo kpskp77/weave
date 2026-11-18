@@ -38,8 +38,10 @@ struct Snapshot {
 // Pure export: no suspension, no state change. Only allocation may fail (std::bad_alloc).
 Snapshot snapshot();
 
-// One line per waiter and one per live task, prefixed with tag, on stderr. Never suspends and never
-// throws (allocation failures are swallowed), so it can be called while diagnosing a hang.
+// One line per waiter and one per live task, prefixed with tag, through simlog ("weave.debug",
+// info) — the same stream and sim-time stamp as the rest of the core trace, so SIMLOG_LEVEL
+// controls it like any other module. Never suspends and never throws (allocation and formatting
+// failures are swallowed), so it can be called while diagnosing a hang.
 void dump(const char* tag = "weave") noexcept;
 
 }  // namespace debug

@@ -64,5 +64,13 @@ inline std::shared_ptr<spdlog::logger> trace_registry() {
   return log;
 }
 
+// debug::dump() writes here rather than to stderr: a snapshot is a report about simulation state,
+// so it belongs in the same stream, with the same sim-time stamp, as the rest of the trace (and the
+// user's SIMLOG_LEVEL can raise or silence it like any other module).
+inline std::shared_ptr<spdlog::logger> trace_debug() {
+  static const auto log = simlog::get("weave.debug");
+  return log;
+}
+
 }  // namespace detail
 }  // namespace weave

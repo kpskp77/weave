@@ -1,9 +1,10 @@
 // Wait-graph diagnostics self-check: a blocked task reports its suspension point and how long it
 // has been held there (in simulation time), a PENDING task is live but not a waiter, a landed task
-// leaves the graph, and dump() is callable from a task and from outside any task without throwing.
-// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
-// case_runner.hpp). It shares the assertion-body style with task_semantics.cpp and is regressed by
-// both the weave_smoke_sc and weave_smoke_svdpi backends.
+// leaves the graph, and dump() is callable from a task and from outside any task without throwing
+// (it reports through simlog, "weave.debug", so a run shows the graph in the same stream as the
+// core trace). Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end
+// (see case_runner.hpp). It shares the assertion-body style with task_semantics.cpp and is
+// regressed by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
 #include <stdexcept>
 #include <string>
