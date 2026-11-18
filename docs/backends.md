@@ -37,7 +37,25 @@ The DPI boundary (`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`):
   [../AGENTS.md](../AGENTS.md)).
 - **exports (provided by C++)**: `weave_task_main` (task dispatch, reachable from SV via
   weave_sv_spawn), `weave_start` / `weave_test_status` (tb bootstrap; the package's `weave_run` task
-  calls them, so the DPI scope is already `weave_pkg` and no `svSetScope` is needed).
+  calls them, so the DPI scope is already `weave_pkg` and no `svSetScope` is needed),
+  `weave_sv_hand_off` (the testbench hands event ids in by tag, see below).
+
+### Cross-language event handles
+
+A `weave::Event` allocates a fresh wake event per waiter, so it has no stable id to show a testbench;
+`weave::sv::EventHandle` (include/weave/sv.hpp) is the raw id instead — one edge, one owner, and the
+same integer on both sides: `sv::make_event` / `fire` / `destroy` / `wait` in C++,
+`weave_sv_create_event` / `weave_sv_trigger` / `weave_sv_destroy_event` / `@(ev_table[id])` in
+SystemVerilog. Edge semantics are the port's (a fire nobody waits for is lost), and `wait` is an
+ordinary suspension, so it takes part in cancellation and timeouts like any other wait.
+
+The id has to cross the DPI boundary, and only one direction is cheap: the testbench cannot read a
+C++ variable, and C++ holds no symbol for a testbench function. So the testbench owns the ids — it
+creates them and fills a fixed table before it starts the run (`weave_sv_hand_off(tag, id)`, adopted
+by `sv::handed(tag)`), which keeps the hand-over synchronous and exception-free. Under the SystemC
+backend the same calls are plain `sc_event` operations and the table simply stays empty; a payload
+that wants to stay backend-agnostic checks `sv::handed(tag)` and takes the cross-language branch only
+when it is valid (see case9 in tests/event_semantics.cpp, driven by tests/weave_tb.sv).
 
 How to run it by hand (for manual debugging; `just examples` / `just smoke` perform the same steps
 automatically):

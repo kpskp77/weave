@@ -108,6 +108,7 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
 |---|---|
 | New public diagnostic (snapshot/dump/watchdog) | `include/weave/debug.hpp` + `src/core/debug.cpp` + umbrella include |
 | New event-domain primitive (Pulse/…) | `include/weave/event.hpp` + `src/core/event.cpp` |
+| New cross-language surface (sv/…) | `include/weave/sv.hpp` + `src/core/sv.cpp` + umbrella include |
 | New sync primitive (TaskGroup/shield/as_completed/…) | `include/weave/sync.hpp` + `src/core/sync.cpp` |
 | New communication primitive (Queue/Lock/Semaphore/…) | New public header `include/weave/<domain>.hpp` + add the include to the umbrella |
 | New backend | `src/backend/<name>.cpp` (macro-guarded) + macro in `src/core/config.hpp` + xmake mapping |

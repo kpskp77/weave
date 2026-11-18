@@ -135,6 +135,10 @@ package weave_pkg;
   import "DPI-C" context function void weave_start();
   import "DPI-C" context task weave_task_main(input int task_id);
   import "DPI-C" function int weave_test_status();
+  // Cross-language handle hand-over (include/weave/sv.hpp): the testbench creates raw event ids and
+  // tells C++ which tag each one answers to, before it starts the run — the only way an id can cross
+  // in that direction, since C++ holds no symbol for a testbench function.
+  import "DPI-C" function void weave_sv_hand_off(input int tag, input int ev_id);
 
   export "DPI-C" function weave_sv_spawn;
   export "DPI-C" function weave_sv_trigger;

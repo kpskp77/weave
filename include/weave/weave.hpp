@@ -11,7 +11,8 @@
 //   time.hpp     time representation (int64 femtoseconds + literals)
 //   task.hpp     task primitives (Task / create_task / sleep / CancelledError)
 //   event.hpp    event primitives (Event / Pulse)
-//   debug.hpp    diagnostics (debug::snapshot / debug::dump) — depends on time.hpp only
+//   sv.hpp       cross-language event handles (sv::EventHandle) — raw backend ids, no dependencies
+//   debug.hpp    diagnostics (debug::snapshot / debug::dump / debug::watchdog)
 //   locks.hpp    communication primitives (Lock / LockGuard / Condition)
 //   queue.hpp    communication primitive (Queue / QueueEmpty / QueueFull)
 //   semaphore.hpp communication primitives (Semaphore / SemaphoreGuard / BoundedSemaphore /
@@ -26,6 +27,7 @@
 #include <weave/locks.hpp>
 #include <weave/queue.hpp>
 #include <weave/semaphore.hpp>
+#include <weave/sv.hpp>
 #include <weave/sync.hpp>
 #include <weave/task.hpp>
 #include <weave/test.hpp>

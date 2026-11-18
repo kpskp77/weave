@@ -8,12 +8,15 @@
 // DPI boundary:
 //   imports (provided by SV): weave_sv_* — event table, three-legged wait, spawn
 //   exports (this file)     : weave_start / weave_test_status — tb bootstrap
+//                             weave_sv_hand_off — cross-language handle hand-over
+//                             (include/weave/sv.hpp)
 //   exports (core)          : weave_task_main — task dispatch, reached indirectly by SV through
 //                             weave_sv_spawn's forked process
 
 #include <svdpi.h>
 
 #include <cstdint>
+#include <weave/sv.hpp>
 
 #include "../core/registry_internal.hpp"
 
@@ -26,6 +29,7 @@ void weave_sv_destroy_event(int ev_id);
 long long weave_sv_ticks_per_sec();
 long long weave_sv_now_ticks();
 void weave_sv_set_root_done_ev(int ev_id);
+void weave_sv_hand_off(int tag, int ev_id);
 void weave_sv_wait(int ev_id, long long timeout_ticks, int abort_id, int* status);
 }
 
@@ -68,6 +72,13 @@ extern "C" void weave_start() {
 
 extern "C" int weave_test_status() {
   return weave::detail::root_status();
+}
+
+// Cross-language handle hand-over: the testbench creates ids and hands them in by tag before it
+// starts the run, and C++ adopts them with weave::sv::handed(). Declared to SystemVerilog in
+// sv/weave_pkg.sv as an import, so it must keep C linkage and a trivially convertible signature.
+extern "C" void weave_sv_hand_off(int tag, int ev_id) {
+  weave::sv::hand_off(tag, ev_id);
 }
 
 #endif  // WEAVE_BACKEND_SVDPI
