@@ -148,22 +148,6 @@ case10/case11 固定）。
    先在整数域内换算（`n * d / 8`）。浮点操作数由 `= delete` 的模板在**编译期拒绝**（否则
    `d * 1.5` 会经隐式转换静默变成 `d * 1`，与内建类型的表现不同且毫无提示）；除以整数时向零截断。
 
-### 为什么 Every 选择重新锚定而不是累积漂移
-
-周期型消费者只有三种节拍规则，而仿真循环里只有一种是安全的：睡一个固定周期（每轮都累积误差，
-1 ms 的节拍跑一千轮就变成 1.001 ms）；补上每一个错过的节拍（一旦落后十个周期就连发十次，"节拍"
-退化成突发）；重新锚定（放弃已经错过的节拍，继续留在网格上）。`Every` 用第三种：每次 `wait()`
-对准从锚点起算的下一个周期整数倍，只有消费者整整落后一个周期时，才把锚点改到 `now() + period`
-并把这次跳过的次数记入 `drift()`。
-
-它成为库原语而不是用户代码里的一行，原因就在锚点本身：锚点必须用**仿真**时间（`now()`）度量，
-绝不能用墙上时间；而且它必须在取消之后依然有效——调用方从 `wait()` 中捕获 `CancelledError` 后再
-等一下，应当回到同一条网格上，而不是多等一个完整的周期。
-
-`Every` 是值而不是句柄：拷贝会同时拷贝锚点与计数器，因此两份拷贝各自独立走节拍（`Event` /
-`Pulse` 恰恰相反，共享才是它们的意义）。它不需要改动端口契约——它就是由 `now()` 加唯一的阻塞点
-组合出来的，这正是端口契约设计时追求的"可组合性"。
-
 ## 头文件分层
 
 依赖只向下指，且每个公共头都必须能独立编译：
@@ -172,7 +156,6 @@ case10/case11 固定）。
 weave/time.hpp     duration（int64 飞秒）+ 字面量
 weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event / Pulse
-weave/every.hpp    Every（周期节拍）
 weave/sv.hpp       sv::EventHandle（跨语言原始事件 id）
 weave/debug.hpp    debug::snapshot / debug::dump
 weave/locks.hpp    Lock / LockGuard / Condition（通信原语，构建在 Event 之上）
@@ -192,7 +175,7 @@ weave.hpp          伞头：仅包含这一个文件即可获得完整公共 API
 `semaphore.hpp` / `barrier.hpp` 不会引入任何其他 weave 头（只引入 `<memory>` 一类的依赖，以及
 queue 所需的 `weave/event.hpp`），因为共享的 `Event` / `Condition` 机制位于它们各自的
 `src/core/*.cpp` 翻译单元中。确实存在的包含链只向下指（`task → time`、`sync → task + time`、
-`queue → event`、`every → time`、`debug → task + time`、`sv → 无`）。
+`queue → event`、`debug → task + time`、`sv → 无`）。
 
 核心内部状态只存在于 `src/core/*_internal.hpp`（绝不出现在公共头中，也绝不出现在 src/ 之外）。
 

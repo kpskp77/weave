@@ -30,7 +30,6 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `Event` | `asyncio.Event` | set/clear 竞争按边沿语义处理；标志会保持（sticky） |
 | `Pulse` | — | 纯边沿（asyncio 无对应物，故用 C++ 命名）：`fire()` 只唤醒此刻在场的等待者、不留标志；先 fire 后 wait **不会**被记住；`generation()` 供调用方核对是否漏了边沿 |
 | `sv::EventHandle` | — | 跨语言事件句柄（asyncio 无对应物，故用 C++ 命名）：`sv::make_event()`/`sv::fire`/`sv::wait`/`sv::destroy` 直接作用于后端事件 id，SV 测试台与 C++ 层因此可以约定在同一个事件上；`sv::handed(tag)` 取回测试台用 `weave_sv_hand_off` 交过来的 id |
-| `Every(d)` | — | 固定在仿真时间网格上的周期节拍（asyncio 无对应物；Python 的做法是每拍重建 `loop.call_later`，会累积漂移）：`wait()` 对准周期的整数倍，落后整整一个周期的消费者改为重新锚定而不是连发错过的节拍，`drift()` 记录这些跳过的次数 |
 | `Lock` | `asyncio.Lock` | FIFO 交接；`LockGuard` ≡ `async with lock` |
 | `Semaphore` | `asyncio.Semaphore` | 计数信号量；`SemaphoreGuard` ≡ `async with semaphore` |
 | `BoundedSemaphore` | `asyncio.BoundedSemaphore` | 与 Semaphore 相同；超出上界释放会抛 `std::logic_error`（≡ `ValueError`）；`BoundedSemaphoreGuard` ≡ `async with bounded_semaphore` |

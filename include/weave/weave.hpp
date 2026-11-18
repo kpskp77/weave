@@ -11,7 +11,6 @@
 //   time.hpp     time representation (int64 femtoseconds + literals)
 //   task.hpp     task primitives (Task / create_task / sleep / CancelledError)
 //   event.hpp    event primitives (Event / Pulse)
-//   every.hpp    periodic cadence (Every) — depends on time.hpp only
 //   sv.hpp       cross-language event handles (sv::EventHandle) — raw backend ids, no dependencies
 //   debug.hpp    diagnostics (debug::snapshot / debug::dump)
 //   locks.hpp    communication primitives (Lock / LockGuard / Condition)
@@ -25,7 +24,6 @@
 #include <weave/barrier.hpp>
 #include <weave/debug.hpp>
 #include <weave/event.hpp>
-#include <weave/every.hpp>
 #include <weave/locks.hpp>
 #include <weave/queue.hpp>
 #include <weave/semaphore.hpp>

@@ -189,26 +189,6 @@ be computed from runtime variables (`rounds * 100_ns`). Three constraints:
    `d * 1` after an implicit conversion to int64_t, differing from the built-in types with no hint
    at all); division by an integer truncates toward zero.
 
-### Why Every re-anchors instead of drifting
-
-A periodic consumer has three possible pacing rules, and only one of them is safe for a simulator
-loop: sleep a fixed period (error accumulates with every turn, so a 1 ms cadence drifts to 1.001 ms
-after a thousand turns), catch up on every missed tick (a consumer that overruns by ten periods
-fires ten ticks back to back, so the "cadence" becomes a burst), or re-anchor (skip the ticks that
-were already missed and continue on the grid). `Every` does the third: each `wait()` targets the
-next multiple of the period from the anchor, and only when the consumer falls a whole period behind
-does it re-anchor onto `now() + period` and count the skip in `drift()`.
-
-The reason this is a library primitive rather than one line in user code is the anchor itself: it
-must be measured in *simulation* time (`now()`), never in wall time, and it must survive
-cancellation with the schedule already advanced — a caller that catches `CancelledError` out of
-`wait()` and waits again resumes on the same grid instead of waiting a whole extra period.
-
-`Every` is a value, not a handle: copying it copies the anchor and the counter, so two copies pace
-independently (unlike `Event`/`Pulse`, where sharing is the point). It needs no port change — it is
-built from `now()` plus the single blocking point — which is exactly the composability the port
-contract was designed for.
-
 ## Header layering
 
 Dependencies point downwards, and every public header must compile standalone:
@@ -217,7 +197,6 @@ Dependencies point downwards, and every public header must compile standalone:
 weave/time.hpp     duration (int64 femtoseconds) + literals
 weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event / Pulse
-weave/every.hpp    Every (periodic cadence)
 weave/sv.hpp       sv::EventHandle (raw cross-language event ids)
 weave/debug.hpp    debug::snapshot / debug::dump
 weave/locks.hpp    Lock / LockGuard / Condition (communication primitive, built on Event)
@@ -238,7 +217,7 @@ weave.hpp          umbrella: including this file alone yields the whole public A
 `semaphore.hpp` / `barrier.hpp` pull in no other weave header (only `<memory>`-class dependencies
 and `weave/event.hpp` for the queue), because the shared `Event` / `Condition` machinery lives in
 their `src/core/*.cpp` TUs. The include chain that does exist points downwards only (`task → time`,
-`sync → task + time`, `queue → event`, `every → time`, `debug → task + time`, `sv → nothing`).
+`sync → task + time`, `queue → event`, `debug → task + time`, `sv → nothing`).
 
 Core internal state lives only in `src/core/*_internal.hpp` (never in public headers, never outside
 src/).
