@@ -34,7 +34,29 @@ DPI 边界（`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`）：
   [../AGENTS.md](../AGENTS.md) 的 "Pitfalls" 一节）。
 - **export（由 C++ 提供）**：`weave_task_main`（任务派发，SV 侧可经 `weave_sv_spawn` 到达）、
   `weave_start` / `weave_test_status`（tb bootstrap；包里的 `weave_run` 任务会调用它们，所以
-  DPI 作用域已经是 `weave_pkg`，无需 `svSetScope`）。
+  DPI 作用域已经是 `weave_pkg`，无需 `svSetScope`）、`weave_sv_edge_id` / `weave_sv_edge_bind`
+  （具名的 `sv::Edge` 与测试台的 `weave_edge` 会合到同一个 id 上，见下）。
+
+### 与 SystemVerilog 共享的具名边沿
+
+`weave::Event` 会为每个等待者新建一条唤醒事件（这正是它对多等待者安全的原因），因此没有可以
+交给测试台的稳定 id。`weave::sv::Edge`（include/weave/sv.hpp）就是这个稳定 id 的对偶：一个名字在
+整个 run 内就是一个后端事件，两种语言都能 fire 与 wait，语义与 `Pulse` 相同——不锁存，所以在没有
+等待者时 fire 会丢失，这正是 SystemVerilog `event` 上 `->e` / `@e` 的行为。
+
+| C++ | SystemVerilog（`class weave_edge`） |
+|---|---|
+| `sv::Edge e{"clk"}` | `weave_edge e = new("clk")` |
+| `e.fire()` | `weave_sv_trigger(e.id)` / `->ev_table[e.id]` |
+| `e.wait()` | `e.wait_edge()` / `weave_sv_wait(e.id, -1, -1, st)` / `@(ev_table[e.id])` |
+
+只有单向的 id 交换是廉价的——测试台读不到 C++ 变量，C++ 也没有测试台函数的符号——所以让"名字"
+承担绑定，id 随之流动：C++ 的 `sv::Edge` 构造时登记自己创建（或已存在的）id，`weave_edge::new`
+按名字查询（`weave_sv_edge_id`），只有在 C++ 还没登记时才自己创建并发布（`weave_sv_edge_bind`）。
+因此两种创建顺序都成立；`bound()` 表示测试台是否已经认领该名字——SystemC 后端下 `Edge` 只是普通的
+`sc_event`，故恒为 false，与后端无关的 payload 就以它决定是否走跨语言分支（见 tests/sv_edge_semantics.cpp
+的 case1 / case4，由 tests/weave_tb.sv 驱动）。这里的边沿永不销毁：生命周期是整个 run，因此裸句柄
+那套"等待者不得活过事件"的纪律不适用。
 
 手动运行方式（用于调试；`just examples` / `just smoke` 会自动执行同样的步骤）：
 

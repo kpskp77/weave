@@ -29,7 +29,7 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`；已到期的截止时间不挂起直接返回 |
 | `Event` | `asyncio.Event` | set/clear 竞争按边沿语义处理；标志会保持（sticky） |
 | `Pulse` | — | 纯边沿（asyncio 无对应物，故用 C++ 命名）：`fire()` 只唤醒此刻在场的等待者、不留标志；先 fire 后 wait **不会**被记住；`generation()` 供调用方核对是否漏了边沿 |
-| `sv::EventHandle` | — | 跨语言事件句柄（asyncio 无对应物，故用 C++ 命名）：`sv::make_event()`/`sv::fire`/`sv::wait`/`sv::destroy` 直接作用于后端事件 id，SV 测试台与 C++ 层因此可以约定在同一个事件上；`sv::handed(tag)` 取回测试台用 `weave_sv_hand_off` 交过来的 id |
+| `sv::Edge` | — | 具名跨语言边沿（asyncio 无对应物，故用 C++ 命名）：`sv::Edge e{"clk"}` 以“名字”把 C++ 与 SV 的 `weave_edge` 绑到同一个事件上，两种创建顺序都成立；`fire()`/`wait()` 与 `Pulse` 同语义（先 fire 后 wait 会丢失）；`bound()` 表示测试台是否已认领该名字（SystemC 后端恒为 false） |
 | `Lock` | `asyncio.Lock` | FIFO 交接；`LockGuard` ≡ `async with lock` |
 | `Semaphore` | `asyncio.Semaphore` | 计数信号量；`SemaphoreGuard` ≡ `async with semaphore` |
 | `BoundedSemaphore` | `asyncio.BoundedSemaphore` | 与 Semaphore 相同；超出上界释放会抛 `std::logic_error`（≡ `ValueError`）；`BoundedSemaphoreGuard` ≡ `async with bounded_semaphore` |

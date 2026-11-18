@@ -135,10 +135,12 @@ package weave_pkg;
   import "DPI-C" context function void weave_start();
   import "DPI-C" context task weave_task_main(input int task_id);
   import "DPI-C" function int weave_test_status();
-  // Cross-language handle hand-over (include/weave/sv.hpp): the testbench creates raw event ids and
-  // tells C++ which tag each one answers to, before it starts the run — the only way an id can cross
-  // in that direction, since C++ holds no symbol for a testbench function.
-  import "DPI-C" function void weave_sv_hand_off(input int tag, input int ev_id);
+  // Named edges shared with C++ (include/weave/sv.hpp): the name is the binding, so whichever side
+  // is built first registers the id and the other one adopts it — class weave_edge at the end of
+  // this package. import: "the id registered for this name, -1 if C++ has not registered it yet";
+  // the reverse direction publishes the id the testbench created and marks the name as claimed.
+  import "DPI-C" function int weave_sv_edge_id(input string name);
+  import "DPI-C" function void weave_sv_edge_bind(input string name, input int ev_id);
 
   export "DPI-C" function weave_sv_spawn;
   export "DPI-C" function weave_sv_trigger;
@@ -329,5 +331,32 @@ package weave_pkg;
     weave_sv_wait_done();  // Suspend this process until the root task is terminal
     status = weave_test_status();
   endtask
+
+  // ── named edge shared with C++ (include/weave/sv.hpp) ────────────────────
+  // Same semantics as an `event`: nothing is latched, so a fire before the other language waits is
+  // lost, and the id is never destroyed (the edge lives as long as the run). The name is the whole
+  // binding: `new` asks C++ for the id it registered, and only when C++ has not mentioned the name
+  // yet does this side create the event and publish it.
+  class weave_edge;
+    string name;
+    int id = -1;
+
+    function new(string n);
+      name = n;
+      id   = weave_sv_edge_id(n);
+      if (id < 0) id = weave_sv_create_event();
+      weave_sv_edge_bind(n, id);  // Adopt-or-publish, and mark the name as claimed
+    endfunction
+
+    function void fire();
+      weave_sv_trigger(id);
+    endfunction
+
+    // Named wait_edge, not wait: `wait` is a SystemVerilog keyword and cannot be a method name.
+    task wait_edge();
+      int status;
+      weave_sv_wait(id, -1, -1, status);  // No timeout leg, no abort leg
+    endtask
+  endclass
 
 endpackage

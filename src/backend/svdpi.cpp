@@ -8,8 +8,8 @@
 // DPI boundary:
 //   imports (provided by SV): weave_sv_* — event table, three-legged wait, spawn
 //   exports (this file)     : weave_start / weave_test_status — tb bootstrap
-//                             weave_sv_hand_off — cross-language handle hand-over
-//                             (include/weave/sv.hpp)
+//                             weave_sv_edge_id / weave_sv_edge_bind — named cross-language
+//                             edges (include/weave/sv.hpp)
 //   exports (core)          : weave_task_main — task dispatch, reached indirectly by SV through
 //                             weave_sv_spawn's forked process
 
@@ -29,7 +29,8 @@ void weave_sv_destroy_event(int ev_id);
 long long weave_sv_ticks_per_sec();
 long long weave_sv_now_ticks();
 void weave_sv_set_root_done_ev(int ev_id);
-void weave_sv_hand_off(int tag, int ev_id);
+int weave_sv_edge_id(const char* name);
+void weave_sv_edge_bind(const char* name, int ev_id);
 void weave_sv_wait(int ev_id, long long timeout_ticks, int abort_id, int* status);
 }
 
@@ -74,11 +75,16 @@ extern "C" int weave_test_status() {
   return weave::detail::root_status();
 }
 
-// Cross-language handle hand-over: the testbench creates ids and hands them in by tag before it
-// starts the run, and C++ adopts them with weave::sv::handed(). Declared to SystemVerilog in
-// sv/weave_pkg.sv as an import, so it must keep C linkage and a trivially convertible signature.
-extern "C" void weave_sv_hand_off(int tag, int ev_id) {
-  weave::sv::hand_off(tag, ev_id);
+// Named cross-language edges (include/weave/sv.hpp): the testbench asks for the id C++ registered
+// under a name, and publishes the id it created itself. Declared to SystemVerilog in
+// sv/weave_pkg.sv as imports, so they must keep C linkage and a trivially convertible signature (a
+// DPI `string` argument arrives as a NUL-terminated const char*).
+extern "C" int weave_sv_edge_id(const char* name) {
+  return weave::sv::lookup_edge(name);
+}
+
+extern "C" void weave_sv_edge_bind(const char* name, int ev_id) {
+  weave::sv::claim_edge(name, ev_id);
 }
 
 #endif  // WEAVE_BACKEND_SVDPI

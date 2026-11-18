@@ -11,7 +11,7 @@
 //   time.hpp     time representation (int64 femtoseconds + literals)
 //   task.hpp     task primitives (Task / create_task / sleep / CancelledError)
 //   event.hpp    event primitives (Event / Pulse)
-//   sv.hpp       cross-language event handles (sv::EventHandle) — raw backend ids, no dependencies
+//   sv.hpp       cross-language named edges (sv::Edge) — no dependencies
 //   debug.hpp    diagnostics (debug::snapshot / debug::dump)
 //   locks.hpp    communication primitives (Lock / LockGuard / Condition)
 //   queue.hpp    communication primitive (Queue / QueueEmpty / QueueFull)

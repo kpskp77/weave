@@ -33,7 +33,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`; an expired deadline returns without suspending |
 | `Event` | `asyncio.Event` | set/clear races use edge semantics; the flag is sticky |
 | `Pulse` | — | Pure edge (no asyncio counterpart, so C++ naming): `fire()` wakes only the waiters present right now and keeps no flag; a fire before your `wait()` is *not* remembered; `generation()` lets a caller reconcile missed edges |
-| `sv::EventHandle` | — | Cross-language event handle (no asyncio counterpart, so C++ naming): `sv::make_event()`/`sv::fire`/`sv::wait`/`sv::destroy` work on a raw backend event id, so an SV testbench and the C++ layer can meet on the same event; `sv::handed(tag)` receives an id the testbench pushed with `weave_sv_hand_off` |
+| `sv::Edge` | — | Named cross-language edge (no asyncio counterpart, so C++ naming): `sv::Edge e{"clk"}` binds C++ and the SystemVerilog `weave_edge` to one event by name, in either creation order; `fire()`/`wait()` have `Pulse` semantics (a fire before the peer waits is lost); `bound()` tells whether the testbench claimed the name (false on the SystemC backend) |
 | `Lock` | `asyncio.Lock` | FIFO hand-off; `LockGuard` ≡ `async with lock` |
 | `Semaphore` | `asyncio.Semaphore` | Counting semaphore; `SemaphoreGuard` ≡ `async with semaphore` |
 | `BoundedSemaphore` | `asyncio.BoundedSemaphore` | Same as Semaphore; releasing past the bound throws `std::logic_error` (≡ `ValueError`); `BoundedSemaphoreGuard` ≡ `async with bounded_semaphore` |

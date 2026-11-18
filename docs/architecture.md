@@ -197,7 +197,7 @@ Dependencies point downwards, and every public header must compile standalone:
 weave/time.hpp     duration (int64 femtoseconds) + literals
 weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event / Pulse
-weave/sv.hpp       sv::EventHandle (raw cross-language event ids)
+weave/sv.hpp       sv::Edge (named cross-language edge; no dependencies)
 weave/debug.hpp    debug::snapshot / debug::dump
 weave/locks.hpp    Lock / LockGuard / Condition (communication primitive, built on Event)
 weave/queue.hpp    Queue<T> / PriorityQueue<T> / LifoQueue<T> + QueueEmpty / QueueFull /

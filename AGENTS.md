@@ -195,3 +195,10 @@ stylua <changed .xmake>                                                    # see
   it monotonically non-decreasing; `wait_until` must return **without suspending** for an expired
   deadline (sleeping 0 instead would be a yield, which is a different operation) and `now()` must
   saturate rather than throw / divide by zero when a backend reports `ticks_per_sec() == 0`.
+- **`sv::Edge` is bound by name, and an edge is never buffered**: the testbench's `weave_edge` must
+  be constructed before the C++ side fires (the probe in `tests/weave_tb.sv` builds its edges before
+  `weave_run`, so the responders are registered in the first delta the run suspends in). A leg that
+  creates its edge later is only safe when the C++ side has already parked in `wait()` — order it
+  with an event or with another edge, never with a `#delay` assumption. The name table is per
+  process and nothing is destroyed (lifetime = the run); `bound()` is the only way a payload can
+  tell that a testbench claimed the name.

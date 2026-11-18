@@ -3,11 +3,10 @@
 // destroyed wake event after a waiter was cancelled, and — for Pulse — that a fire nobody waited
 // for is not remembered (case5), that one fire wakes every current waiter (case6), that a cancelled
 // Pulse waiter unlinks its wake event (case7), that generation() is the caller's reconciliation
-// handle (case8), and that a cross-language handle (case9) is one edge both languages fire and wait
-// on — with the testbench half only running where a testbench handed an id in.
-// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
-// case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp and is regressed
-// by both the weave_smoke_sc and weave_smoke_svdpi backends.
+// handle (case8). The named cross-language edge (sv::Edge) has its own file
+// (sv_edge_semantics.cpp). Each case prints [PASS]/[FAIL] through run_case, and report summarises
+// at the end (see case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp
+// and is regressed by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
 #include <cstdint>
 #include <stdexcept>
@@ -201,39 +200,8 @@ WEAVE_TEST(event_semantics) {
       throw std::logic_error("case8: Pulse copies must share their state");
   });
 
-  // case 9: cross-language handle — an id both languages speak, so a C++ fire wakes a SystemVerilog
-  // process and a SystemVerilog trigger wakes a C++ wait (tests/weave_tb.sv hands two ids in)
-  run_case(__func__, "case9", [&] {
-    const sv::EventHandle request = sv::handed(0);
-    const sv::EventHandle ack = sv::handed(1);
-    if (request && ack) {
-      const duration t0 = now();
-      sv::fire(request);  // Ask; the testbench answers on the same id 10ns later
-      sv::wait(request);
-      if (now() - t0 != 10_ns)
-        throw std::logic_error("case9: the testbench must answer 10ns after the request");
-      sv::fire(ack);  // Reverse direction: a SystemVerilog @(ev_table[id]) must wake and answer
-      sv::wait(ack);  // Its answer is what proves it woke
-    }
-    // The half that needs no testbench, so it also covers the SystemC backend: one edge, one owner
-    const sv::EventHandle own = sv::make_event();
-    Event parked;
-    auto t = create_task("handle_waiter", [&] {
-      parked.set();
-      sv::wait(own);
-    });
-    parked.wait();
-    sv::fire(own);
-    t.await();
-    sv::destroy(own);
-    bool rejected = false;
-    try {
-      sv::fire(sv::EventHandle{});
-    } catch (const std::logic_error&) {
-      rejected = true;
-    }
-    if (!rejected) throw std::logic_error("case9: an invalid handle must be rejected");
-  });
+  // case 9 moved to its own file: the cross-language edge is sv::Edge now, see
+  // tests/sv_edge_semantics.cpp (the old raw-id handle surface is gone).
 
   report(__func__);
 }

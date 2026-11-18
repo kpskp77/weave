@@ -156,7 +156,7 @@ case10/case11 固定）。
 weave/time.hpp     duration（int64 飞秒）+ 字面量
 weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event / Pulse
-weave/sv.hpp       sv::EventHandle（跨语言原始事件 id）
+weave/sv.hpp       sv::Edge（具名跨语言边沿；无依赖）
 weave/debug.hpp    debug::snapshot / debug::dump
 weave/locks.hpp    Lock / LockGuard / Condition（通信原语，构建在 Event 之上）
 weave/queue.hpp    Queue<T> / PriorityQueue<T> / LifoQueue<T> + QueueEmpty / QueueFull /

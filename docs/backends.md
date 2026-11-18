@@ -38,24 +38,32 @@ The DPI boundary (`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`):
 - **exports (provided by C++)**: `weave_task_main` (task dispatch, reachable from SV via
   weave_sv_spawn), `weave_start` / `weave_test_status` (tb bootstrap; the package's `weave_run` task
   calls them, so the DPI scope is already `weave_pkg` and no `svSetScope` is needed),
-  `weave_sv_hand_off` (the testbench hands event ids in by tag, see below).
+  `weave_sv_edge_id` / `weave_sv_edge_bind` (a named `sv::Edge` and the testbench's `weave_edge`
+  meet on one id, see below).
 
-### Cross-language event handles
+### Named edges shared with SystemVerilog
 
-A `weave::Event` allocates a fresh wake event per waiter, so it has no stable id to show a testbench;
-`weave::sv::EventHandle` (include/weave/sv.hpp) is the raw id instead — one edge, one owner, and the
-same integer on both sides: `sv::make_event` / `fire` / `destroy` / `wait` in C++,
-`weave_sv_create_event` / `weave_sv_trigger` / `weave_sv_destroy_event` / `@(ev_table[id])` in
-SystemVerilog. Edge semantics are the port's (a fire nobody waits for is lost), and `wait` is an
-ordinary suspension, so it takes part in cancellation and timeouts like any other wait.
+A `weave::Event` allocates a fresh wake event per waiter (that is what makes it safe for many
+waiters), so it has no stable id to show a testbench. `weave::sv::Edge` (include/weave/sv.hpp) is
+the stable-id counterpart: one name is one backend event for the whole run, and both languages fire
+and wait on it with `Pulse` semantics — nothing is latched, so a fire nobody waits for is lost,
+which is exactly what `->e` / `@e` do on a SystemVerilog `event`.
 
-The id has to cross the DPI boundary, and only one direction is cheap: the testbench cannot read a
-C++ variable, and C++ holds no symbol for a testbench function. So the testbench owns the ids — it
-creates them and fills a fixed table before it starts the run (`weave_sv_hand_off(tag, id)`, adopted
-by `sv::handed(tag)`), which keeps the hand-over synchronous and exception-free. Under the SystemC
-backend the same calls are plain `sc_event` operations and the table simply stays empty; a payload
-that wants to stay backend-agnostic checks `sv::handed(tag)` and takes the cross-language branch only
-when it is valid (see case9 in tests/event_semantics.cpp, driven by tests/weave_tb.sv).
+| C++ | SystemVerilog (`class weave_edge`) |
+|---|---|
+| `sv::Edge e{"clk"}` | `weave_edge e = new("clk")` |
+| `e.fire()` | `weave_sv_trigger(e.id)` / `->ev_table[e.id]` |
+| `e.wait()` | `e.wait_edge()` / `weave_sv_wait(e.id, -1, -1, st)` / `@(ev_table[e.id])` |
+
+Only one direction of id exchange is cheap — a testbench cannot read a C++ variable, and C++ holds
+no symbol for a testbench function — so the *name* carries the binding and the id follows: a C++
+`sv::Edge` constructor registers the id it creates, `weave_edge::new` asks for it by name
+(`weave_sv_edge_id`) and publishes its own only when C++ was not there yet (`weave_sv_edge_bind`).
+Either creation order therefore works, and `bound()` reports whether the testbench has claimed the
+name — always false under the SystemC backend, where an `Edge` is a plain `sc_event`, which is how a
+backend-agnostic payload decides whether to take its cross-language branch (cases1 and 4 in
+tests/sv_edge_semantics.cpp, driven by tests/weave_tb.sv). Nothing is destroyed: the lifetime is the
+run's, so the "no waiter may outlive its event" rule of the raw primitive does not apply here.
 
 How to run it by hand (for manual debugging; `just examples` / `just smoke` perform the same steps
 automatically):
