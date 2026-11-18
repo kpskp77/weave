@@ -22,6 +22,8 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `task.cancel(msg)` | `task.cancel(msg)` | 协作式；msg 与 asyncio 3.9+ 一致，注入时与在 `await` 处重抛时都会保留 |
 | `task.done()` / `task.cancelled()` | `task.done()` / `task.cancelled()` | |
 | `task.get_name()` | `task.get_name()` | |
+| `task.id()` | `id(task)` | 稳定、单调递增、不回收；无效句柄为 -1 |
+| `current_task()` | `asyncio.current_task()` | 返回 `optional<Task>`；无任务上下文（harness 链、done 回调）为 `nullopt`；不挂起 |
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 让出零时间 |
 | `now()` / `now_ticks()` | `loop.time()` | 绝对仿真时间；不挂起，单调不减 |
 | `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`；已到期的截止时间不挂起直接返回 |
@@ -40,6 +42,7 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` 阻塞并按完成顺序产出 |
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | 结构化并发；首个失败会取消兄弟任务 |
 | `CancelledError` | `asyncio.CancelledError` | 取消信号；**不**派生自 `std::exception`，详见 [architecture](architecture_zh.md) |
+| `DeadlockError` | — | asyncio 无对应物（Python 对 join 自身抛 `RuntimeError`）：可诊断的等待环——自 await、`TaskGroup` 子任务等待自己的组。派生自 `std::logic_error` |
 | `TimeoutError` | `TimeoutError` | 超时信号；派生自 `std::exception` |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | 屏障被破坏/重置信号；派生自 `std::runtime_error`（≡ `RuntimeError`） |
 | `QueueEmpty` / `QueueFull` / `QueueShutDown` | `asyncio.QueueEmpty` / `asyncio.QueueFull` / `asyncio.QueueShutDown` | 由 `*_nowait` 形式抛出；派生自 `std::runtime_error`（≡ `RuntimeError`） |

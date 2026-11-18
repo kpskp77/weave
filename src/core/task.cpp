@@ -44,6 +44,11 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
                       timeout_ticks < 0 ? "none" : std::to_string(timeout_ticks));
   const int saved = g_current;  // Slices of other tasks overwrite g_current while we are suspended
   int status = 0;
+  // No task is "current" while the backend holds the process: the whole point of the identity is
+  // that it names the task *executing* right now. Without this, a caller running between two
+  // suspension points (the harness chain, a done callback, a backend bootstrap callback) would see
+  // whatever task happened to suspend last.
+  g_current = -1;
   port::wait(ev_id, timeout_ticks, me.abort_ev, &status);  // ← the only suspension point
   g_current = saved;                                       // Restore this slice's task identity
   me.state = TaskState::RUNNING;
@@ -92,6 +97,10 @@ Task task_from_id(int id) {
 // ── Task ──────────────────────────────────────────────────────────────
 
 void Task::await() {
+  // The only deadlock edge the core can see: a task waiting for itself. Without the check this is
+  // an eternal block (the task can never reach its own terminal state), which no timer can break
+  // and no diagnostics can attribute.
+  if (id_ == detail::g_current) throw DeadlockError("weave: a task cannot await itself");
   auto& r = detail::record(id_);
   if (!detail::terminal(r.state)) detail::backend_wait(r.done_ev, -1);
   detail::dispatch_completed(r);
@@ -152,6 +161,17 @@ void sleep(duration t) {
   detail::backend_wait(-1, detail::to_ticks(t));
 }
 
+std::optional<Task> current_task() noexcept {
+  // record()/task_from_id() throw on an id that is out of range; the identity is only set to a live
+  // id, so this is unreachable, but "never throws" is part of the contract here.
+  try {
+    if (detail::g_current < 0) return std::nullopt;
+    return detail::task_from_id(detail::g_current);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
 // Out-of-line definition of CancelledError::what().
 // This definition (not the declaration) lives in the library and is the key function of the type:
 // the vtable and typeinfo are emitted only in this TU, and downstream TUs keep undefined
@@ -161,6 +181,11 @@ void sleep(duration t) {
 const char* CancelledError::what() const noexcept {
   return msg_ ? msg_->data() : "weave::CancelledError";
 }
+
+// Out-of-line destructor: the key function of DeadlockError, so its vtable/typeinfo are emitted
+// only here (cross-DSO catch, same reason as CancelledError::what() above). The message comes from
+// the inherited std::logic_error, so there is nothing else to define.
+DeadlockError::~DeadlockError() = default;
 
 namespace detail {
 
@@ -182,7 +207,9 @@ CancelledError cancelled_with_msg(std::string_view msg) noexcept {
 
 extern "C" void weave_task_main(int task_id) {
   auto& r = weave::detail::record(task_id);
-  const int saved = weave::detail::g_current;
+  // No save/restore of the previous identity: a backend process runs exactly one task and returns
+  // into simulation code afterwards, where "no task is current" is the truth. The identity is
+  // cleared again below before the done callbacks and the backend return.
   weave::detail::g_current = task_id;
   if (r.cancel_armed) {
     // The cancellation happened before the body was first scheduled: the body never runs
@@ -212,7 +239,7 @@ extern "C" void weave_task_main(int task_id) {
                                          r.name);
     }
   }
-  weave::detail::g_current = saved;
+  weave::detail::g_current = -1;  // Done callbacks run with no task context
   auto cbs = std::exchange(r.done_callbacks, {});
   for (auto& cb : cbs) cb();        // e.g. gather counting (runs with no task context)
   weave::port::trigger(r.done_ev);  // Wakes awaiters / the test wait chain

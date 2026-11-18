@@ -312,8 +312,16 @@ void TaskGroup::cancel(std::string msg) {
 
 void TaskGroup::wait() {
   if (impl_->exited) throw std::logic_error("TaskGroup: wait called twice");
+  // A child of this group waiting for the group waits for itself. The event-driven wait would never
+  // wake (the group only completes when every child has landed, including this one), so diagnose it
+  // instead of hanging. Checked before `exited` is set: the group is still usable, the caller just
+  // took the wrong path.
+  const auto& children = impl_->children;
+  for (const Task& t : children) {
+    if (detail::task_id(t) == detail::g_current)
+      throw DeadlockError("weave: TaskGroup::wait() called from one of the group's own children");
+  }
   impl_->exited = true;
-  auto& children = impl_->children;
   if (children.empty()) return;
 
   struct GroupState {

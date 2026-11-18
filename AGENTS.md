@@ -75,10 +75,12 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
   swallows it and returns normally ends DONE. Killing processes is forbidden; cascade cancellation
   of siblings passes an empty msg (injection and the rethrow at `await` keep the original).
 - **The exception type hierarchy must not change**: `CancelledError` **does not derive** from
-  `std::exception`, `TimeoutError` **does**.
+  `std::exception`, `TimeoutError` and `DeadlockError` **do** (`std::runtime_error` /
+  `std::logic_error` respectively).
 - **`what()` and `~BrokenBarrierError` stay out-of-line** (key functions → one typeinfo in
   libweave.so, which is what makes cross-DSO `catch` match; see the ABI notes in backends.md), and
-  `CancelledError` stays polymorphic with a virtual destructor.
+  `CancelledError` stays polymorphic with a virtual destructor; `DeadlockError`'s out-of-line
+  destructor serves the same purpose.
 - **Event edge semantics**: `set()` snapshots the current waiters; on **both** paths (success and
   cancellation) `wait()` must unlink its wake event from `wake_evs` before destroying it, carried by
   a single `detail::scope_exit`.

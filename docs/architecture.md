@@ -82,6 +82,28 @@ cancellation — swallowing it would make the task wrongly finish as DONE and br
 from `std::exception`** (matching asyncio's `TimeoutError`, an ordinary `Exception`), because a
 timeout is a normal failure path that generic logging/backstop code may handle.
 
+### Deadlock diagnostics: only the edges the core can see
+
+`DeadlockError` (deriving from `std::logic_error`, i.e. an ordinary `std::exception`) is raised for
+the two wait cycles the bookkeeping actually knows: `Task::await()` on itself (the executing task id
+is compared with the handle's id) and `TaskGroup::wait()` called from one of the group's own
+children (the group waits for every child, itself included). The second check runs **before** the
+group is sealed, so the exception does not poison the group. Both are cheap single comparisons on
+data the core already holds.
+
+What is deliberately **not** diagnosed is a cycle through `Event`: "who will set the event I am
+blocked on" is not expressible in the API surface — `Event` is a value object and any party may call
+`set()` — so any attempt to build that graph from the core would be guesswork. That class of hang can only be
+surveyed, not proved: the debug snapshot/watchdog reports the wait graph (who is blocked on which
+event, for how long) and lets a human or a failing test decide. The same limit applies to a mutual
+`Task::await` cycle (`a` awaits `b` while `b` awaits `a`): the await edge is not recorded anywhere,
+only the terminal-state event is.
+
+Related hygiene: `g_current` is cleared before the process suspends and before done callbacks run,
+so `current_task()` means "the task executing right now" rather than "the last task that happened to
+suspend". Without it, the harness chain (the registered-test driver, backend bootstrap callbacks)
+would observe a stale id and `current_task()` outside a task could never return `nullopt`.
+
 ### Why Event is edge-triggered, not level-triggered
 
 `set()` snapshots the current waiters and triggers each one-shot wake event; being snapshotted means

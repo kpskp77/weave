@@ -1,8 +1,10 @@
 // Task primitive semantic self-check: create_task scheduling timing, the various cancel paths
 // (PENDING skips the body / injection at the blocking point / refusing cancellation), cancel
-// idempotence on terminal tasks, handle attributes (valid/get_name), and sleep(0)'s zero-time
+// idempotence on terminal tasks, handle attributes (valid/get_name/id), sleep(0)'s zero-time
 // yield (it must really hand control over, on every call — case6 only proves that a 0-tick wait
-// returns, case10/case11 pin the hand-over itself).
+// returns, case10/case11 pin the hand-over itself), task identity (current_task, case12) and the
+// two deadlock edges the core can see (self-await / a TaskGroup child waiting on its own group,
+// case13/case14).
 // Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
 // case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp and is regressed
 // by both the weave_smoke_sc and weave_smoke_svdpi backends.
@@ -10,6 +12,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 #include <weave/weave.hpp>
 
@@ -19,6 +22,14 @@ using namespace weave;
 using namespace weave::literals;
 using weave_test::report;
 using weave_test::run_case;
+
+// The exception hierarchy is part of the API contract, not an implementation detail: a deadlock is
+// an ordinary failure (catchable as std::exception), while cancellation must never be swallowed by
+// a std::exception backstop. Pinned at compile time, both backends alike.
+static_assert(std::is_base_of_v<std::exception, DeadlockError>,
+              "DeadlockError must derive from std::exception");
+static_assert(!std::is_base_of_v<std::exception, CancelledError>,
+              "CancelledError must not derive from std::exception");
 
 WEAVE_TEST(task_semantics) {
   // case 1: create_task only schedules, it does not run immediately — the child must not start
@@ -243,6 +254,65 @@ WEAVE_TEST(task_semantics) {
         throw std::logic_error("case11: every sleep(0) must yield, not only the first");
     }
     for (auto& t : observers) t.await();  // All terminal already; drains the handles
+  });
+
+  // case 12: task identity — current_task() names the executing task, a child sees itself while it
+  // runs, ids strictly increase, and awaiting a child restores the caller's identity
+  run_case(__func__, "case12", [&] {
+    const auto self = current_task();
+    if (!self || !self->valid())
+      throw std::logic_error("case12: a running task must see itself via current_task");
+    auto child_id = std::make_shared<int>(-1);
+    auto child_name = std::make_shared<std::string>();
+    auto child = create_task("identity_child", [child_id, child_name] {
+      const auto me = current_task();
+      if (!me || !me->valid()) throw std::logic_error("case12: a child task must see itself");
+      *child_id = me->id();
+      *child_name = me->get_name();
+    });
+    if (child.id() <= self->id())
+      throw std::logic_error("case12: task ids must increase monotonically");
+    child.await();
+    if (*child_id != child.id())
+      throw std::logic_error("case12: the child must observe its own id");
+    if (*child_name != "identity_child")
+      throw std::logic_error("case12: current_task must expose the running task's name");
+    const auto after = current_task();
+    if (!after || after->id() != self->id())
+      throw std::logic_error("case12: awaiting must restore the caller's identity");
+  });
+
+  // case 13: a task awaiting itself is a diagnosable deadlock, not an eternal block
+  run_case(__func__, "case13", [&] {
+    Event caught;
+    Task self;
+    self = create_task("self_await", [&] {
+      try {
+        self.await();
+      } catch (const DeadlockError&) {
+        caught.set();
+      }
+    });
+    caught.wait();
+    self.await();
+    if (!self.done())
+      throw std::logic_error("case13: the task must land after diagnosing its self-await");
+  });
+
+  // case 14: a TaskGroup child calling wait() on its own group waits for itself — also diagnosed,
+  // and the group stays usable afterwards (the exception is thrown before the group is sealed)
+  run_case(__func__, "case14", [&] {
+    TaskGroup tg;
+    Event caught;
+    tg.create_task("group_self_wait", [&] {
+      try {
+        tg.wait();
+      } catch (const DeadlockError&) {
+        caught.set();
+      }
+    });
+    caught.wait();  // The child has diagnosed the cycle and landed
+    tg.wait();      // The group completes normally: the child finished DONE
   });
 
   report(__func__);

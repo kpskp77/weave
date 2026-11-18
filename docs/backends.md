@@ -84,8 +84,8 @@ extern "C" int sc_main(int, char**) { return weave::sc::run(); }
 // uses C++ linkage, drop extern "C"
 ```
 
-**ABI notes (exception types across DSOs)**: `CancelledError` / `TimeoutError` are thrown by the
-library and caught by user code. On Linux/Android, libc++abi follows the Itanium ABI and assumes type
+**ABI notes (exception types across DSOs)**: `CancelledError` / `TimeoutError` / `DeadlockError` are
+thrown by the library and caught by user code. On Linux/Android, libc++abi follows the Itanium ABI and assumes type
 information is globally unique (`type_info` is compared by pointer), so both sides must share **the
 same** typeinfo object. Writing inline definitions directly in a public header makes GCC/Clang treat
 them as vague linkage: every TU that uses the type emits a weak definition; and since, for instance,
@@ -96,7 +96,8 @@ link or start-up; the exception just flies out to the outermost level).
 
 The fix lives in the **type definitions**, not in build flags: `what()` for both types is **declared
 only in the public header and defined out-of-line in the library** (`src/core/sync.cpp` /
-`src/core/task.cpp`). An out-of-line, non-inline virtual function acts as the **key function**, so the
+`src/core/task.cpp`); `DeadlockError` has no own `what()` (it inherits `std::logic_error`'s) and
+instead gets its key function from an out-of-line destructor. An out-of-line, non-inline virtual function acts as the **key function**, so the
 vtable and typeinfo are emitted exactly once, in that library TU; consumer TUs keep only undefined
 references that the dynamic linker resolves to that same copy at load time. Consequently:
 

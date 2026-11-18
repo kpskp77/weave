@@ -65,7 +65,25 @@ Python 3.8+ 中 `CancelledError` 是 `BaseException`），这样惯用的
 `catch (const std::exception&)` 兜底就不会悄悄吞掉取消——一旦吞掉，任务会错误地以 DONE 结束，
 破坏 gather / TaskGroup / wait_for 对 CANCELLED 终态的判定。反之，`TimeoutError` **确实派生自
 `std::exception`**（对应 asyncio 的 `TimeoutError`，它是普通的 `Exception`），因为超时属于正常
-失败路径，通用的日志与兜底代码应当能够处理。
+失败路径，通用的日志与兜底代码应当能够处理。`DeadlockError` 同理属于普通失败：它是 `std::logic_error`，
+是编程错误而不是取消。
+
+### 死锁诊断：只诊断 core 能看见的边
+
+`DeadlockError`（派生自 `std::logic_error`，即普通的 `std::exception`）只针对内部记账确实知道的两条
+等待环：`Task::await()` 自身（比较正在执行的任务 id 与句柄 id），以及在组内某个子任务里调用
+`TaskGroup::wait()`（组要等全部子任务落地，包括调用者自己）。后一项检查发生在**封组之前**，因此抛出
+异常不会把这个组弄坏。两者都是对已有数据的一次比较，代价可忽略。
+
+刻意**不**诊断的是经过 `Event` 的环："谁会 set 我正在等的事件"在 API 表面上不可表达——`Event` 是值
+对象，任何人都可以 `set()`——所以 core 若去建这张图只能是猜。这一类挂死只能被"勘察"而不是被"证明"：
+debug 快照 / watchdog 输出等待图（谁阻塞在哪个事件上、阻塞了多久），由人或失败的测试来判断。同样的
+限制也适用于互相 `Task::await` 的环（`a` 等 `b`、`b` 等 `a`）：await 这条边没有被记录，core 只知道
+终态事件。
+
+相关的一致性卫生：`g_current` 在进程挂起前、以及 done 回调运行前被清空，因此 `current_task()` 的含义
+是"此刻正在执行的任务"，而不是"最后挂起的那个任务"。否则 harness 链（注册测试驱动器、后端 bootstrap
+回调）会看到陈旧的 id，而任务上下文之外的 `current_task()` 也永远无法返回 `nullopt`。
 
 ### 为什么 Event 采用边沿触发而非水平触发
 

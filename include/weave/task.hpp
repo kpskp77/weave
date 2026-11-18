@@ -8,6 +8,7 @@
 #include <functional>
 #include <initializer_list>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -17,6 +18,7 @@ namespace weave {
 
 class Task;
 struct CancelledError;
+class DeadlockError;
 
 namespace detail {
 struct TaskRecord;  // core bookkeeping (defined in src/core/core_internal.hpp)
@@ -79,7 +81,23 @@ static_assert(std::is_nothrow_copy_constructible_v<CancelledError> &&
                   std::is_nothrow_destructible_v<CancelledError>,
               "CancelledError must be cheap to throw: nothrow copy, no heap members");
 
-class Task;
+// A wait that can never be satisfied because the waiter is part of what it waits for. Only the
+// edges visible in the core are diagnosed — `Task::await()` on itself and `TaskGroup::wait()`
+// called from one of the group's own children — because those are the only "who waits for whom"
+// relations the bookkeeping knows. A cycle through Event set/wait (who will set the event this
+// task is blocked on) is not expressible in the API surface, so it is not diagnosed: that hang is
+// reported by the debug watchdog instead (see docs/architecture.md, "Deadlock diagnostics").
+//
+// Derives from std::logic_error, i.e. it **is** a std::exception (a deadlock is a programming
+// error, not a cancellation: the generic catch (const std::exception&) backstop may and should
+// report it, unlike CancelledError). The destructor is declared out-of-line so the
+// vtable/typeinfo are emitted once, in the library — the same cross-DSO catch requirement as
+// CancelledError::what() (see backends.md's ABI notes).
+class DeadlockError : public std::logic_error {
+public:
+  using std::logic_error::logic_error;
+  ~DeadlockError() override;
+};
 
 namespace detail {
 // Combinator entry points (defined in src/core/sync.cpp); declared here only for Task's friends.
@@ -94,6 +112,13 @@ int run_registered_test();
 class Task {
 public:
   Task() = default;
+
+  // Stable identity of the referenced task: unique among all tasks ever created, monotonically
+  // increasing from 1, never recycled; -1 for a default-constructed (invalid) handle. Diagnostics
+  // only (logging, wait-graph dumps, cross-referencing the backend trace) — no behavioural meaning.
+  // Unlike get_name(), which asyncio keeps free-form, this is the handle's identity: the same id a
+  // backend trace prints and current_task() returns.
+  [[nodiscard]] int id() const noexcept { return id_; }
 
   // Waits for the task to finish. A FAILED task rethrows its exception; a CANCELLED task throws
   // CancelledError. Must be called inside a task context (it is a blocking primitive).
@@ -126,6 +151,16 @@ private:
   friend Task detail::task_from_id(int id);
   friend int detail::run_registered_test();
 };
+
+// The task currently executing, or nullopt outside a task context (the harness chain: the
+// registered-test driver, backend bootstrap callbacks, and done callbacks). Matches
+// asyncio.current_task(), including the None case. Non-suspending, never throws: it may be used
+// from logging and diagnostic code.
+//
+// "Outside a task context" is now real: backend_wait clears the identity before the process
+// suspends (so a task resumed in a different process slice does not look current), and the task
+// dispatch entry clears it before running done callbacks and before returning to the backend.
+std::optional<Task> current_task() noexcept;
 
 // Creates a task. As in asyncio: the new task does not run immediately, it is scheduled only after
 // the current task reaches its next blocking point (guaranteed by backend process semantics).

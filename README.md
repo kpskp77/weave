@@ -26,6 +26,8 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `task.cancel(msg)` | `task.cancel(msg)` | Cooperative; msg matches asyncio 3.9+, preserved both on injection and on rethrow at `await` |
 | `task.done()` / `task.cancelled()` | `task.done()` / `task.cancelled()` | |
 | `task.get_name()` | `task.get_name()` | |
+| `task.id()` | `id(task)` | Stable, monotonically increasing, never recycled; -1 for an invalid handle |
+| `current_task()` | `asyncio.current_task()` | `optional<Task>`; `nullopt` outside a task context (harness chain, done callbacks); non-suspending |
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` yields for zero time |
 | `now()` / `now_ticks()` | `loop.time()` | Absolute simulation time; no suspension, non-decreasing |
 | `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`; an expired deadline returns without suspending |
@@ -44,6 +46,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` blocks and yields in completion order |
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; first failure cancels siblings |
 | `CancelledError` | `asyncio.CancelledError` | Cancel signal; does NOT derive from `std::exception`, check more details in [architecture](docs/architecture.md) |
+| `DeadlockError` | — | No asyncio counterpart (Python raises `RuntimeError` for join-on-self): a diagnosable wait cycle — self-await, a `TaskGroup` child waiting on its own group. Derives from `std::logic_error` |
 | `TimeoutError` | `TimeoutError` | Timeout signal; derives from `std::exception` |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | Barrier-broken/reset signal; derives from `std::runtime_error` (≡ `RuntimeError`) |
 | `QueueEmpty` / `QueueFull` / `QueueShutDown` | `asyncio.QueueEmpty` / `asyncio.QueueFull` / `asyncio.QueueShutDown` | Thrown by the `*_nowait` forms; derive from `std::runtime_error` (≡ `RuntimeError`) |
