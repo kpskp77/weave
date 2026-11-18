@@ -175,7 +175,7 @@ void wait_for(const Task& task, duration timeout) {
 
 // ── timeout ───────────────────────────────────────────────────────────
 
-void timeout(duration limit, std::function<void()> body) {
+void timeout(std::function<void()> body, duration limit) {
   // The body runs in its own task so the deadline has something to cancel; wait_for owns it from
   // there on (timeout, failure propagation and caller cancellation all take it down before
   // returning).

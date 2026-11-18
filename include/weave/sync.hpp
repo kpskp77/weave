@@ -76,20 +76,21 @@ void wait_for(const Task& task, duration timeout);
 
 // ── timeout (asyncio.timeout) ────────────────────────────────────────────────
 
-// Bounds a block of work: timeout(limit, body) runs body as a child task and blocks until it lands
+// Bounds a block of work: timeout(body, limit) runs body as a child task and blocks until it lands
 // — normally (returns), with its exception (rethrows the failure), or past limit (cancels it, waits
 // for the landing, then throws TimeoutError). Being cancelled propagates through wait_for, so body
-// is taken down with the caller.
+// is taken down with the caller. Argument order mirrors wait_for(task, timeout): what is bounded
+// first, the bound second.
 // Deviation from asyncio.timeout: there the deadline covers the enclosing block's awaits, here it
 // covers the body's whole execution — which is the same observable behaviour for the idiomatic use
 // (one call per block) and needs no coroutine machinery. limit <= 0 means the body must finish at
 // the current simulation time (it is started and immediately bounded, exactly like a zero
 // wait_for).
-void timeout(duration limit, std::function<void()> body);
+void timeout(std::function<void()> body, duration limit);
 template <typename F>
-void timeout(duration limit, F&& body) {
+void timeout(F&& body, duration limit) {
   static_assert(std::is_invocable_v<F&>, "weave: timeout body must be callable with no arguments");
-  timeout(limit, std::function<void()>(std::forward<F>(body)));
+  timeout(std::function<void()>(std::forward<F>(body)), limit);
 }
 
 // ── wait (asyncio.wait) ──────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ WEAVE_TEST(timeout_semantics) {
   // case1: the body finishes in time → returns normally
   run_case(__func__, "case1", [&] {
     Event done;
-    timeout(1_ms, [&] { done.set(); });
+    timeout([&] { done.set(); }, 1_ms);
     if (!done.is_set()) throw std::logic_error("case1: the body must have run to completion");
   });
 
@@ -32,16 +32,18 @@ WEAVE_TEST(timeout_semantics) {
     bool body_cancelled = false;
     bool timed_out = false;
     try {
-      timeout(1_ms, [&] {
-        ready.set();
-        Event never;
-        try {
-          never.wait();
-        } catch (const CancelledError&) {
-          body_cancelled = true;
-          throw;
-        }
-      });
+      timeout(
+          [&] {
+            ready.set();
+            Event never;
+            try {
+              never.wait();
+            } catch (const CancelledError&) {
+              body_cancelled = true;
+              throw;
+            }
+          },
+          1_ms);
     } catch (const TimeoutError&) {
       timed_out = true;
     }
@@ -53,7 +55,7 @@ WEAVE_TEST(timeout_semantics) {
   run_case(__func__, "case3", [&] {
     bool saw_failure = false;
     try {
-      timeout(1_ms, [] { throw std::runtime_error("boom"); });
+      timeout([] { throw std::runtime_error("boom"); }, 1_ms);
     } catch (const TimeoutError&) {
       throw std::logic_error("case3: a failing body must not be reported as a timeout");
     } catch (const std::runtime_error& e) {
@@ -68,15 +70,17 @@ WEAVE_TEST(timeout_semantics) {
     bool body_cancelled = false;
     bool timed_out = false;
     try {
-      timeout(duration{}, [&] {
-        Event never;
-        try {
-          never.wait();
-        } catch (const CancelledError&) {
-          body_cancelled = true;
-          throw;
-        }
-      });
+      timeout(
+          [&] {
+            Event never;
+            try {
+              never.wait();
+            } catch (const CancelledError&) {
+              body_cancelled = true;
+              throw;
+            }
+          },
+          duration{});
     } catch (const TimeoutError&) {
       timed_out = true;
     }
@@ -89,16 +93,18 @@ WEAVE_TEST(timeout_semantics) {
     Event body_ready;
     bool body_cancelled = false;
     auto caller = create_task("timeout_caller", [&] {
-      timeout(100_ms, [&] {
-        body_ready.set();
-        Event never;
-        try {
-          never.wait();
-        } catch (const CancelledError&) {
-          body_cancelled = true;
-          throw;
-        }
-      });
+      timeout(
+          [&] {
+            body_ready.set();
+            Event never;
+            try {
+              never.wait();
+            } catch (const CancelledError&) {
+              body_cancelled = true;
+              throw;
+            }
+          },
+          100_ms);
     });
     body_ready.wait();  // the body is blocked inside the bounded block
     caller.cancel("stop the block");

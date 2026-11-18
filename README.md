@@ -44,7 +44,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | Default form (throws on first failure) |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | Returns `vector<exception_ptr>`, does not throw early |
 | `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ timeout semantics; cancelling the *waiter* also cancels and lands `t` |
-| `timeout(d, body)` | `async with asyncio.timeout(d)` | Bounds a block of work: the body runs as a child task, `TimeoutError` after it is cancelled and landed; the deadline covers the body's whole execution (no coroutine block to arm) |
+| `timeout(body, d)` | `async with asyncio.timeout(d)` | Bounds a block of work: the body runs as a child task, `TimeoutError` after it is cancelled and landed; the deadline covers the body's whole execution (no coroutine block to arm) |
 | `wait({t1, ...}, return_when, timeout)` | `await asyncio.wait(fs, ...)` | Returns `{done, pending}`; does not cancel child tasks |
 | `shield(t)` | `asyncio.shield(aw)` | Returns a proxy task; cancellation/timeout stops at the proxy |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` blocks and yields in completion order |
