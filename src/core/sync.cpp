@@ -139,7 +139,26 @@ void wait_for(const Task& task, duration timeout) {
     detail::dispatch_completed(r);
     return;
   }
-  const int st = detail::backend_wait(r.done_ev, detail::to_ticks(timeout));
+  int st = detail::WS_EVENT;
+  try {
+    st = detail::backend_wait(r.done_ev, detail::to_ticks(timeout));
+  } catch (const CancelledError&) {
+    // The caller was cancelled while waiting: the awaited task is our responsibility, so take it
+    // down with us and wait for it to land before propagating (asyncio.wait_for's CancelledError
+    // branch). The cascade cancellation carries no msg — the msg belongs to whoever cancelled the
+    // caller — and the original CancelledError is rethrown unchanged.
+    if (!detail::terminal(r.state)) {
+      detail::trace_sync()->debug("wait_for: caller cancelled, cascade-cancelling task {} '{}'",
+                                  detail::task_id(task), r.name);
+      task.cancel();
+      try {
+        detail::backend_wait(r.done_ev, -1);
+      } catch (const CancelledError&) {
+        // Cancelled again while landing it: state is already armed, keep propagating the original
+      }
+    }
+    throw;
+  }
   if (st == detail::WS_EVENT) {
     detail::dispatch_completed(r);
     return;

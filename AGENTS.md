@@ -100,7 +100,10 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
   `+ - * /` overflow throws and division by zero throws — nothing **wraps silently**.
 - **Failure propagation**: `gather` rethrows the first failure it observes (siblings keep running;
   cancelling them is TaskGroup semantics) and cascade-cancels them only if gather itself is
-  cancelled; `wait_for` timeout → cancel, wait for the landing, then `TimeoutError`.
+  cancelled; `wait_for` timeout → cancel, wait for the landing, then `TimeoutError`; `wait_for`
+  whose **caller** is cancelled → cascade-cancel the awaited task and wait for its landing before
+  the original `CancelledError` propagates (msg preserved, cascade carries none), so a cancelled
+  waiter never leaves its child running.
 
 ## Where new content goes
 

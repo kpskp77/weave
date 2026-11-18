@@ -129,5 +129,40 @@ WEAVE_TEST(wait_for_semantics) {
       throw std::logic_error("case5: timed-out task must be cancelled after wait_for returns");
   });
 
+  // case 6: the waiter is cancelled → the awaited task is cancelled and landed too, so a cancelled
+  // wait_for never leaves its child running (the leak asyncio.wait_for avoids in its
+  // CancelledError branch)
+  run_case(__func__, "case6", [&] {
+    Event inner_ready;
+    Event about_to_wait;
+    auto inner = create_task("inner6", [&] {
+      inner_ready.set();
+      Event never;
+      never.wait();
+    });
+    auto waiter = create_task("waiter6", [&] {
+      about_to_wait.set();
+      wait_for(inner, 100_ms);  // Never returns on its own
+    });
+    inner_ready.wait();    // inner is blocked in never.wait()
+    about_to_wait.wait();  // waiter continues into wait_for; its next suspension is inside it
+    waiter.cancel("stop waiting");
+
+    bool cancelled = false;
+    try {
+      waiter.await();
+    } catch (const CancelledError&) {
+      cancelled = true;
+    }
+    if (!cancelled) throw std::logic_error("case6: the waiter must propagate CancelledError");
+    if (!inner.cancelled())
+      throw std::logic_error("case6: the awaited task must be taken down with the waiter");
+    if (!inner.done()) throw std::logic_error("case6: the awaited task must have landed");
+    try {
+      inner.await();  // Cancellation already consumed: rethrows the same CancelledError, no re-hold
+    } catch (const CancelledError&) {
+    }
+  });
+
   report(__func__);
 }

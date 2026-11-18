@@ -68,7 +68,10 @@ inline constexpr return_exceptions_t return_exceptions{};
 // ── wait_for ─────────────────────────────────────────────────────────────────
 
 // On timeout, cancels the task and waits for the cancellation to complete, then throws TimeoutError
-// (asyncio 3.12+ semantics).
+// (asyncio 3.12+ semantics). If the *caller* is cancelled while waiting, the awaited task is our
+// responsibility: it is cancelled and waited for before CancelledError propagates, so the task can
+// never be left running behind a cancelled waiter (asyncio.wait_for does the same in its
+// CancelledError branch; without it, a wait_for inside a TaskGroup child would leak its child).
 void wait_for(const Task& task, duration timeout);
 
 // ── wait (asyncio.wait) ──────────────────────────────────────────────────────
