@@ -1,5 +1,6 @@
-// Event implementation. The carrier of edge semantics: set() snapshots the current waiters'
-// one-shot wake events and triggers each of them.
+// Event / Pulse implementation. The carrier of edge semantics: set() and fire() snapshot the
+// current waiters' one-shot wake events and trigger each of them; Pulse differs only in keeping no
+// flag (and counting fires, so a caller can reconcile missed edges itself).
 
 #include <algorithm>
 #include <utility>
@@ -52,6 +53,40 @@ void Event::wait() {
   v.push_back(w);
   detail::trace_event()->trace("event wait: queued as wake ev {} ({} in snapshot)", w, v.size());
   // Edge semantics: being snapshotted by set() is enough to be released, the flag is not rechecked.
+  detail::backend_wait(w, -1);
+}
+
+struct Pulse::Impl {
+  std::vector<int> wake_evs;     // One-shot wake events of the current waiters (edge carrier)
+  std::uint64_t generation = 0;  // Number of fire() calls, for the caller's own reconciliation
+};
+
+Pulse::Pulse() : impl_(std::make_shared<Impl>()) {}
+
+std::uint64_t Pulse::generation() const noexcept {
+  return impl_->generation;
+}
+
+void Pulse::fire() {
+  ++impl_->generation;
+  const auto pending = std::exchange(impl_->wake_evs, {});  // Snapshot the current waiters
+  detail::trace_event()->trace("pulse fire: snapshot has {} waiter(s), generation {}",
+                               pending.size(), impl_->generation);
+  for (int w : pending) port::trigger(w);
+}
+
+void Pulse::wait() {
+  const int w = port::create_event();
+  auto& v = impl_->wake_evs;
+  // Same invariant as Event::wait: the guard covers both the success and the exception path, and
+  // unlinks before destroying, because a later fire() must never touch a destroyed wake event id.
+  auto guard = detail::on_scope_exit([&v, w] {
+    v.erase(std::remove(v.begin(), v.end(), w), v.end());
+    port::destroy_event(w);
+  });
+  v.push_back(w);
+  detail::trace_event()->trace("pulse wait: queued as wake ev {} ({} in snapshot)", w, v.size());
+  // No state is consulted on the way out: only a fire() that saw this waiter releases it.
   detail::backend_wait(w, -1);
 }
 

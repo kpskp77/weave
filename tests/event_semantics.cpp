@@ -1,10 +1,14 @@
-// Event semantic self-check: edge semantics (set snapshots the waiters, clear does not take back a
-// release already decided), waking several waiters at once, and set() never touching an already
-// destroyed wake event after a waiter was cancelled.
+// Event / Pulse semantic self-check: edge semantics (set snapshots the waiters, clear does not take
+// back a release already decided), waking several waiters at once, set() never touching an already
+// destroyed wake event after a waiter was cancelled, and — for Pulse — that a fire nobody waited
+// for is not remembered (case5), that one fire wakes every current waiter (case6), that a cancelled
+// Pulse waiter unlinks its wake event (case7), and that generation() is the caller's reconciliation
+// handle (case8).
 // Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
 // case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp and is regressed
 // by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
+#include <cstdint>
 #include <stdexcept>
 #include <weave/weave.hpp>
 
@@ -101,6 +105,98 @@ WEAVE_TEST(event_semantics) {
     });
     ok.wait();
     gather(w2);
+  });
+
+  // case 5: Pulse is edge-only — a fire() that happened before the wait() is not stored, so the
+  // waiter blocks until the *next* one (this is exactly the silent false positive a sticky Event
+  // would produce when an SV `-> ev` is mapped onto it)
+  run_case(__func__, "case5", [&] {
+    Pulse p;
+    if (p.generation() != 0) throw std::logic_error("case5: a fresh Pulse must have generation 0");
+    p.fire();  // Nobody is waiting: the edge is gone
+    if (p.generation() != 1) throw std::logic_error("case5: fire must advance generation");
+    Event started, released;
+    auto late = create_task("late_waiter", [&] {
+      started.set();
+      p.wait();  // Must not return because of the earlier fire
+      released.set();
+    });
+    started.wait();  // The child has suspended in p.wait() (process scheduling barrier)
+    if (released.is_set())
+      throw std::logic_error("case5: a fire before the wait must not be remembered");
+    p.fire();
+    released.wait();
+    late.await();
+    if (p.generation() != 2) throw std::logic_error("case5: generation must count every fire");
+  });
+
+  // case 6: one fire() wakes every waiter present at that instant
+  run_case(__func__, "case6", [&] {
+    Pulse p;
+    Event queued_a, queued_b;
+    int woken = 0;
+    auto a = create_task("pulse_a", [&] {
+      queued_a.set();
+      p.wait();
+      ++woken;
+    });
+    auto b = create_task("pulse_b", [&] {
+      queued_b.set();
+      p.wait();
+      ++woken;
+    });
+    queued_a.wait();
+    queued_b.wait();
+    if (woken != 0) throw std::logic_error("case6: nothing may wake before the fire");
+    p.fire();
+    gather(a, b);
+    if (woken != 2) throw std::logic_error("case6: one fire must wake every current waiter");
+  });
+
+  // case 7: a waiter cancelled inside Pulse::wait unlinks and destroys its wake event, so the next
+  // fire never touches a dead id (the same invariant Event::wait carries)
+  run_case(__func__, "case7", [&] {
+    Pulse p;
+    Event queued;
+    auto t = create_task("cancelled_pulse_waiter", [&] {
+      queued.set();
+      p.wait();
+    });
+    queued.wait();
+    t.cancel();
+    bool cancelled = false;
+    try {
+      t.await();
+    } catch (const CancelledError&) {
+      cancelled = true;
+    }
+    if (!cancelled) throw std::logic_error("case7: the waiter must land CANCELLED");
+    p.fire();  // Must not trigger the destroyed wake event
+    if (p.generation() != 1) throw std::logic_error("case7: fire must still count");
+  });
+
+  // case 8: generation() is the reconciliation handle — copies share the pulse, and a waiter
+  // released by a fire observes the count already advanced
+  run_case(__func__, "case8", [&] {
+    Pulse p;
+    Pulse alias = p;  // Copies share the same pulse, like Event
+    const auto before = alias.generation();
+    Event started, released;
+    std::uint64_t seen = 0;
+    auto t = create_task("generation_observer", [&] {
+      started.set();
+      alias.wait();
+      seen = p.generation();
+      released.set();
+    });
+    started.wait();
+    p.fire();
+    released.wait();
+    t.await();
+    if (seen != before + 1)
+      throw std::logic_error("case8: the released waiter must observe the advanced generation");
+    if (alias.generation() != seen)
+      throw std::logic_error("case8: Pulse copies must share their state");
   });
 
   report(__func__);

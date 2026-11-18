@@ -99,6 +99,13 @@ asyncio 而非 Weave 独创；Weave 特有的只是它的代价。
 一个 `detail::scope_exit` 保证，顺序写在 lambda 体内），每个代码点的推理保留在
 `src/core/event.cpp` 的文件头注释里。
 
+**`Pulse` 是同一载体的纯边沿变体**——唤醒事件的记账完全相同，只是不留标志。它存在的理由正是
+SystemVerilog 的 `-> ev` 就是这种语义，而把它塞进 sticky 的 `Event` 会产生静默假阳性：在 pulse
+之后才开始等的等待者，会消费一个本不属于它的边沿。`Pulse::generation()` 是给“需要知道不在等的
+期间是否有边沿溜过”的调用方留的对账口；原语本身没法告诉它，而为它缓存一个边沿就成了另一个原语。
+两者的"先解链再销毁"不变量是共享的——`src/core/event.cpp` 统一陈述，`Pulse::wait()` 以同样的形状
+重复一遍。
+
 ### 为什么 Lock 在 release() 内部完成所有权交接
 
 `release()` 在**同一次不挂起的调用**里把所有权交给队首等待者（FIFO），期间 `held` 始终为 true：

@@ -31,7 +31,8 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` yields for zero time |
 | `now()` / `now_ticks()` | `loop.time()` | Absolute simulation time; no suspension, non-decreasing |
 | `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`; an expired deadline returns without suspending |
-| `Event` | `asyncio.Event` | set/clear races use edge semantics |
+| `Event` | `asyncio.Event` | set/clear races use edge semantics; the flag is sticky |
+| `Pulse` | — | Pure edge (no asyncio counterpart, so C++ naming): `fire()` wakes only the waiters present right now and keeps no flag; a fire before your `wait()` is *not* remembered; `generation()` lets a caller reconcile missed edges |
 | `Lock` | `asyncio.Lock` | FIFO hand-off; `LockGuard` ≡ `async with lock` |
 | `Semaphore` | `asyncio.Semaphore` | Counting semaphore; `SemaphoreGuard` ≡ `async with semaphore` |
 | `BoundedSemaphore` | `asyncio.BoundedSemaphore` | Same as Semaphore; releasing past the bound throws `std::logic_error` (≡ `ValueError`); `BoundedSemaphoreGuard` ≡ `async with bounded_semaphore` |

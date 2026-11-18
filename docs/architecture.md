@@ -121,6 +121,14 @@ later `set()` triggers an already destroyed id. That ordering is the invariant (
 `detail::scope_exit` carries it, with the order written inside the lambda body); its per-code
 reasoning stays in the header comment of `src/core/event.cpp`.
 
+**`Pulse` is the pure-edge variant of the same carrier** — identical wake-event bookkeeping, no
+flag. It exists because a SystemVerilog `-> ev` has exactly those semantics, and feeding it into the
+sticky `Event` produces a silent false positive: a waiter that starts after the pulse consumes an
+edge that was never meant for it. `Pulse::generation()` is the escape hatch for a caller that must
+know whether an edge went by while it was not waiting; the primitive cannot tell it, and buffering one
+edge for it would be a different primitive. Both share the unlink-before-destroy invariant above —
+`src/core/event.cpp` states it once and `Pulse::wait()` repeats it in the same shape.
+
 ### Why Lock hands ownership off inside release()
 
 `release()` hands ownership to the head waiter (FIFO) **within the same non-suspending call**, with

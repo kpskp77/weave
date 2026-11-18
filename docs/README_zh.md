@@ -27,7 +27,8 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 让出零时间 |
 | `now()` / `now_ticks()` | `loop.time()` | 绝对仿真时间；不挂起，单调不减 |
 | `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`；已到期的截止时间不挂起直接返回 |
-| `Event` | `asyncio.Event` | set/clear 竞争按边沿语义处理 |
+| `Event` | `asyncio.Event` | set/clear 竞争按边沿语义处理；标志会保持（sticky） |
+| `Pulse` | — | 纯边沿（asyncio 无对应物，故用 C++ 命名）：`fire()` 只唤醒此刻在场的等待者、不留标志；先 fire 后 wait **不会**被记住；`generation()` 供调用方核对是否漏了边沿 |
 | `Lock` | `asyncio.Lock` | FIFO 交接；`LockGuard` ≡ `async with lock` |
 | `Semaphore` | `asyncio.Semaphore` | 计数信号量；`SemaphoreGuard` ≡ `async with semaphore` |
 | `BoundedSemaphore` | `asyncio.BoundedSemaphore` | 与 Semaphore 相同；超出上界释放会抛 `std::logic_error`（≡ `ValueError`）；`BoundedSemaphoreGuard` ≡ `async with bounded_semaphore` |
