@@ -103,7 +103,7 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
   cancelled; `wait_for` timeout → cancel, wait for the landing, then `TimeoutError`; `wait_for`
   whose **caller** is cancelled → cascade-cancel the awaited task and wait for its landing before
   the original `CancelledError` propagates (msg preserved, cascade carries none), so a cancelled
-  waiter never leaves its child running.
+  waiter never leaves its child running — `timeout(limit, body)` inherits exactly this pair.
 
 ## Where new content goes
 

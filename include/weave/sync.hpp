@@ -74,6 +74,24 @@ inline constexpr return_exceptions_t return_exceptions{};
 // CancelledError branch; without it, a wait_for inside a TaskGroup child would leak its child).
 void wait_for(const Task& task, duration timeout);
 
+// ── timeout (asyncio.timeout) ────────────────────────────────────────────────
+
+// Bounds a block of work: timeout(limit, body) runs body as a child task and blocks until it lands
+// — normally (returns), with its exception (rethrows the failure), or past limit (cancels it, waits
+// for the landing, then throws TimeoutError). Being cancelled propagates through wait_for, so body
+// is taken down with the caller.
+// Deviation from asyncio.timeout: there the deadline covers the enclosing block's awaits, here it
+// covers the body's whole execution — which is the same observable behaviour for the idiomatic use
+// (one call per block) and needs no coroutine machinery. limit <= 0 means the body must finish at
+// the current simulation time (it is started and immediately bounded, exactly like a zero
+// wait_for).
+void timeout(duration limit, std::function<void()> body);
+template <typename F>
+void timeout(duration limit, F&& body) {
+  static_assert(std::is_invocable_v<F&>, "weave: timeout body must be callable with no arguments");
+  timeout(limit, std::function<void()>(std::forward<F>(body)));
+}
+
 // ── wait (asyncio.wait) ──────────────────────────────────────────────────────
 
 enum class ReturnWhen { ALL_COMPLETED, FIRST_COMPLETED, FIRST_EXCEPTION };

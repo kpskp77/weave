@@ -39,7 +39,8 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `PriorityQueue<T>` / `LifoQueue<T>` | `asyncio.PriorityQueue` / `asyncio.LifoQueue` | API 与 `Queue` 相同；最小优先（小顶堆 ≡ heapq）/ 后进先出 |
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | 默认形式（首个失败即抛出） |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | 返回 `vector<exception_ptr>`，不提前抛出 |
-| `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义 |
+| `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义；取消**等待者**同样会取消并等 `t` 落地 |
+| `timeout(d, body)` | `async with asyncio.timeout(d)` | 给一段工作设定上界：body 作为子任务运行，超时先取消并等其落地再抛 `TimeoutError`；期限覆盖 body 的整体执行（没有协程块可以用来"上弦"） |
 | `wait({t1, ...}, return_when, timeout)` | `await asyncio.wait(fs, ...)` | 返回 `{done, pending}`；不取消子任务 |
 | `shield(t)` | `asyncio.shield(aw)` | 返回代理任务；取消/超时止步于代理 |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` 阻塞并按完成顺序产出 |

@@ -173,6 +173,16 @@ void wait_for(const Task& task, duration timeout) {
   throw TimeoutError{};
 }
 
+// ── timeout ───────────────────────────────────────────────────────────
+
+void timeout(duration limit, std::function<void()> body) {
+  // The body runs in its own task so the deadline has something to cancel; wait_for owns it from
+  // there on (timeout, failure propagation and caller cancellation all take it down before
+  // returning).
+  Task bounded = create_task("timeout_body", std::move(body));
+  wait_for(bounded, limit);
+}
+
 // ── wait（asyncio.wait）────────────────────────────────────────────────
 
 WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
