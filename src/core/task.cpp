@@ -42,6 +42,12 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
   me.state = TaskState::WAITING;
   trace_task()->trace("task {} '{}': suspend on ev={} timeout={}", g_current, me.name, ev_id,
                       timeout_ticks < 0 ? "none" : std::to_string(timeout_ticks));
+  // Publish the suspension for the wait-graph diagnostics (debug::snapshot), and retract it on
+  // every way out of this function — the cancellation throw included, which is why it is a guard
+  // rather than a statement after port::wait.
+  me.wait_ev = ev_id;
+  me.wait_since = weave::now_ticks();
+  auto retract = on_scope_exit([&me] { me.wait_ev = -1; });
   const int saved = g_current;  // Slices of other tasks overwrite g_current while we are suspended
   int status = 0;
   // No task is "current" while the backend holds the process: the whole point of the identity is

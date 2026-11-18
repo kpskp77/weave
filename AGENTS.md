@@ -69,7 +69,9 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
 ## Invariants (check each one when changing `src/core/`)
 
 - **Single blocking point**: every suspension goes through `detail::backend_wait()` → `port::wait`;
-  nothing else may suspend.
+  nothing else may suspend. That point also publishes the suspension (`TaskRecord::wait_ev` /
+  `wait_since`) for the wait-graph snapshot and retracts it through a guard, so the cancellation throw
+  cannot leave a stale waiter behind in `debug::snapshot()`.
 - **Cooperative cancellation**: `cancel(msg)` only arms `cancel_armed`, records the msg and triggers
   the private abort event; `CancelledError(msg)` is injected at the blocking point, and a body that
   swallows it and returns normally ends DONE. Killing processes is forbidden; cascade cancellation
@@ -104,6 +106,7 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
 
 | Content | Location |
 |---|---|
+| New public diagnostic header (debug/…) | `include/weave/debug.hpp` + `src/core/debug.cpp` + umbrella include |
 | New event-domain primitive (Pulse/…) | `include/weave/event.hpp` + `src/core/event.cpp` |
 | New sync primitive (TaskGroup/shield/as_completed/…) | `include/weave/sync.hpp` + `src/core/sync.cpp` |
 | New communication primitive (Queue/Lock/Semaphore/…) | New public header `include/weave/<domain>.hpp` + add the include to the umbrella |

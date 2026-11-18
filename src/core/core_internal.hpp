@@ -71,6 +71,13 @@ struct TaskRecord {
   // CANCELLED so that a rethrow at await yields the same msg.
   std::string cancel_msg;
   std::vector<std::function<void()>> done_callbacks;
+  // Current suspension point for the wait-graph diagnostics (include/weave/debug.hpp): the backend
+  // event the task is held on and the clock reading at which it blocked. wait_ev stays -1 for a
+  // PENDING/RUNNING task, so a snapshot can tell "blocked" from "not blocked" without a second
+  // state field; the pair is cleared on every exit path from backend_wait, including the
+  // cancellation throw.
+  int wait_ev = -1;
+  std::int64_t wait_since = 0;
 };
 
 // Defined in task.cpp. Index = id - 1: ids increase from 1 and are never recycled, hence a
@@ -98,8 +105,10 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks);
 void dispatch_completed(TaskRecord& r);
 void add_done_callback(int id, std::function<void()> cb);
 
-// Defined in time.cpp: femtoseconds → backend ticks (rounded up; 0 stays 0).
+// Defined in time.cpp: femtoseconds → backend ticks (rounded up; 0 stays 0) and its inverse
+// (truncating; used by the wait-graph diagnostics to age a blocked task in simulation time).
 std::int64_t to_ticks(duration d);
+duration from_ticks(std::int64_t ticks);
 
 }  // namespace detail
 }  // namespace weave

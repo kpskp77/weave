@@ -26,6 +26,22 @@ std::int64_t to_ticks(duration d) {
   return static_cast<std::int64_t>((num + kFsPerSec - 1) / kFsPerSec);
 }
 
+duration from_ticks(std::int64_t ticks) noexcept {
+  try {
+    const std::int64_t tps = ticks_per_sec();
+    if (tps <= 0) return duration{};
+    // Multiply before dividing (__int128, same family as to_ticks): tick * 1e15 may exceed int64
+    // for a far-future time point, and the intermediate must not wrap.
+    constexpr __int128 kFsPerSec = static_cast<__int128>(1000000000000000LL);
+    __int128 fs = static_cast<__int128>(ticks) * kFsPerSec / tps;
+    if (fs > INT64_MAX) return duration(INT64_MAX);  // saturate, never throw from a clock query
+    if (fs < INT64_MIN) return duration(INT64_MIN);
+    return duration(static_cast<std::int64_t>(fs));
+  } catch (...) {
+    return duration{};
+  }
+}
+
 }  // namespace detail
 
 std::int64_t now_ticks() noexcept {
@@ -44,18 +60,7 @@ std::int64_t now_ticks() noexcept {
 }
 
 duration now() noexcept {
-  try {
-    const std::int64_t tps = detail::ticks_per_sec();
-    if (tps <= 0) return duration{};
-    // Multiply before dividing (__int128, same family as to_ticks): tick * 1e15 may exceed int64
-    // for a far-future time point, and the intermediate must not wrap.
-    constexpr __int128 kFsPerSec = static_cast<__int128>(1000000000000000LL);
-    __int128 fs = static_cast<__int128>(now_ticks()) * kFsPerSec / tps;
-    if (fs > INT64_MAX) fs = INT64_MAX;  // saturate, never throw from a clock query
-    return duration(static_cast<std::int64_t>(fs));
-  } catch (...) {
-    return duration{};
-  }
+  return detail::from_ticks(now_ticks());
 }
 
 void wait_until(time_point deadline) {

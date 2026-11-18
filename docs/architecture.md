@@ -94,8 +94,10 @@ data the core already holds.
 What is deliberately **not** diagnosed is a cycle through `Event`: "who will set the event I am
 blocked on" is not expressible in the API surface — `Event` is a value object and any party may call
 `set()` — so any attempt to build that graph from the core would be guesswork. That class of hang can only be
-surveyed, not proved: the debug snapshot/watchdog reports the wait graph (who is blocked on which
-event, for how long) and lets a human or a failing test decide. The same limit applies to a mutual
+surveyed, not proved: `debug::snapshot()` (include/weave/debug.hpp) exports the wait graph — the
+single blocking point records `TaskRecord::wait_ev` and `wait_since`, so a snapshot can say who is
+blocked on which backend event and for how long in simulation time — and `debug::dump()` prints it,
+letting a human or a failing test decide. The same limit applies to a mutual
 `Task::await` cycle (`a` awaits `b` while `b` awaits `a`): the await edge is not recorded anywhere,
 only the terminal-state event is.
 

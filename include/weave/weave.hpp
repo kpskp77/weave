@@ -10,7 +10,8 @@
 // API. Header layering (dependencies point downwards):
 //   time.hpp     time representation (int64 femtoseconds + literals)
 //   task.hpp     task primitives (Task / create_task / sleep / CancelledError)
-//   event.hpp    event primitive (Event)
+//   event.hpp    event primitives (Event / Pulse)
+//   debug.hpp    diagnostics (debug::snapshot / debug::dump) — depends on time.hpp only
 //   locks.hpp    communication primitives (Lock / LockGuard / Condition)
 //   queue.hpp    communication primitive (Queue / QueueEmpty / QueueFull)
 //   semaphore.hpp communication primitives (Semaphore / SemaphoreGuard / BoundedSemaphore /
@@ -20,6 +21,7 @@
 //   test.hpp     test registration (WEAVE_TEST)
 
 #include <weave/barrier.hpp>
+#include <weave/debug.hpp>
 #include <weave/event.hpp>
 #include <weave/locks.hpp>
 #include <weave/queue.hpp>
