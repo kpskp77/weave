@@ -78,6 +78,9 @@ struct TaskRecord {
   // cancellation throw.
   int wait_ev = -1;
   std::int64_t wait_since = 0;
+  // Set for a debug::watchdog task: its own wakeups advance the clock without any other task making
+  // progress, so they must not be counted as progress (see g_progress).
+  bool watchdog = false;
 };
 
 // Defined in task.cpp. Index = id - 1: ids increase from 1 and are never recycled, hence a
@@ -91,6 +94,11 @@ extern std::deque<TaskRecord> g_tasks;
 extern int g_current;  // Task id of the currently executing slice; -1 = no task context
                        // (harness chain)
 extern int g_root;
+
+// Monotonic count of "some task resumed from the single blocking point", i.e. the progress signal
+// the debug::watchdog measures idleness against. Advanced by backend_wait and never reset; watchdog
+// tasks themselves are excluded (their sleep is the measurement, not progress).
+extern std::uint64_t g_progress;
 
 TaskRecord& record(int id);
 TaskRecord& current();

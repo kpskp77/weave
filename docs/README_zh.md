@@ -96,6 +96,12 @@ WEAVE_TEST(my_test) {
 挂起、也不改状态，因此可以从 done 回调或 harness 链里调用。快照能描述挂死，但**不能**证明存在环
 （任何人都可以 `set()` 一个 `Event`，"谁该唤醒它"没有任何地方记录）。
 
+`debug::watchdog(idle, abort_on_fire = false)` 不等人来问，自己盯着：若仿真时间过去 `idle` 而**没有任何**
+任务被唤醒，它就打印快照；带 `abort_on_fire` 时还会取消除 root 之外的所有存活任务，让卡住的 await 链以
+`CancelledError` 收场——绝不杀进程。它本身是个任务，对返回的句柄 `cancel()` 即停止。两个盲区是本质的：
+零时延 livelock 不推进时钟，它永远醒不来；单个长于 `idle` 的 `sleep()` 看起来和挂死一模一样——所以默认
+行为是报告而不是 abort。
+
 ## 构建与运行
 
 ```bash

@@ -101,6 +101,19 @@ letting a human or a failing test decide. The same limit applies to a mutual
 `Task::await` cycle (`a` awaits `b` while `b` awaits `a`): the await edge is not recorded anywhere,
 only the terminal-state event is.
 
+`debug::watchdog(idle, abort_on_fire)` is the active form of the same survey: a task that measures
+progress — `detail::g_progress`, advanced whenever some task *returns from the single blocking point*
+(never by the watchdog's own wakeup) — and reports the snapshot when a whole `idle` window of
+simulation time passes with the counter unchanged. It deliberately does not hunt for cycles either:
+it reports a system that has stopped moving, which is what an operator actually wants to know. Two
+consequences are inherent to measuring virtual time and are documented rather than papered over: a
+zero-delay livelock (`sleep(0)` spinning) never advances the clock, so the watchdog's own deadline
+never arrives and it cannot fire; and one `sleep()` longer than `idle` is indistinguishable from a
+stall at this resolution, which is why the default is a report. `abort_on_fire` cancels every live
+task except the root and the watchdog (never a process, per the cancellation invariant); the root is
+skipped because it is the reporting chain — the cancellations still propagate to it along the await
+edges, so the run ends cancelled rather than hanging.
+
 Related hygiene: `g_current` is cleared before the process suspends and before done callbacks run,
 so `current_task()` means "the task executing right now" rather than "the last task that happened to
 suspend". Without it, the harness chain (the registered-test driver, backend bootstrap callbacks)

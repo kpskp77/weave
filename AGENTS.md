@@ -106,7 +106,7 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
 
 | Content | Location |
 |---|---|
-| New public diagnostic header (debug/…) | `include/weave/debug.hpp` + `src/core/debug.cpp` + umbrella include |
+| New public diagnostic (snapshot/dump/watchdog) | `include/weave/debug.hpp` + `src/core/debug.cpp` + umbrella include |
 | New event-domain primitive (Pulse/…) | `include/weave/event.hpp` + `src/core/event.cpp` |
 | New sync primitive (TaskGroup/shield/as_completed/…) | `include/weave/sync.hpp` + `src/core/sync.cpp` |
 | New communication primitive (Queue/Lock/Semaphore/…) | New public header `include/weave/<domain>.hpp` + add the include to the umbrella |
@@ -187,6 +187,13 @@ stylua <changed .xmake>                                                    # see
   `nm -D <exe> | grep _ZTIN5weave` (all `U`, definitions only in libweave.so — a `D`/`V` in the exe
   means a `what()` was written back as inline). See the ABI notes in backends.md.
 - Time conversion uses `__int128` to prevent overflow; `ticks_per_sec()` is queried once and cached.
+- **`debug::watchdog` measures simulation time, so two of its properties follow from that, not from a
+  bug**: a zero-delay livelock (`sleep(0)` spinning) advances no clock, so its deadline never arrives
+  and it cannot fire; and one `sleep()` longer than `idle` is indistinguishable from a stall, which is
+  why the default is a report. Its progress signal is "a task returned from the single blocking point"
+  (`detail::g_progress`), incremented in `backend_wait` and skipped for watchdog tasks — if you add a
+  suspension path, add it there too, and keep `abort_on_fire` to cancellation only (never kill a
+  process), skipping the root.
 - The clock query (`port::now_ticks`) is the port's only non-suspending primitive and the core clamps
   it monotonically non-decreasing; `wait_until` must return **without suspending** for an expired
   deadline (sleeping 0 instead would be a yield, which is a different operation) and `now()` must

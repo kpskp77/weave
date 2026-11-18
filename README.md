@@ -107,6 +107,14 @@ state, so both are callable from a done callback or the harness chain. A snapsho
 it does not prove a cycle (any party may `set()` an `Event`, so "who should wake this" is not
 recorded anywhere). See [architecture](docs/architecture.md#deadlock-diagnostics-only-the-edges-the-core-can-see).
 
+`debug::watchdog(idle, abort_on_fire = false)` watches instead of waiting to be asked: it fires when
+`idle` of simulation time passes without *any* task resuming, then prints the snapshot (and, with
+`abort_on_fire`, cancels every live task except the root, so the stalled await chain unwinds into a
+cancelled run — processes are never killed). It is a task, so `cancel()` on the returned handle stops
+it. Two blind spots are inherent: a zero-delay livelock never advances the clock, so it cannot fire,
+and a single `sleep()` longer than `idle` looks exactly like a stall — which is why the default is to
+report, not to abort.
+
 ## Build and run
 
 ```bash
