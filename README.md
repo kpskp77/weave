@@ -34,6 +34,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `Event` | `asyncio.Event` | set/clear races use edge semantics; the flag is sticky |
 | `Pulse` | — | Pure edge (no asyncio counterpart, so C++ naming): `fire()` wakes only the waiters present right now and keeps no flag; a fire before your `wait()` is *not* remembered; `generation()` lets a caller reconcile missed edges |
 | `sv::EventHandle` | — | Cross-language event handle (no asyncio counterpart, so C++ naming): `sv::make_event()`/`sv::fire`/`sv::wait`/`sv::destroy` work on a raw backend event id, so an SV testbench and the C++ layer can meet on the same event; `sv::handed(tag)` receives an id the testbench pushed with `weave_sv_hand_off` |
+| `Every(d)` | — | Periodic cadence on a fixed simulation-time grid (no asyncio counterpart; the Python idiom rebuilds `loop.call_later` per tick, which drifts): `wait()` targets the next period multiple, a consumer that falls a full period behind re-anchors instead of firing missed ticks back to back, and `drift()` counts those skips |
 | `Lock` | `asyncio.Lock` | FIFO hand-off; `LockGuard` ≡ `async with lock` |
 | `Semaphore` | `asyncio.Semaphore` | Counting semaphore; `SemaphoreGuard` ≡ `async with semaphore` |
 | `BoundedSemaphore` | `asyncio.BoundedSemaphore` | Same as Semaphore; releasing past the bound throws `std::logic_error` (≡ `ValueError`); `BoundedSemaphoreGuard` ≡ `async with bounded_semaphore` |
