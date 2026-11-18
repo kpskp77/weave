@@ -12,7 +12,7 @@ C++ 测试逻辑 (WEAVE_TEST)
         │  公共 API (include/weave/)
         ▼
 核心状态管理 (src/core/) ── task/event/sync/time/registry + locks/queue/semaphore/barrier
-        │  唯一依赖：port.hpp（6 个原语 + weave_task_main 派发入口）
+        │  唯一依赖：port.hpp（6 个原语 + 不挂起的 now_ticks 查询 + weave_task_main 派发入口）
         ▼
 后端适配器 (src/backend/) ── svdpi.cpp（默认）/ systemc.cpp
         │
@@ -100,7 +100,10 @@ asyncio 而非 Weave 独创；Weave 特有的只是它的代价。
 ### 时间与精度
 
 内部以 int64 飞秒（10⁻¹⁵ s，与 SV 的最高精度一致）表示时间，提交给后端时按 `ticks_per_sec()` 向上
-取整，以保证"至少睡这么久"，而不是可能偏短。`sleep(0)` 被钳制为 0 tick，但仍经过唯一的阻塞点：调用方
+取整，以保证"至少睡这么久"，而不是可能偏短。`now()` 走反方向：向后端询问当前 tick 数
+（`port::now_ticks`，端口契约里唯一不挂起的原语），用同一 tick 率换算，因此 `wait_until(now() + d)`
+与 `sleep(d)` 落在同一个 tick 上。读时钟不会推进时钟（仿真器在两个挂起点之间本就不走时间），且 core
+把返回值单调钳制：测量空闲区间的调用方不会看到时间倒退。`sleep(0)` 被钳制为 0 tick，但仍经过唯一的阻塞点：调用方
 真的挂起并让出调度步，而仿真时钟不前进（≡ `asyncio.sleep(0)`）。零 tick 等待并不是绕过端口的空操作
 ——若 sleep 不挂起就返回，所有仅做让出的循环都会失效（由 `tests/task_semantics.cpp` 的
 case10/case11 固定）。

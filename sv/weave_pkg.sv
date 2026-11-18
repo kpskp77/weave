@@ -141,6 +141,7 @@ package weave_pkg;
   export "DPI-C" function weave_sv_create_event;
   export "DPI-C" function weave_sv_destroy_event;
   export "DPI-C" function weave_sv_ticks_per_sec;
+  export "DPI-C" function weave_sv_now_ticks;
   export "DPI-C" function weave_sv_set_root_done_ev;
   export "DPI-C" task weave_sv_wait;
   export "DPI-C" task weave_sv_wait_done;
@@ -187,6 +188,13 @@ package weave_pkg;
   // (timeunit=1ps → 10^12)
   function automatic longint weave_sv_ticks_per_sec();
     return 1s;
+  endfunction
+
+  // Current simulation time in ticks (timeunit=1ps → $time already counts in 1ps units).
+  // $time, never $realtime: simulation time is an exact integer tick count, and a real-typed
+  // value would round the DPI return into a float.
+  function automatic longint weave_sv_now_ticks();
+    return longint'($time);
   endfunction
 
   function automatic void weave_sv_set_root_done_ev(input int ev_id);

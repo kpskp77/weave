@@ -13,7 +13,8 @@ C++ test logic (WEAVE_TEST)
         │  public API (include/weave/)
         ▼
 core bookkeeping (src/core/) ── task/event/sync/time/registry + locks/queue/semaphore/barrier
-        │  only dependency: port.hpp (6 primitives + the weave_task_main dispatch entry)
+        │  only dependency: port.hpp (6 primitives + the non-suspending now_ticks query
+        │  + the weave_task_main dispatch entry)
         ▼
 backend adapters (src/backend/) ── svdpi.cpp (default) / systemc.cpp
         │
@@ -125,7 +126,11 @@ leg winning a same-slot conflict).
 
 Internally int64 femtoseconds (10⁻¹⁵ s, matching SV's maximum precision); values are rounded up by
 `ticks_per_sec()` when submitted to the backend — guaranteeing "sleep at least this long" rather
-than possibly too short. `sleep(0)` clamps to 0 ticks, which still passes through the single
+than possibly too short. `now()` goes the other way: it asks the backend for its current tick count
+(`port::now_ticks`, the contract's only non-suspending primitive) and converts with the same tick
+rate, so `wait_until(now() + d)` and `sleep(d)` land on the same tick. Reading the clock never
+advances it (a simulator does not move between two suspension points) and the core clamps the value
+monotonically: a caller measuring an idle interval cannot observe time going backwards. `sleep(0)` clamps to 0 ticks, which still passes through the single
 blocking point: the caller really suspends and hands the scheduling step over, while the simulated
 clock does not advance (≡ `asyncio.sleep(0)`). The zero-tick wait is not a no-op that skips the
 port — a sleep that returns without suspending would defeat every pure-yield loop (pinned by

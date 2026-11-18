@@ -24,6 +24,7 @@ void weave_sv_trigger(int ev_id);
 int weave_sv_create_event();
 void weave_sv_destroy_event(int ev_id);
 long long weave_sv_ticks_per_sec();
+long long weave_sv_now_ticks();
 void weave_sv_set_root_done_ev(int ev_id);
 void weave_sv_wait(int ev_id, long long timeout_ticks, int abort_id, int* status);
 }
@@ -45,6 +46,9 @@ void destroy_event(int ev_id) {
 }
 std::int64_t ticks_per_sec() {
   return weave_sv_ticks_per_sec();
+}
+std::int64_t now_ticks() {
+  return weave_sv_now_ticks();
 }
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
   weave_sv_wait(ev_id, timeout_ticks, abort_id, status);

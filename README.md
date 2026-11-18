@@ -27,6 +27,8 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `task.done()` / `task.cancelled()` | `task.done()` / `task.cancelled()` | |
 | `task.get_name()` | `task.get_name()` | |
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` yields for zero time |
+| `now()` / `now_ticks()` | `loop.time()` | Absolute simulation time; no suspension, non-decreasing |
+| `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`; an expired deadline returns without suspending |
 | `Event` | `asyncio.Event` | set/clear races use edge semantics |
 | `Lock` | `asyncio.Lock` | FIFO hand-off; `LockGuard` ≡ `async with lock` |
 | `Semaphore` | `asyncio.Semaphore` | Counting semaphore; `SemaphoreGuard` ≡ `async with semaphore` |

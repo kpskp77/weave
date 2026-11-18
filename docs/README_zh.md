@@ -23,6 +23,8 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `task.done()` / `task.cancelled()` | `task.done()` / `task.cancelled()` | |
 | `task.get_name()` | `task.get_name()` | |
 | `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 让出零时间 |
+| `now()` / `now_ticks()` | `loop.time()` | 绝对仿真时间；不挂起，单调不减 |
+| `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`；已到期的截止时间不挂起直接返回 |
 | `Event` | `asyncio.Event` | set/clear 竞争按边沿语义处理 |
 | `Lock` | `asyncio.Lock` | FIFO 交接；`LockGuard` ≡ `async with lock` |
 | `Semaphore` | `asyncio.Semaphore` | 计数信号量；`SemaphoreGuard` ≡ `async with semaphore` |

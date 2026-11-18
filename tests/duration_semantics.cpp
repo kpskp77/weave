@@ -3,7 +3,8 @@
 // handed to sleep / wait_for).
 // The first six cases are pure value arithmetic; the last two use event passing to confirm that a
 // computed delay is really carried by the backend (no deadlock, not mistaken for "no timeout leg"),
-// while synchronisation stays fully event-driven.
+// while synchronisation stays fully event-driven. Cases 9-12 cover absolute time (time_point
+// arithmetic, the now/now_ticks clock query and wait_until).
 // Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
 // case_runner.hpp).
 
@@ -159,6 +160,81 @@ WEAVE_TEST(duration_semantics) {
     finished.wait();
     t.await();
     if (!t.done()) throw std::logic_error("case8: computed delay must complete");
+  });
+
+  // case 9: time_point arithmetic — a time point plus/minus a duration stays a time point, the
+  // difference of two time points is the elapsed duration, and comparisons order them
+  run_case(__func__, "case9", [&] {
+    const time_point a(1_us);
+    const time_point b = a + 250_ns;
+    if (b.time_since_epoch().count() != (1250_ns).count())
+      throw std::logic_error("case9: time_point + duration wrong");
+    if ((250_ns + a).time_since_epoch().count() != (1250_ns).count())
+      throw std::logic_error("case9: duration + time_point wrong");
+    if ((b - 250_ns).time_since_epoch().count() != (1_us).count())
+      throw std::logic_error("case9: time_point - duration wrong");
+    if ((b - a).count() != (250_ns).count())
+      throw std::logic_error("case9: time_point - time_point must yield the elapsed duration");
+    if (!(a < b) || a >= b || a == b || !(a != b))
+      throw std::logic_error("case9: time_point ordering wrong");
+    time_point c = a;
+    c += 1_ms;
+    c -= 1_us;
+    if (c.time_since_epoch().count() != (1_ms).count())
+      throw std::logic_error("case9: time_point compound assignment wrong");
+    if (time_point{} != time_point(duration{}))
+      throw std::logic_error("case9: default time_point must be the epoch");
+  });
+
+  // case 10: the clock query (now / now_ticks) — non-decreasing, consistent with sleep: a
+  // suspension advances it by at least the requested delay and by at most one rounding-up tick
+  run_case(__func__, "case10", [&] {
+    const duration t0 = now();
+    const std::int64_t k0 = now_ticks();
+    if (now() < t0 || now_ticks() < k0)
+      throw std::logic_error("case10: the clock must not go backwards");
+
+    sleep(3_ns);
+    const duration t1 = now();
+    const std::int64_t k1 = now_ticks();
+    if (t1 - t0 < 3_ns)
+      throw std::logic_error("case10: sleep must advance the clock by at least the delay");
+    if (t1 - t0 > 3_ns + 1_ps)
+      throw std::logic_error("case10: sleep must not overshoot by more than one tick");
+    if (k1 <= k0) throw std::logic_error("case10: tick query must advance with the delay");
+
+    // A sub-tick delay is rounded up, never dropped: the clock advances by one tick at most.
+    const duration before = now();
+    sleep(1_fs);
+    const duration step = now() - before;
+    if (step < 1_fs || step > 1_ps)
+      throw std::logic_error("case10: sub-tick delay must round up to one tick");
+  });
+
+  // case 11: wait_until on an expired deadline returns without suspending. Proof: a task spawned
+  // beforehand has not run yet (spawn schedules, it does not run immediately), so if wait_until
+  // had performed even a 0-tick yield the child would have set `ran`.
+  run_case(__func__, "case11", [&] {
+    Event ran;
+    auto t = create_task("child_sets_event", [&] { ran.set(); });
+    const std::int64_t before = now_ticks();
+    wait_until(now() - 1_ms);
+    if (now_ticks() != before)
+      throw std::logic_error("case11: an expired deadline must not advance time");
+    if (ran.is_set()) throw std::logic_error("case11: an expired deadline must not even yield");
+    ran.wait();
+    t.await();
+    if (!t.done()) throw std::logic_error("case11: child must finish");
+  });
+
+  // case 12: wait_until on a future deadline really suspends until backend time reaches it (the
+  // clock never lands before the deadline: the fs→tick conversion rounds up)
+  run_case(__func__, "case12", [&] {
+    const time_point deadline = now() + 2_ns;
+    wait_until(deadline);
+    if (now() < deadline) throw std::logic_error("case12: wait_until returned before the deadline");
+    if (now() - deadline > 2_ps)
+      throw std::logic_error("case12: wait_until must not wake more than a rounding tick late");
   });
 
   report(__func__);

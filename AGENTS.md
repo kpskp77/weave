@@ -55,8 +55,9 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
 ```
 
 - Core bookkeeping **may only depend on `port.hpp`** — its 6 primitives (`spawn` / `create_event` /
-  `trigger` / `destroy_event` / `ticks_per_sec` / `wait`) plus the `weave_task_main` dispatch entry —
-  and internal headers, and must never reference DPI/SystemC/thread APIs directly.
+  `trigger` / `destroy_event` / `ticks_per_sec` / `wait`) plus the one non-suspending query
+  (`now_ticks`) and the `weave_task_main` dispatch entry — and internal headers, and must never
+  reference DPI/SystemC/thread APIs directly.
 - Backend selection is a compile-time macro only (`src/core/config.hpp`, mutually exclusive, SVDPI
   by default); `--backend=` only picks it (and therefore the matching package). The public headers
   never branch on the macro, so it is not part of the installed API.
@@ -180,3 +181,7 @@ stylua <changed .xmake>                                                    # see
   `nm -D <exe> | grep _ZTIN5weave` (all `U`, definitions only in libweave.so — a `D`/`V` in the exe
   means a `what()` was written back as inline). See the ABI notes in backends.md.
 - Time conversion uses `__int128` to prevent overflow; `ticks_per_sec()` is queried once and cached.
+- The clock query (`port::now_ticks`) is the port's only non-suspending primitive and the core clamps
+  it monotonically non-decreasing; `wait_until` must return **without suspending** for an expired
+  deadline (sleeping 0 instead would be a yield, which is a different operation) and `now()` must
+  saturate rather than throw / divide by zero when a backend reports `ticks_per_sec() == 0`.

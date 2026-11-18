@@ -20,6 +20,8 @@
 //   · Only **integer** scaling is provided, no floating-point multiply/divide: simulation time
 //     must be reproducible, and a floating-point ratio introduces rounding differences on both
 //     ends (when a ratio is needed, convert in the integer domain first, e.g. `n * d / 8`).
+//   · A duration is also a *difference* of time points: `later - earlier` yields the elapsed
+//     duration (see time_point below).
 
 #include <cstdint>
 #include <stdexcept>
@@ -157,6 +159,92 @@ template <typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
 duration operator*(T, duration) = delete;
 template <typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
 duration operator/(duration, T) = delete;
+
+// ── Absolute simulation time ──────────────────────────────────────────────────────────────────
+// A time point is the elapsed simulation time since the epoch (simulation start, t = 0). The
+// backend is asked for its current time in ticks and converted at the same tick rate as the
+// fs→tick conversion, so `wait_until(now() + d)` and `sleep(d)` land on the same tick. The
+// resolution is the backend tick (1 ps for both shipped backends), i.e. sub-tick time does not
+// exist: consecutive statements between two suspension points observe the same `now()` (the
+// simulators' own time does not advance either until someone suspends).
+//
+// Reading the clock is the port's 7th primitive — the only non-suspending one. Every
+// deadline-bearing primitive above the core (repeat/periodic scheduling, watchdog idle
+// measurement, timeout diagnostics) is built on it, which is why it belongs to the contract even
+// though nothing suspends.
+
+// Current backend time in ticks. Never throws and never decreases: a backend query failure is
+// frozen at the last observed value (0 before the first successful query), so callers may rely
+// on monotonicity.
+std::int64_t now_ticks() noexcept;
+
+// Current simulation time as a duration since the epoch. Saturates at INT64_MAX instead of
+// throwing — this is a clock query, not arithmetic on caller-supplied values.
+duration now() noexcept;
+
+// An absolute point in time, stored as a duration since the epoch. The converting constructor is
+// deliberately implicit so a deadline reads naturally: `wait_until(now() + 1_ms)` (a duration
+// used where a deadline is expected is always "time since t = 0", never a delay).
+class time_point {
+public:
+  constexpr time_point() = default;
+  constexpr time_point(duration since_epoch) : since_epoch_(since_epoch) {}
+
+  constexpr duration time_since_epoch() const { return since_epoch_; }
+
+  constexpr time_point& operator+=(duration d) {
+    since_epoch_ += d;
+    return *this;
+  }
+  constexpr time_point& operator-=(duration d) {
+    since_epoch_ -= d;
+    return *this;
+  }
+
+private:
+  duration since_epoch_{};
+};
+
+constexpr time_point operator+(time_point tp, duration d) {
+  return time_point(tp.time_since_epoch() + d);
+}
+constexpr time_point operator+(duration d, time_point tp) {
+  return tp + d;
+}
+constexpr time_point operator-(time_point tp, duration d) {
+  return time_point(tp.time_since_epoch() - d);
+}
+// Difference of two time points: the elapsed duration (may be negative).
+constexpr duration operator-(time_point lhs, time_point rhs) {
+  return lhs.time_since_epoch() - rhs.time_since_epoch();
+}
+
+constexpr bool operator==(time_point lhs, time_point rhs) {
+  return lhs.time_since_epoch().count() == rhs.time_since_epoch().count();
+}
+constexpr bool operator!=(time_point lhs, time_point rhs) {
+  return !(lhs == rhs);
+}
+constexpr bool operator<(time_point lhs, time_point rhs) {
+  return lhs.time_since_epoch().count() < rhs.time_since_epoch().count();
+}
+constexpr bool operator>(time_point lhs, time_point rhs) {
+  return rhs < lhs;
+}
+constexpr bool operator<=(time_point lhs, time_point rhs) {
+  return !(rhs < lhs);
+}
+constexpr bool operator>=(time_point lhs, time_point rhs) {
+  return !(lhs < rhs);
+}
+
+// Suspends until backend time reaches `deadline` (≡ asyncio `loop.call_at`; the equivalent delay
+// form is `sleep(max(0, deadline - now()))`). A deadline at or before now() returns **without
+// suspending** — not even a 0-tick yield: there is nothing to wait for, and a caller that wants to
+// yield must say `sleep(0)`. Like every suspension point it must be called from a task context
+// (outside one it throws std::logic_error); `now()`/`now_ticks()` are the parts callable from
+// anywhere.
+void wait_until(time_point deadline);
 
 namespace literals {
 constexpr duration operator""_fs(unsigned long long v) {

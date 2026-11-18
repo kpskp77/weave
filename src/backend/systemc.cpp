@@ -84,6 +84,13 @@ std::int64_t ticks_per_sec() {
   return static_cast<std::int64_t>(1.0 / tick_seconds() + 0.5);
 }
 
+std::int64_t now_ticks() {
+  // sc_time_stamp().value() is already expressed in units of sc_get_time_resolution (the same tick
+  // ticks_per_sec describes), so no conversion takes place — and none of the double rounding that
+  // to_seconds()/tick_seconds() would introduce.
+  return static_cast<std::int64_t>(sc_core::sc_time_stamp().value());
+}
+
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
   const sc_core::sc_event& ab = event_by_id(abort_id);
   const bool has_to = timeout_ticks >= 0;

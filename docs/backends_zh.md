@@ -25,6 +25,7 @@ DPI 边界（`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`）：
 - **import（由 SV 提供）**：`weave_sv_spawn`（通过 fork...join_none 创建进程）、
   `weave_sv_trigger`（一次性唤醒：触发事件并标记注册在该 id 上的等待者）、
   `weave_sv_create_event` / `destroy_event`（事件表）、`weave_sv_ticks_per_sec`、
+  `weave_sv_now_ticks`（当前 `$time` 的 tick 数——纯查询，不挂起）、
   `weave_sv_set_root_done_ev`、`weave_sv_wait`（三路等待，唯一的阻塞原语：先在包的等待者注册表中
   注册，再在等待者自己的唤醒事件上挂起 `if (w_state[wd] == 0) @(w_evt[wd])`，即一个持久标志加
   一条每等待者边沿，因为对注册表数组做水平敏感的 `wait` 在 VCS 上是 O(N²) 开销（见

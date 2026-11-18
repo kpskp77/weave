@@ -26,6 +26,7 @@ The DPI boundary (`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`):
 - **imports (provided by SV)**: `weave_sv_spawn` (creates a process via fork...join_none),
   `weave_sv_trigger` (one-shot wakeup: fires the event and marks the waiters registered on that id),
   `weave_sv_create_event` / `destroy_event` (event table), `weave_sv_ticks_per_sec`,
+  `weave_sv_now_ticks` (current `$time` in ticks — a plain query, no suspension),
   `weave_sv_set_root_done_ev`, `weave_sv_wait` (three-legged wait, the only blocking primitive:
   register in the package's waiter registry, suspend on the waiter's own wakeup event
   `if (w_state[wd] == 0) @(w_evt[wd])` — a durable flag plus a per-waiter edge, because a

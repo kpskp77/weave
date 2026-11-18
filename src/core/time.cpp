@@ -1,8 +1,9 @@
 // Time conversion: femtoseconds → backend ticks (rounded up, guaranteeing at least the requested
-// duration; non-positive durations stay at 0 ticks). The tick rate comes from the port contract
-// and is backend-agnostic.
+// duration; non-positive durations stay at 0 ticks) and the backend→femtosecond direction of the
+// clock query. The tick rate comes from the port contract and is backend-agnostic.
 
 #include <cstdint>
+#include <weave/task.hpp>  // sleep (wait_until) — time.hpp itself stays below task.hpp
 #include <weave/time.hpp>
 
 #include "port.hpp"
@@ -26,4 +27,43 @@ std::int64_t to_ticks(duration d) {
 }
 
 }  // namespace detail
+
+std::int64_t now_ticks() noexcept {
+  // Monotonic clamp: the contract only promises a query, not a perfectly monotonic one, and every
+  // consumer of the clock (watchdog idle measurement, deadline arithmetic) would misbehave on a
+  // value going backwards. A backend that fails the query leaves the clock frozen at the last
+  // value it reported.
+  static std::int64_t last = 0;
+  try {
+    const std::int64_t v = port::now_ticks();
+    if (v > last) last = v;
+  } catch (...) {
+    // Query unavailable: keep the last observed time (no exception may cross a DPI boundary).
+  }
+  return last;
+}
+
+duration now() noexcept {
+  try {
+    const std::int64_t tps = detail::ticks_per_sec();
+    if (tps <= 0) return duration{};
+    // Multiply before dividing (__int128, same family as to_ticks): tick * 1e15 may exceed int64
+    // for a far-future time point, and the intermediate must not wrap.
+    constexpr __int128 kFsPerSec = static_cast<__int128>(1000000000000000LL);
+    __int128 fs = static_cast<__int128>(now_ticks()) * kFsPerSec / tps;
+    if (fs > INT64_MAX) fs = INT64_MAX;  // saturate, never throw from a clock query
+    return duration(static_cast<std::int64_t>(fs));
+  } catch (...) {
+    return duration{};
+  }
+}
+
+void wait_until(time_point deadline) {
+  const duration remaining = deadline.time_since_epoch() - now();
+  // Explicit early return rather than relying on to_ticks' 0-clamp: sleep(0) is a real yield, while
+  // an expired deadline must not suspend at all.
+  if (remaining.count() <= 0) return;
+  sleep(remaining);
+}
+
 }  // namespace weave
