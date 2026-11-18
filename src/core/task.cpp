@@ -16,7 +16,6 @@ namespace detail {
 std::deque<TaskRecord> g_tasks;
 int g_current = -1;
 int g_root = -1;
-std::uint64_t g_progress = 0;
 
 TaskRecord& record(int id) {
   // Index = id - 1: ids increase monotonically from 1 and are never recycled, so a direct
@@ -59,9 +58,6 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
   port::wait(ev_id, timeout_ticks, me.abort_ev, &status);  // ← the only suspension point
   g_current = saved;                                       // Restore this slice's task identity
   me.state = TaskState::RUNNING;
-  // Progress signal for debug::watchdog: this wait ended, so the system is not stalled. A
-  // watchdog's own wakeup only means its measurement window closed, so it does not count.
-  if (!me.watchdog) ++g_progress;
   if (status == WS_ABORTED) {
     me.cancel_armed = false;
     // Recreate the abort event: the "triggered" state of an already triggered event lingers on the

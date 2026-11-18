@@ -1,9 +1,8 @@
 #pragma once
 
-// Diagnostic surface: a read-only view of the task wait graph, plus a watchdog that reports a stall
-// on its own. Not a synchronisation primitive — snapshot()/dump() neither suspend nor change
-// library state, so they are safe to call from a failing test, a done callback, or the harness
-// chain (where no task context exists).
+// Diagnostic surface: a read-only view of the task wait graph. Not a synchronisation primitive —
+// nothing here suspends and nothing here changes library state, so it is safe to call from a
+// failing test, a done callback, or the harness chain (where no task context exists).
 //
 // What it can and cannot tell you: the core knows which event each task is blocked on and for how
 // long (simulation time), because every suspension passes through the single blocking point. It
@@ -12,10 +11,8 @@
 // section of docs/architecture.md).
 
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <vector>
-#include <weave/task.hpp>
 #include <weave/time.hpp>
 
 namespace weave {
@@ -44,28 +41,6 @@ Snapshot snapshot();
 // One line per waiter and one per live task, prefixed with tag, on stderr. Never suspends and never
 // throws (allocation failures are swallowed), so it can be called while diagnosing a hang.
 void dump(const char* tag = "weave") noexcept;
-
-// Progress watchdog: a task that waits idle of *simulation time* for some other task to resume, and
-// reports the wait graph when the window passes with nothing happening. "Progress" is a return
-// from the single blocking point — some task's wait ended — so a system that keeps ticking never
-// trips it.
-//
-// Must be started from a task context; the returned handle is the watchdog task itself, cancel()
-// stops it (an unawaited watchdog keeps watching). It fires once and then finishes.
-//
-// on_fire, when given, runs inside the watchdog task before the report is printed, so a client can
-// log or inspect the snapshot in its own format; it must not suspend. abort_on_fire turns the
-// report into an abort: every live task except the watchdog and the root is cancelled with
-// "watchdog: no progress for <idle>" (processes are never killed), which unwinds the stalled await
-// chain into a cancelled run.
-//
-// Two blind spots are inherent to measuring simulation time:
-//  - a zero-delay livelock (tasks spinning on sleep(0)) advances the clock not at all, so the
-//    watchdog's own deadline never arrives and it cannot fire;
-//  - a single sleep() longer than idle looks exactly like a stall, which is why the default is to
-//    report rather than to abort.
-Task watchdog(duration idle, bool abort_on_fire = false,
-              std::function<void(const Snapshot&)> on_fire = {});
 
 }  // namespace debug
 }  // namespace weave

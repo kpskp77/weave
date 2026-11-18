@@ -1,8 +1,7 @@
 // Wait-graph diagnostics self-check: a blocked task reports its suspension point and how long it
 // has been held there (in simulation time), a PENDING task is live but not a waiter, a landed task
-// leaves the graph, dump() is callable from a task and from outside any task without throwing, and
-// the progress watchdog reports (and optionally aborts) a stall without tripping on steady
-// progress. Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
+// leaves the graph, and dump() is callable from a task and from outside any task without throwing.
+// Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
 // case_runner.hpp). It shares the assertion-body style with task_semantics.cpp and is regressed by
 // both the weave_smoke_sc and weave_smoke_svdpi backends.
 
@@ -120,80 +119,6 @@ WEAVE_TEST(debug_semantics) {
     const debug::Snapshot after = debug::snapshot();
     if (find_waiter(after, t.id()) != nullptr)
       throw std::logic_error("case4: the woken task must have left the graph");
-  });
-
-  // case 5: a stall trips the watchdog, which reports the wait graph through on_fire, then finishes
-  run_case(__func__, "case5", [&] {
-    Event parked;
-    Event gate;  // Never set until the end: this task is the stall the watchdog must notice
-    auto stuck = create_task("stuck_waiter", [&] {
-      parked.set();
-      gate.wait();
-    });
-    parked.wait();
-    bool fired = false;
-    int reported = -1;
-    Task w = debug::watchdog(1_ms, /*abort_on_fire=*/false, [&](const debug::Snapshot& snap) {
-      fired = true;
-      const debug::Waiter* waiter = find_waiter(snap, stuck.id());
-      if (waiter != nullptr) reported = waiter->task_id;
-    });
-    sleep(2_ms);  // Longer than the idle window: nothing resumes in the first one
-    if (!fired) throw std::logic_error("case5: a stalled system must trip the watchdog");
-    if (reported != stuck.id())
-      throw std::logic_error("case5: the report must name the stalled waiter");
-    w.await();  // Fires once (no abort), so the watchdog task finishes on its own
-    if (!w.done()) throw std::logic_error("case5: the watchdog must finish after firing");
-    gate.set();
-    stuck.await();
-  });
-
-  // case 6: steady progress never trips it, and the handle is a task, so cancel() stops it
-  run_case(__func__, "case6", [&] {
-    Event ticks_done;
-    auto ticker = create_task("ticker", [&] {
-      for (int i = 0; i < 6; ++i) sleep(500_us);  // A win: a resumption in every half window
-      ticks_done.set();
-    });
-    bool fired = false;
-    Task w = debug::watchdog(1_ms, /*abort_on_fire=*/false,
-                             [&](const debug::Snapshot&) { fired = true; });
-    ticks_done.wait();  // 3ms of steady progress
-    if (fired) throw std::logic_error("case6: steady progress must not trip the watchdog");
-    w.cancel();
-    bool cancelled = false;
-    try {
-      w.await();
-    } catch (const CancelledError&) {
-      cancelled = true;
-    }
-    if (!cancelled) throw std::logic_error("case6: cancel() must stop the watchdog");
-    ticker.await();
-  });
-
-  // case 7: abort_on_fire delivers a CancelledError into the stalled wait instead of printing only
-  run_case(__func__, "case7", [&] {
-    Event parked;
-    Event aborted;  // Set by the victim when the injected CancelledError reaches it
-    auto stuck = create_task("stuck_abort", [&] {
-      parked.set();
-      try {
-        Event never;  // No setter: only the watchdog's abort can end this wait
-        never.wait();
-      } catch (const CancelledError&) {
-        aborted.set();
-      }
-    });
-    parked.wait();
-    debug::watchdog(1_ms, /*abort_on_fire=*/true);
-    // This task is live too, so the abort reaches it as well: absorb that injection, then wait for
-    // the victim to report the one it received.
-    try {
-      aborted.wait();
-    } catch (const CancelledError&) {
-      aborted.wait();
-    }
-    stuck.await();  // The victim swallowed the cancellation, so it lands DONE
   });
 
   report(__func__);

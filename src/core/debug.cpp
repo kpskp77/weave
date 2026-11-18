@@ -5,12 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <stdexcept>
-#include <string>
-#include <utility>
-#include <vector>
 #include <weave/debug.hpp>
-#include <weave/sync.hpp>
 
 #include "core_internal.hpp"
 
@@ -64,50 +59,6 @@ void dump(const char* tag) noexcept {
     std::fprintf(stderr, "[%s] weave snapshot: unavailable\n", prefix);
     std::fflush(stderr);
   }
-}
-
-Task watchdog(duration idle, bool abort_on_fire, std::function<void(const Snapshot&)> on_fire) {
-  if (idle.count() <= 0)
-    throw std::invalid_argument("weave::debug::watchdog: idle must be positive");
-  Task w = create_task("weave_watchdog", [idle, abort_on_fire, on_fire = std::move(on_fire)] {
-    // Watch window by window: as long as something else resumes in between, the system is alive and
-    // the watchdog keeps measuring; the first window without a single resumption is the stall.
-    std::uint64_t last = detail::g_progress;
-    for (;;) {
-      sleep(idle);
-      if (detail::g_progress != last) {
-        last = detail::g_progress;
-        continue;
-      }
-      break;
-    }
-    if (on_fire) {
-      try {
-        on_fire(snapshot());
-      } catch (...) {
-        // A client's reporter must not turn a diagnostic into a different failure.
-      }
-    }
-    dump("weave-watchdog");
-    if (!abort_on_fire) return;
-    // Abort without killing anything: cancel every live task except this one and the root, which is
-    // the reporting chain — a cancelled stall still propagates through the await edges into it, as
-    // CancelledError, and the run ends visibly instead of hanging.
-    const std::string msg = "watchdog: no progress for " + std::to_string(idle.count()) + " fs";
-    std::vector<int> victims;
-    victims.reserve(detail::g_tasks.size());
-    for (std::size_t i = 0; i < detail::g_tasks.size(); ++i) {
-      const detail::TaskRecord& r = detail::g_tasks[i];
-      const int id = static_cast<int>(i) + 1;
-      if (detail::terminal(r.state) || id == detail::g_current || id == detail::g_root) continue;
-      victims.push_back(id);
-    }
-    for (int id : victims) detail::task_from_id(id).cancel(msg);
-  });
-  // Marked after create_task returns and before the watchdog's first suspension: progress
-  // accounting must exclude the watchdog's own sleep from its very first window.
-  detail::record(w.id()).watchdog = true;
-  return w;
 }
 
 }  // namespace debug

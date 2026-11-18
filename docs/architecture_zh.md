@@ -83,15 +83,6 @@ Python 3.8+ 中 `CancelledError` 是 `BaseException`），这样惯用的
 `Task::await` 的环（`a` 等 `b`、`b` 等 `a`）：await 这条边没有被记录，core 只知道
 终态事件。
 
-`debug::watchdog(idle, abort_on_fire)` 是同一份勘查的主动形式：一个测量进度的任务——进度是
-`detail::g_progress`，每当**某个**任务从单一阻塞点返回就前进（watchdog 自己的唤醒绝不计入）——当整整一个
-`idle` 窗口的仿真时间过去而计数器没变时，它就报告快照。它同样不去找环：它报告的是“系统已经不动了”，而这
-恰恰是运维真正想知道的事。两个后果源于测量虚拟时间本身，因此被明确记录下来而不是被掩盖：零时延 livelock
-（`sleep(0)` 空转）根本不推进时钟，watchdog 自己的截止时间永远不会到来，它也就无法触发；而单个长于 `idle`
-的 `sleep()` 在这个分辨率下与挂死无法区分——这正是默认只报告的原因。`abort_on_fire` 会取消除 root 与
-watchdog 自身之外的所有存活任务（按取消不变量，绝不杀进程）；跳过 root 是因为它就是报告链，取消仍会沿
-await 边传播到它，于是整轮运行以 cancelled 收场而不是挂死。
-
 相关的一致性卫生：`g_current` 在进程挂起前、以及 done 回调运行前被清空，因此 `current_task()` 的含义
 是“此刻正在执行的任务”，而不是“最后挂起的那个任务”。否则 harness 链（注册测试驱动器、后端 bootstrap
 回调）会看到陈旧的 id，而任务上下文之外的 `current_task()` 也永远无法返回 `nullopt`。
@@ -183,7 +174,7 @@ weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event / Pulse
 weave/every.hpp    Every（周期节拍）
 weave/sv.hpp       sv::EventHandle（跨语言原始事件 id）
-weave/debug.hpp    debug::snapshot / debug::dump / debug::watchdog
+weave/debug.hpp    debug::snapshot / debug::dump
 weave/locks.hpp    Lock / LockGuard / Condition（通信原语，构建在 Event 之上）
 weave/queue.hpp    Queue<T> / PriorityQueue<T> / LifoQueue<T> + QueueEmpty / QueueFull /
                   QueueShutDown（通信原语，构建在 Event 之上；是 detail::QueueBase<T, Store>

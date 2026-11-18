@@ -13,7 +13,7 @@
 //   event.hpp    event primitives (Event / Pulse)
 //   every.hpp    periodic cadence (Every) — depends on time.hpp only
 //   sv.hpp       cross-language event handles (sv::EventHandle) — raw backend ids, no dependencies
-//   debug.hpp    diagnostics (debug::snapshot / debug::dump / debug::watchdog)
+//   debug.hpp    diagnostics (debug::snapshot / debug::dump)
 //   locks.hpp    communication primitives (Lock / LockGuard / Condition)
 //   queue.hpp    communication primitive (Queue / QueueEmpty / QueueFull)
 //   semaphore.hpp communication primitives (Semaphore / SemaphoreGuard / BoundedSemaphore /

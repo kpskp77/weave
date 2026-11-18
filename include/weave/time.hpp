@@ -169,9 +169,8 @@ duration operator/(duration, T) = delete;
 // simulators' own time does not advance either until someone suspends).
 //
 // Reading the clock is the port's 7th primitive — the only non-suspending one. Every
-// deadline-bearing primitive above the core (repeat/periodic scheduling, watchdog idle
-// measurement, timeout diagnostics) is built on it, which is why it belongs to the contract even
-// though nothing suspends.
+// deadline-bearing primitive above the core (periodic scheduling, timeout diagnostics, deadline
+// arithmetic) is built on it, which is why it belongs to the contract even though nothing suspends.
 
 // Current backend time in ticks. Never throws and never decreases: a backend query failure is
 // frozen at the last observed value (0 before the first successful query), so callers may rely

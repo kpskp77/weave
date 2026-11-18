@@ -46,7 +46,7 @@ duration from_ticks(std::int64_t ticks) noexcept {
 
 std::int64_t now_ticks() noexcept {
   // Monotonic clamp: the contract only promises a query, not a perfectly monotonic one, and every
-  // consumer of the clock (watchdog idle measurement, deadline arithmetic) would misbehave on a
+  // consumer of the clock (deadline arithmetic, elapsed-time measurement) would misbehave on a
   // value going backwards. A backend that fails the query leaves the clock frozen at the last
   // value it reported.
   static std::int64_t last = 0;

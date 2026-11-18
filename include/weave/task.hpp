@@ -85,8 +85,8 @@ static_assert(std::is_nothrow_copy_constructible_v<CancelledError> &&
 // edges visible in the core are diagnosed — `Task::await()` on itself and `TaskGroup::wait()`
 // called from one of the group's own children — because those are the only "who waits for whom"
 // relations the bookkeeping knows. A cycle through Event set/wait (who will set the event this
-// task is blocked on) is not expressible in the API surface, so it is not diagnosed: that hang is
-// reported by the debug watchdog instead (see docs/architecture.md, "Deadlock diagnostics").
+// task is blocked on) is not expressible in the API surface, so it is not diagnosed: that hang has
+// to be surveyed instead (debug::snapshot(), see docs/architecture.md, "Deadlock diagnostics").
 //
 // Derives from std::logic_error, i.e. it **is** a std::exception (a deadlock is a programming
 // error, not a cancellation: the generic catch (const std::exception&) backstop may and should
