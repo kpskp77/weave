@@ -10,7 +10,7 @@
 -- defines build targets only, and the two regressions are independent.
 
 set_project("weave")
-set_version("1.1.0")
+set_version("1.2.0")
 
 add_rules("mode.debug", "mode.release")
 set_languages("c++17")
