@@ -41,31 +41,82 @@ void weave_sv_wait(int ev_id, long long timeout_ticks, int abort_id, int* status
 namespace weave {
 namespace port {
 
+// ── DPI scope fixing ────────────────────────────────────────────────────────────────────────────
+// The engine resolves a C++→SV call (an `export "DPI-C"` in sv/weave_pkg.sv) through the DPI scope
+// of the calling process. A consumer's testbench process imports its own package, not weave_pkg, so
+// when C++ is reached through the consumer's own DPI import that scope has no `weave_sv_*` in it
+// and VCS 2018.09 aborts the whole run with
+//   Error-[DPI-DXFNF] … 'weave_sv_now_ticks' … is not defined or visible
+// on the first suspension or identity query. Every library embedding weave would otherwise have to
+// know, cache and restore weave's DPI scope around its own calls into weave — a backend detail
+// leaking into every consumer — so the backend does it here, at the only place that knows the
+// package: each import below runs under this guard. The caller's scope is restored on the way out
+// because the consumer still needs it for its own exports (tests/svdpi_scope_semantics.cpp pins
+// both halves).
+namespace {
+
+constexpr const char* kWeaveSvPackage = "weave_pkg";
+
+svScope weave_scope() {
+  // One package scope per simulation, and the core guarantees at most one process executes
+  // bookkeeping at any moment, so a plain cache needs no locking. A null result (a design that
+  // renames the package, or an engine that cannot resolve package scopes) leaves the guard inert:
+  // the behaviour is then exactly what it was without the guard, never worse.
+  static const svScope scope = svGetScopeFromName(kWeaveSvPackage);
+  return scope;
+}
+
+class DpiScopeGuard {
+public:
+  DpiScopeGuard() : prev_(svGetScope()) {
+    if (const svScope target = weave_scope(); target != nullptr) svSetScope(target);
+  }
+  ~DpiScopeGuard() {
+    if (prev_ != nullptr) svSetScope(prev_);
+  }
+  DpiScopeGuard(const DpiScopeGuard&) = delete;
+  DpiScopeGuard& operator=(const DpiScopeGuard&) = delete;
+
+private:
+  svScope prev_;
+};
+
+}  // namespace
+
 void spawn(int task_id) {
+  const DpiScopeGuard scope;
   weave_sv_spawn(task_id);
 }
 void trigger(int ev_id) {
+  const DpiScopeGuard scope;
   weave_sv_trigger(ev_id);
 }
 int create_event() {
+  const DpiScopeGuard scope;
   return weave_sv_create_event();
 }
 void destroy_event(int ev_id) {
+  const DpiScopeGuard scope;
   weave_sv_destroy_event(ev_id);
 }
 std::int64_t ticks_per_sec() {
+  const DpiScopeGuard scope;
   return weave_sv_ticks_per_sec();
 }
 std::int64_t now_ticks() {
+  const DpiScopeGuard scope;
   return weave_sv_now_ticks();
 }
 int owner_task() {
+  const DpiScopeGuard scope;
   return weave_sv_current_task();
 }
 void set_owner_task(int task_id) {
+  const DpiScopeGuard scope;
   weave_sv_set_owner(task_id);
 }
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
+  const DpiScopeGuard scope;
   weave_sv_wait(ev_id, timeout_ticks, abort_id, status);
 }
 

@@ -102,7 +102,8 @@ target("weave_smoke_sc", function()
 end)
 
 -- SVDPI self-check library: shares the same set of assertion bodies (tests/*_semantics.cpp) with
--- weave_smoke_sc, built as a shared library the simulator loads via -sv_lib. The backend macro is
+-- weave_smoke_sc (plus tests/svdpi_scope_semantics.cpp, SVDPI-only like scope_sc_thread_semantics.cpp
+-- is SC-only), built as a shared library the simulator loads via -sv_lib. The backend macro is
 -- pinned to SVDPI explicitly, independently of the --backend configuration, so the DPI path is
 -- regressed under both configurations.
 target("weave_smoke_svdpi", function()
@@ -124,6 +125,7 @@ target("weave_smoke_svdpi", function()
     "tests/lock_semantics.cpp",
     "tests/queue_semantics.cpp",
     "tests/scope_semantics.cpp",
+    "tests/svdpi_scope_semantics.cpp",
     "tests/semaphore_semantics.cpp",
     "tests/timeout_semantics.cpp",
     "tests/shield_semantics.cpp",

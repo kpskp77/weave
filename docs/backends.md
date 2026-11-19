@@ -38,9 +38,9 @@ The DPI boundary (`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`):
   [../AGENTS.md](../AGENTS.md)).
 - **exports (provided by C++)**: `weave_task_main` (task dispatch, reachable from SV via
   weave_sv_spawn), `weave_start` / `weave_test_status` (tb bootstrap; the package's `weave_run` task
-  calls them, so the DPI scope is already `weave_pkg` and no `svSetScope` is needed),
-  `weave_sv_edge_id` / `weave_sv_edge_bind` (a named `sv::Edge` and the testbench's `weave_edge`
-  meet on one id, see below).
+  calls them), `weave_sv_edge_id` / `weave_sv_edge_bind` (a named `sv::Edge` and the testbench's
+  `weave_edge` meet on one id, see below). The imports in the opposite direction are made under a
+  DPI-scope guard the backend owns — see "Task identity across the DPI boundary" below.
 
 ### Named edges shared with SystemVerilog
 
@@ -170,13 +170,17 @@ the backend is the only layer that can tell the two parties apart.
   ownership-carrying primitives — still rejects an ownerless caller with
   `std::logic_error("weave: blocking primitive outside task context")`: they hand a `TaskRecord` to a
   queue head or need the cancel leg, so an ownerless waiter would never be handed off.
-- Consumption side (SVDPI): every suspension — and `current_task()`, which now asks the backend —
-  calls back into the package, so C++ code reached from a **consumer's own** DPI import must have the
-  DPI scope set to `weave_pkg` before it touches weave. VCS 2018.09 otherwise aborts the whole run
-  with `Error-[DPI-DXFNF] … 'weave_sv_current_task' … is not defined or visible` because the entry
-  scope is the consumer's package, not a module that imported ours. Setting it once per import
-  (`svGetScopeFromName("weave_pkg")` cached, `svSetScope` re-entrantly restored on exit) is
-  sufficient; a testbench that imports `weave_pkg` at module scope needs nothing.
+- Consumption side (SVDPI) — the backend owns the DPI scope: every suspension, and
+  `current_task()`, calls back into the package, and the engine resolves such a call through the DPI
+  scope of the *calling process*. A consumer's testbench process imports its own package, usually not
+  `weave_pkg`, so without help the first of those calls aborts the run on VCS 2018.09 with
+  `Error-[DPI-DXFNF] … 'weave_sv_current_task' … is not defined or visible` (shuttle hit this).
+  Making every embedding library know and restore weave's scope would leak a backend detail into each
+  consumer, so `src/backend/svdpi.cpp` wraps **every** import in a guard: it caches
+  `svGetScopeFromName("weave_pkg")`, switches to it for the call, and restores the caller's scope on
+  the way out (the consumer still needs *its* scope for its own exports). A consumer therefore needs
+  no `svSetScope` of its own; `tests/svdpi_scope_semantics.cpp` pins this from a module that imports
+  nothing, and the guard's restore half from the scope it observes afterwards.
 
 ## Adding a backend
 

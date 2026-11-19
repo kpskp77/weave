@@ -34,9 +34,10 @@ DPI 边界（`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`）：
   "清出已到期"各为 O(log N)，而不是 O(armed) 的两次扫描——绝不用 `fork … join_any`，参见
   [../AGENTS.md](../AGENTS.md) 的 "Pitfalls" 一节）。
 - **export（由 C++ 提供）**：`weave_task_main`（任务派发，SV 侧可经 `weave_sv_spawn` 到达）、
-  `weave_start` / `weave_test_status`（tb bootstrap；包里的 `weave_run` 任务会调用它们，所以
-  DPI 作用域已经是 `weave_pkg`，无需 `svSetScope`）、`weave_sv_edge_id` / `weave_sv_edge_bind`
-  （具名的 `sv::Edge` 与测试台的 `weave_edge` 会合到同一个 id 上，见下）。
+  `weave_start` / `weave_test_status`（tb bootstrap；包里的 `weave_run` 任务会调用它们）、
+  `weave_sv_edge_id` / `weave_sv_edge_bind`
+  （具名的 `sv::Edge` 与测试台的 `weave_edge` 会合到同一个 id 上，见下）。反方向的 import 都在
+  后端自持的 DPI 作用域守卫下发出——见下文"跨 DPI 边界的任务身份"。
 
 ### 与 SystemVerilog 共享的具名边沿
 
@@ -146,12 +147,15 @@ linkage：每个用到该类型的翻译单元都会发出一个弱定义；又�
   其余全部——组合子与携带所有权的原语——仍以
   `std::logic_error("weave: blocking primitive outside task context")` 拒绝无主调用方：它们要么把
   `TaskRecord` 交给队列头，要么需要取消一路，无主等待者永远不会被交接。
-- 消费侧（SVDPI）：每次挂起、以及现在会向后端询问的 `current_task()`，都要回调进包，因此从**消费者
-  自己的** DPI import 到达的 C++ 代码，在触碰 weave 之前必须把 DPI 作用域设为 `weave_pkg`。否则
-  VCS 2018.09 会以 `Error-[DPI-DXFNF] … 'weave_sv_current_task' … is not defined or visible`
-  中止整场仿真——因为入口作用域是消费者的 package，而不是导入了 weave 的 module。每个 import 设一次
-  （缓存 `svGetScopeFromName("weave_pkg")`，退出时恢复 `svSetScope`）即可；在 module 作用域里
-  `import weave_pkg::*` 的测试台什么也不用做。
+- 消费侧（SVDPI）——DPI 作用域由后端自己负责：每次挂起、以及会向后端询问的 `current_task()`，都要
+  回调进包，而引擎是按**调用进程**的 DPI 作用域解析这次回调的。消费者的测试台进程只 import 自己的
+  package（通常不是 `weave_pkg`），所以没有这层处理时，第一次这样的回调就会让 VCS 2018.09 以
+  `Error-[DPI-DXFNF] … 'weave_sv_current_task' … is not defined or visible` 中止整场仿真
+  （shuttle 正是撞上了这个）。若让每个嵌入 weave 的库自己记住并恢复 weave 的作用域，就是把后端细节
+  泄漏给每个消费者，因此 `src/backend/svdpi.cpp` 给**每一个** import 套上作用域守卫：缓存
+  `svGetScopeFromName("weave_pkg")`，调用期间切过去，返回时恢复调用方原来的作用域（消费者自己的
+  export 仍然需要它）。消费者因此不再需要任何 `svSetScope`；`tests/svdpi_scope_semantics.cpp`
+  在一个不 import 任何包的 module 里钉住这点，也钉住守卫的"恢复"一半。
 
 ## 新增后端
 

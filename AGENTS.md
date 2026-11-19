@@ -115,7 +115,7 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
 | New sync primitive (TaskGroup/shield/as_completed/…) | `include/weave/sync.hpp` + `src/core/sync.cpp` |
 | New communication primitive (Queue/Lock/Semaphore/…) | New public header `include/weave/<domain>.hpp` + add the include to the umbrella |
 | New backend | `src/backend/<name>.cpp` (macro-guarded) + macro in `src/core/config.hpp` + xmake mapping |
-| New self-check assertions | `tests/<domain>_semantics.cpp`, added to both `weave_smoke_sc` and `weave_smoke_svdpi` |
+| New self-check assertions | `tests/<domain>_semantics.cpp`, added to both `weave_smoke_sc` and `weave_smoke_svdpi` (a backend-only body needs its own file and target, e.g. `tests/svdpi_scope_semantics.cpp`) |
 | New example | `examples/<domain>_demo.cpp` (picked up automatically by glob, no xmake.lua change needed) |
 
 Principle: **a primitive composable from "task bookkeeping + Event + three-legged wait" goes into the
@@ -143,10 +143,11 @@ layering (dependencies point downwards): time → task/event → sync → test, 
   past its blocking point (lock hand-off / process scheduling barrier) — use that, not sleeps.
 - Assertion bodies live in `tests/`, separated from the backend entry points, and are shared by both
   smoke payloads (the same set except `sc_main.cpp`, a symmetry kept on purpose); tests run serially
-  in name order and any failure fails the whole run. The single deliberate exception is
-  `tests/scope_sc_thread_semantics.cpp`: it asserts what a *non-task* `SC_THREAD` sees, so it needs
-  a raw `sc_spawn` (an SVDPI equivalent would have to be a testbench process, not C++), and it is
-  therefore linked into `weave_smoke_sc` only.
+  in name order and any failure fails the whole run. Two deliberate exceptions keep the same
+  symmetry from the other side: `tests/scope_sc_thread_semantics.cpp` asserts what a *non-task*
+  `SC_THREAD` sees, so it needs a raw `sc_spawn` and is linked into `weave_smoke_sc` only;
+  `tests/svdpi_scope_semantics.cpp` switches the DPI scope with `svdpi.h`, so it exists only in the
+  SVDPI payload (`weave_smoke_svdpi`).
 - **A task body must not reference a stack frame that dies earlier**: a lambda capturing a local
   `Event`/`Task` by reference must be guaranteed to finish before that frame exits (`await`/`gather`,
   or draining the siblings on the exception path), otherwise resuming is a use-after-free.
@@ -199,10 +200,14 @@ stylua <changed .xmake>                                                    # see
   must return **without suspending** for an expired deadline (sleeping 0 instead would be a yield,
   which is a different operation) and `now()` must saturate rather than throw / divide by zero when a
   backend reports `ticks_per_sec() == 0`.
-- **SVDPI: C++ reached from a consumer's own DPI import must set the DPI scope to `weave_pkg` first**
-  — every suspension and `current_task()` call back into the package, and VCS 2018.09 aborts with
-  `Error-[DPI-DXFNF] … 'weave_sv_current_task' … is not defined or visible` when the entry scope is
-  the consumer's package (shuttle hit exactly this) instead of a module that imported `weave_pkg`.
+- **SVDPI: the DPI scope belongs to the calling process, and a consumer's process does not import
+  `weave_pkg`** — every suspension and `current_task()` call back into the package, and VCS 2018.09
+  aborts with `Error-[DPI-DXFNF] … 'weave_sv_current_task' … is not defined or visible` when the
+  entry scope is the consumer's testbench process (shuttle hit exactly this). The backend therefore
+  wraps **each** import in a scope guard (cached `svGetScopeFromName("weave_pkg")`, caller's scope
+  restored on the way out), so a library embedding weave needs no `svSetScope` of its own;
+  `tests/svdpi_scope_semantics.cpp` pins that from a module which imports nothing. Any new import
+  added to `src/backend/svdpi.cpp` must go through the same guard.
 - **`sv::Edge` is bound by name, and an edge is never buffered**: the testbench's `weave_edge` must
   be constructed before the C++ side fires (the probe in `tests/weave_tb.sv` builds its edges before
   `weave_run`, so the responders are registered in the first delta the run suspends in). A leg that

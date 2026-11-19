@@ -5,9 +5,20 @@
 // Usage: compile this module together with your DUT/testbench top; the simulator loads the test
 // library via -sv_lib.
 
+// Consumer-scope stand-in for tests/svdpi_scope_semantics.cpp: this module deliberately imports
+// nothing, so a process whose DPI scope is this instance cannot see weave_pkg's exports. The test
+// switches the DPI scope here to reproduce "C++ reached through a consumer's own DPI import"; the
+// backend has to fix the scope itself (src/backend/svdpi.cpp).
+module weave_foreign_scope;
+  timeunit 1ps; timeprecision 1ps;
+  bit alive = 1'b1;  // keeps the instance from being elided
+endmodule
+
 module weave_tb;
   timeunit 1ps; timeprecision 1ps;
   import weave_pkg::*;
+
+  weave_foreign_scope u_foreign_scope();
 
   // ── named-edge probe (include/weave/sv.hpp) ──────────────────────────────
   // Three edges shared with C++ by name. cl_request / cl_ack are created here before the run starts
