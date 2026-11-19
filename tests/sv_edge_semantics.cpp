@@ -86,5 +86,23 @@ WEAVE_TEST(sv_edge_semantics) {
       throw std::logic_error("case4: the testbench must adopt the id C++ registered first");
   });
 
+  // case 5: an Edge is a handle, so a copy is the *same* edge rather than a private impl — fire()
+  // on the copy must release a wait() on the original (case2 covers the same thing for two
+  // independent constructors; this one pins the copy path, which is what the pointer layout buys)
+  run_case(__func__, "case5", [&] {
+    sv::Edge original{"copied_edge"};
+    sv::Edge copy = original;  // Trivially copyable handle: no name string, no allocation
+    if (copy.bound() != original.bound())
+      throw std::logic_error("case5: a copy must answer bound() from the shared entry");
+    Event parked;
+    auto t = create_task("copied_edge_waiter", [&] {
+      parked.set();
+      original.wait();
+    });
+    parked.wait();  // The child has suspended on the original (process scheduling barrier)
+    copy.fire();    // The copy is the same edge
+    t.await();
+  });
+
   report(__func__);
 }

@@ -20,11 +20,21 @@
 // Under the SystemC backend an Edge is a plain sc_event and no testbench can claim it (bound()
 // stays false), so a payload that must work on both backends takes its cross-language branch on
 // bound().
-
-#include <string>
+//
+// An Edge is a handle, not the event: the per-name entry lives in the name table for the whole run,
+// and Edge holds one pointer to it (8 bytes, trivially copyable, no allocation of its own). Copies
+// are free and — exactly like the backend id they share — two Edges built from one name stay one
+// edge, so copying an Edge into a task body is the natural gesture (see case2 in
+// tests/sv_edge_semantics.cpp). Note what this is *not*: the Event::Impl pattern, which gives each
+// object a private impl; here the impl is per *name*, because sharing the backend event is the
+// documented semantics.
 
 namespace weave {
 namespace sv {
+
+namespace detail {
+struct Entry;  // The per-name entry the table owns (src/core/sv.cpp); never erased, never moved
+}
 
 class Edge {
 public:
@@ -45,8 +55,9 @@ public:
   [[nodiscard]] bool bound() const noexcept;
 
 private:
-  std::string name_;
-  int id_ = -1;
+  // Points into the name table: stable for the run (the table is a std::map and nothing is ever
+  // erased), so fire()/wait()/bound() never look the name up again.
+  detail::Entry* entry_;
 };
 
 // ── called from SystemVerilog ─────────────────────────────────────────────
