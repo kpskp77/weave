@@ -87,6 +87,7 @@ target("weave_smoke_sc", function()
     "tests/lock_semantics.cpp",
     "tests/queue_semantics.cpp",
     "tests/scope_semantics.cpp",
+    "tests/scope_sc_thread_semantics.cpp",
     "tests/semaphore_semantics.cpp",
     "tests/timeout_semantics.cpp",
     "tests/shield_semantics.cpp",

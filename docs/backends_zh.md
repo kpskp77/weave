@@ -134,9 +134,12 @@ linkage：每个用到该类型的翻译单元都会发出一个弱定义；又�
 - SVDPI：`sv/weave_pkg.sv` 中的 `int p_owner [process]`，经 `weave_sv_current_task()` 读（必须是
   `function automatic`——`process::self()` 在静态函数上下文里非法），经 `weave_sv_set_owner()` 写
   （0 即删除条目，表因此保持有界：`weave_task_main` 在 body 返回时清空）。
-- SystemC：一个 `int g_owner`（仿真是单 OS 线程，SystemC 所谓的"进程"是协程而不是线程），在
-  `port::wait` **内部**保存并恢复——协程恢复到的正是它挂起时的那个栈帧，因此进入时的值与恢复后的值
-  属于同一个身份。没有这次保存/恢复，被恢复的任务会读到"最后挂起的那个进程"的身份。
+- SystemC：同一张表，键是进程对象——`std::unordered_map<const sc_core::sc_object*, int> g_owner`，
+  经 `sc_get_current_process_handle().get_process_object()` 读取（不在任何进程里时 `valid()` 为假，
+  即 `sc_main`，正好就是无主那一格）。按进程而不是按一个 int 存，才能让普通 `SC_THREAD` 安全：
+  这种线程完全可能在某个任务 body 冻结时调进 weave，它必须读到**没有**身份，而不是那个任务的身份
+  （`tests/scope_sc_thread_semantics.cpp` 钉住这一点）。用标量加 `port::wait` 内的保存/恢复，只能隔离
+  "通过端口挂起"的协程，并且会把冻结任务的旧值留在那里给后来者读到。
 - 无主挂起：`port::wait` 接受 `abort_id < 0`（没有取消一路），只给那些可能跑在任务 body 之外的叶子
   等待使用（`sleep`、`Event::wait`、`sv::Edge::wait`）。SystemC 构造不带 abort 一路的等待；SV 的
   `weave_sv_wait` 本来就支持 `abort_id < 0`，包自己的 `weave_edge::wait_edge` 用的就是这个形状。

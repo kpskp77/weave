@@ -143,7 +143,10 @@ layering (dependencies point downwards): time → task/event → sync → test, 
   past its blocking point (lock hand-off / process scheduling barrier) — use that, not sleeps.
 - Assertion bodies live in `tests/`, separated from the backend entry points, and are shared by both
   smoke payloads (the same set except `sc_main.cpp`, a symmetry kept on purpose); tests run serially
-  in name order and any failure fails the whole run.
+  in name order and any failure fails the whole run. The single deliberate exception is
+  `tests/scope_sc_thread_semantics.cpp`: it asserts what a *non-task* `SC_THREAD` sees, so it needs
+  a raw `sc_spawn` (an SVDPI equivalent would have to be a testbench process, not C++), and it is
+  therefore linked into `weave_smoke_sc` only.
 - **A task body must not reference a stack frame that dies earlier**: a lambda capturing a local
   `Event`/`Task` by reference must be guaranteed to finish before that frame exits (`await`/`gather`,
   or draining the siblings on the exception path), otherwise resuming is a use-after-free.

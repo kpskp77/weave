@@ -44,12 +44,18 @@ namespace {
 
 std::unordered_map<int, std::unique_ptr<sc_core::sc_event>> g_events;
 int g_next_ev = 0;
-// Task identity of the process executing right now (src/core/port.hpp — owner_task): an SC_THREAD
-// runs exactly one weave task body and its C++ stack freezes with it. The whole simulation is one
-// OS thread, so a plain int is the exact analogue of the SV package's per-process table — what
-// makes it per *process* is wait()'s save/restore below. 0 = no task body (the reporting process,
-// sc_main).
-int g_owner = 0;
+// Task identity per process (src/core/port.hpp — owner_task): the same table the SV package keeps
+// as p_owner[process], keyed by the process object instead. The whole simulation is one OS thread
+// and coroutines interleave on it, and a process need not be a task at all (a plain SC_THREAD or
+// the reporting process may call into weave while a task body is parked), so the identity must be
+// keyed by *who is asking*, never by what the last writer left behind. Absent = no task body.
+std::unordered_map<const sc_core::sc_object*, int> g_owner;
+
+// The process asking right now, or nullptr outside any process (sc_main, elaboration).
+const sc_core::sc_object* current_process() {
+  const sc_core::sc_process_handle self = sc_core::sc_get_current_process_handle();
+  return self.valid() ? self.get_process_object() : nullptr;
+}
 
 sc_core::sc_event& event_by_id(int ev_id) {
   const auto it = g_events.find(ev_id);
@@ -98,23 +104,28 @@ std::int64_t now_ticks() {
 }
 
 int owner_task() {
-  return g_owner;
+  const sc_core::sc_object* self = current_process();
+  if (self == nullptr) return 0;
+  const auto it = g_owner.find(self);
+  return it == g_owner.end() ? 0 : it->second;
 }
 
 void set_owner_task(int task_id) {
-  g_owner = task_id;
+  const sc_core::sc_object* self = current_process();
+  if (self == nullptr) return;  // no process to publish for (sc_main): nobody can read it either
+  if (task_id == 0)
+    g_owner.erase(self);
+  else
+    g_owner[self] = task_id;
 }
 
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
   const bool has_to = timeout_ticks >= 0;
   const bool has_ab =
       abort_id >= 0;  // No cancel leg: an ownerless suspension has nothing to cancel
-  // Every SystemC process is a coroutine on the one simulation thread, so g_owner holds whatever
-  // the last writer put there; the coroutine, however, resumes into exactly this frame, so the
-  // process's own identity is the value it had when it suspended. (The SVDPI backend needs no
-  // equivalent: there the identity is keyed by a real SV process, which no other process can
-  // disturb.)
-  const int saved_owner = g_owner;
+  // The identity is keyed by the asking process, so nothing here has to be saved and restored: a
+  // parked task keeps its own entry while another process suspends (and possibly blocks with no
+  // identity at all) on top of it.
   // Without a timeout leg, do not build an sc_time from a negative tick (negative time is
   // meaningless); SC_ZERO_TIME is used as a placeholder
   const sc_core::sc_time to =
@@ -142,7 +153,6 @@ void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
   } else {
     throw std::logic_error("weave: wait with no leg");
   }
-  g_owner = saved_owner;
   // On a same-slot conflict the cancel leg wins (consistent with weave_sv_wait in sv/weave_pkg.sv)
   if (ab != nullptr && ab->triggered())
     *status = 2;

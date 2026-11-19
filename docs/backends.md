@@ -154,11 +154,15 @@ the backend is the only layer that can tell the two parties apart.
   `weave_sv_current_task()` (must be `function automatic` — `process::self()` is illegal in a static
   function context) and written through `weave_sv_set_owner()` (0 deletes the entry, which is how the
   table stays bounded: `weave_task_main` clears it when the body returns).
-- SystemC: one `int g_owner` (the simulation is a single OS thread; the coroutines that SystemC calls
-  "processes" are not OS threads), saved and restored *inside* `port::wait` — a coroutine resumes
-  into exactly the frame that suspended, so the value it had on entry is its own identity again.
-  Without that save/restore a resumed task would read the identity of whichever process suspended
-  last.
+- SystemC: the same table keyed by the process object —
+  `std::unordered_map<const sc_core::sc_object*, int> g_owner`, read through
+  `sc_get_current_process_handle().get_process_object()` (`valid()` is false outside any process,
+  i.e. in `sc_main`, which is exactly the ownerless case). Keying by the process, not by a single
+  int, is what makes a plain `SC_THREAD` safe: such a thread may call into weave while a task body
+  is parked, and it must see *no* identity instead of the parked task's (tests/
+  scope_sc_thread_semantics.cpp pins this). A scalar plus save/restore inside `port::wait` would only
+  have isolated coroutines that suspend *through* the port, and would leave the parked task's value
+  behind for anyone else.
 - Ownerless suspension: `port::wait` accepts `abort_id < 0` (no cancel leg) for exactly the leaf
   waits that may run outside a task body (`sleep`, `Event::wait`, `sv::Edge::wait`). SystemC builds
   the wait without the abort leg; SV's `weave_sv_wait` already handled `abort_id < 0` because the
