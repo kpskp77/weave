@@ -17,11 +17,14 @@
 //      used on an already destroyed id (the core unlinks it on every wait path).
 //   4. wait is the only suspension point: a three-legged race (event / timeout / cancel), with
 //      the cancel leg winning same-slot conflicts; status 0=event hit 1=timeout 2=cancelled.
-//      ev_id < 0 means no event leg; timeout_ticks < 0 means no timeout leg.
+//      ev_id < 0 means no event leg; timeout_ticks < 0 means no timeout leg; abort_id < 0 means no
+//      cancel leg (status then never reports 2) — the shape an ownerless suspension uses.
 //
-// One query is part of the contract as well: now_ticks. It is the only non-suspending primitive,
-// and it must report the same tick unit ticks_per_sec describes — every absolute deadline in the
-// public API (now/wait_until, and the periodic scheduling built on them) is derived from it.
+// Two queries are part of the contract as well: now_ticks and owner_task, neither of which
+// suspends. now_ticks must report the same tick unit ticks_per_sec describes — every absolute
+// deadline in the public API (now/wait_until, and the periodic scheduling built on them) is derived
+// from it. owner_task is the task identity, and it is per simulation *process* rather than per C++
+// stack: that is the only place where the answer exists (see the declaration below).
 //
 // Backend bootstrap entry points (not part of the port contract, each backend picks its own form):
 //   SVDPI  : extern "C" void weave_start()        —— called from systemverilog
@@ -54,6 +57,21 @@ std::int64_t ticks_per_sec();
 // non-decreasing and tolerates a throwing implementation, so a backend need not be able to answer
 // before the simulation starts.
 std::int64_t now_ticks();
+
+// The task id whose body this process is executing, or 0 for a process that runs no task body (a
+// testbench process, a backend bootstrap callback). Non-suspending, never throws, and it must be
+// answerable before the simulation starts (0).
+//
+// Per process, not per C++ stack: a slice of another task suspending in its own process must never
+// clobber this one, whereas a nested body on this very stack is handled by the core's
+// save/restore of the return value. Across a cross-language callback the two answers differ — the
+// C++ stack belongs to the caller, the identity to the process — and only the backend can tell
+// them apart, which is why the identity lives here and not in core bookkeeping.
+int owner_task();
+
+// Publishes owner_task's value; 0 clears it. Called by the core's dispatch entry (weave_task_main)
+// around every task body, and by nothing else.
+void set_owner_task(int task_id);
 
 // The only suspension point (see semantics 4 above).
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status);

@@ -53,7 +53,9 @@ void Event::wait() {
   v.push_back(w);
   detail::trace_event()->trace("event wait: queued as wake ev {} ({} in snapshot)", w, v.size());
   // Edge semantics: being snapshotted by set() is enough to be released, the flag is not rechecked.
-  detail::backend_wait(w, -1);
+  // A leaf wait: allowed outside a task context (a testbench process waiting on a cross-language
+  // event has nothing to cancel and no wait-graph node to publish).
+  detail::backend_wait(w, -1, detail::Ownerless::Allow);
 }
 
 struct Pulse::Impl {
@@ -87,7 +89,7 @@ void Pulse::wait() {
   v.push_back(w);
   detail::trace_event()->trace("pulse wait: queued as wake ev {} ({} in snapshot)", w, v.size());
   // No state is consulted on the way out: only a fire() that saw this waiter releases it.
-  detail::backend_wait(w, -1);
+  detail::backend_wait(w, -1, detail::Ownerless::Allow);
 }
 
 }  // namespace weave

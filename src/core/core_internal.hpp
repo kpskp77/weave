@@ -88,19 +88,30 @@ struct TaskRecord {
 // counter — otherwise, if create_event/push_back threw, the id would already be consumed while the
 // record never landed, permanently skewing the id→index mapping.
 extern std::deque<TaskRecord> g_tasks;
-extern int g_current;  // Task id of the currently executing slice; -1 = no task context
-                       // (harness chain)
 extern int g_root;
 
 TaskRecord& record(int id);
 TaskRecord& current();
 
-// The single blocking point: every primitive enters the backend wait through here. Duties: cancel
-// pre-check → state marking → saving/restoring g_current → cancellation injection.
+// The task whose body the executing process is running, or -1 when there is none: the identity is
+// the backend's (port::owner_task), which keeps it per simulation process — a slice of another task
+// can therefore never overwrite it. Non-suspending and non-throwing, unlike current().
+int current_id() noexcept;
+
+// Whether a suspension may happen outside a task context. Only leaf waits (sleep / Event::wait /
+// sv::Edge::wait) allow it: they are a bare backend wait, so an ownerless caller loses nothing but
+// cancellation and the wait-graph entry. Every combinator and every ownership-carrying primitive
+// (Lock/Semaphore/Barrier/Queue, Task::await, wait_for/timeout, gather, ...) keeps rejecting it —
+// they hand a TaskRecord to a queue head or need the cancel leg, which an ownerless caller does not
+// have.
+enum class Ownerless { Forbid, Allow };
+
+// The single blocking point: every primitive enters the backend wait through here. Duties: identity
+// resolution (port::owner_task) → cancel pre-check → state marking → cancellation injection.
 // The suspended party is always current(): under asyncio semantics a suspension is always a
 // self-suspension (operating on other tasks is always wakeup/cancellation, never suspension), so
 // no external task record is accepted as a parameter.
-int backend_wait(int ev_id, std::int64_t timeout_ticks);
+int backend_wait(int ev_id, std::int64_t timeout_ticks, Ownerless ownerless = Ownerless::Forbid);
 
 void dispatch_completed(TaskRecord& r);
 void add_done_callback(int id, std::function<void()> cb);

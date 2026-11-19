@@ -6,7 +6,7 @@
 // sv/weave_pkg.sv, and provides the bootstrap entries the testbench top needs.
 //
 // DPI boundary:
-//   imports (provided by SV): weave_sv_* — event table, three-legged wait, spawn
+//   imports (provided by SV): weave_sv_* — event table, three-legged wait, spawn, task identity
 //   exports (this file)     : weave_start / weave_test_status — tb bootstrap
 //                             weave_sv_edge_id / weave_sv_edge_bind — named cross-language
 //                             edges (include/weave/sv.hpp)
@@ -28,6 +28,10 @@ int weave_sv_create_event();
 void weave_sv_destroy_event(int ev_id);
 long long weave_sv_ticks_per_sec();
 long long weave_sv_now_ticks();
+// Task identity of the calling simulation process (0 = no task body); weave_sv_set_owner is called
+// by the core dispatch entry and 0 clears the entry.
+int weave_sv_current_task();
+void weave_sv_set_owner(int task_id);
 void weave_sv_set_root_done_ev(int ev_id);
 int weave_sv_edge_id(const char* name);
 void weave_sv_edge_bind(const char* name, int ev_id);
@@ -54,6 +58,12 @@ std::int64_t ticks_per_sec() {
 }
 std::int64_t now_ticks() {
   return weave_sv_now_ticks();
+}
+int owner_task() {
+  return weave_sv_current_task();
+}
+void set_owner_task(int task_id) {
+  weave_sv_set_owner(task_id);
 }
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
   weave_sv_wait(ev_id, timeout_ticks, abort_id, status);

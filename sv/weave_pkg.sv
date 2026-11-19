@@ -54,6 +54,15 @@ package weave_pkg;
   int ev_next_id = 0;
   int root_done_ev = -1;
 
+  // ── process → task identity ─────────────────────────────────────────────
+  // Which weave task body the calling process is executing (0 = none; task ids start at 1). Per
+  // simulation process, which is exactly what a C++-side scalar cannot represent: a slice of a task
+  // suspending in *its* process must not disturb the identity of a process that called into C++
+  // through a cross-language export, where the C++ stack belongs to the caller (see
+  // src/core/port.hpp — owner_task). Entries are written and removed by the core dispatch entry
+  // (weave_task_main → weave_sv_set_owner), so no spawning code has to remember to touch it.
+  int p_owner [process];
+
   // ── waiter registry ─────────────────────────────────────────────────────
   // One entry per suspended waiter, keyed by a never-recycled wait id (so a late deadline can never
   // be mistaken for a newer wait, and a stale wakeup can never be taken for a fresh one).
@@ -148,9 +157,28 @@ package weave_pkg;
   export "DPI-C" function weave_sv_destroy_event;
   export "DPI-C" function weave_sv_ticks_per_sec;
   export "DPI-C" function weave_sv_now_ticks;
+  export "DPI-C" function weave_sv_current_task;
+  export "DPI-C" function weave_sv_set_owner;
   export "DPI-C" function weave_sv_set_root_done_ev;
   export "DPI-C" task weave_sv_wait;
   export "DPI-C" task weave_sv_wait_done;
+
+  // Task identity of the calling process. Both must be automatic: process::self() is illegal in a
+  // static (module/package-scope) function context. A process that runs no task body — a
+  // testbench `initial`, a bootstrap callback — has no entry and therefore reports 0.
+  function automatic int weave_sv_current_task();
+    process p = process::self();
+    if (p_owner.exists(p)) return p_owner[p];
+    return 0;
+  endfunction
+
+  function automatic void weave_sv_set_owner(input int task_id);
+    process p = process::self();
+    if (task_id == 0)
+      p_owner.delete(p);
+    else
+      p_owner[p] = task_id;
+  endfunction
 
   // A fork...join_none child does not start until the parent blocks — consistent with asyncio
   // create_task's "scheduled, not run immediately" semantics.

@@ -55,9 +55,9 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
 ```
 
 - Core bookkeeping **may only depend on `port.hpp`** — its 6 primitives (`spawn` / `create_event` /
-  `trigger` / `destroy_event` / `ticks_per_sec` / `wait`) plus the one non-suspending query
-  (`now_ticks`) and the `weave_task_main` dispatch entry — and internal headers, and must never
-  reference DPI/SystemC/thread APIs directly.
+  `trigger` / `destroy_event` / `ticks_per_sec` / `wait`) plus the two non-suspending queries
+  (`now_ticks`, `owner_task`), the identity write (`set_owner_task`) and the `weave_task_main`
+  dispatch entry — and internal headers, and must never reference DPI/SystemC/thread APIs directly.
 - Backend selection is a compile-time macro only (`src/core/config.hpp`, mutually exclusive, SVDPI
   by default); `--backend=` only picks it (and therefore the matching package). The public headers
   never branch on the macro, so it is not part of the installed API.
@@ -191,10 +191,15 @@ stylua <changed .xmake>                                                    # see
   `nm -D <exe> | grep _ZTIN5weave` (all `U`, definitions only in libweave.so — a `D`/`V` in the exe
   means a `what()` was written back as inline). See the ABI notes in backends.md.
 - Time conversion uses `__int128` to prevent overflow; `ticks_per_sec()` is queried once and cached.
-- The clock query (`port::now_ticks`) is the port's only non-suspending primitive and the core clamps
-  it monotonically non-decreasing; `wait_until` must return **without suspending** for an expired
-  deadline (sleeping 0 instead would be a yield, which is a different operation) and `now()` must
-  saturate rather than throw / divide by zero when a backend reports `ticks_per_sec() == 0`.
+- The clock query (`port::now_ticks`) and the identity query (`port::owner_task`) are the port's two
+  non-suspending primitives; the core clamps the clock monotonically non-decreasing, `wait_until`
+  must return **without suspending** for an expired deadline (sleeping 0 instead would be a yield,
+  which is a different operation) and `now()` must saturate rather than throw / divide by zero when a
+  backend reports `ticks_per_sec() == 0`.
+- **SVDPI: C++ reached from a consumer's own DPI import must set the DPI scope to `weave_pkg` first**
+  — every suspension and `current_task()` call back into the package, and VCS 2018.09 aborts with
+  `Error-[DPI-DXFNF] … 'weave_sv_current_task' … is not defined or visible` when the entry scope is
+  the consumer's package (shuttle hit exactly this) instead of a module that imported `weave_pkg`.
 - **`sv::Edge` is bound by name, and an edge is never buffered**: the testbench's `weave_edge` must
   be constructed before the C++ side fires (the probe in `tests/weave_tb.sv` builds its edges before
   `weave_run`, so the responders are registered in the first delta the run suspends in). A leg that

@@ -27,7 +27,8 @@ The DPI boundary (`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`):
   `weave_sv_trigger` (one-shot wakeup: fires the event and marks the waiters registered on that id),
   `weave_sv_create_event` / `destroy_event` (event table), `weave_sv_ticks_per_sec`,
   `weave_sv_now_ticks` (current `$time` in ticks — a plain query, no suspension),
-  `weave_sv_set_root_done_ev`, `weave_sv_wait` (three-legged wait, the only blocking primitive:
+  `weave_sv_current_task` / `weave_sv_set_owner` (the task identity of the calling process, see
+  below), `weave_sv_set_root_done_ev`, `weave_sv_wait` (three-legged wait, the only blocking primitive:
   register in the package's waiter registry, suspend on the waiter's own wakeup event
   `if (w_state[wd] == 0) @(w_evt[wd])` — a durable flag plus a per-waiter edge, because a
   level-sensitive `wait` on the registry array costs O(N²) on VCS (see the `sv/weave_pkg.sv`
@@ -140,13 +141,47 @@ references that the dynamic linker resolves to that same copy at load time. Cons
 Loading the `weave` and example/test libraries via `-sv_lib` (the VCS scenario) works the same way:
 the single copy of RTTI inside the library is shared through the dynamic linker.
 
+### Task identity across the DPI boundary
+
+`port::owner_task()` — "which task body is this *process* executing, 0 if none" — is the one piece
+of state that cannot live in `src/core`: it is per simulation process, while a C++ global is per
+process-wide. The two are not the same across a cross-language callback: when a testbench (or the
+harness) calls into a C++ export while another task is frozen inside an export window, the C++ stack
+belongs to the *caller*, so "the innermost `weave_task_main` frame" answers the wrong question, and
+the backend is the only layer that can tell the two parties apart.
+
+- SVDPI: `int p_owner [process]` in `sv/weave_pkg.sv`, read through
+  `weave_sv_current_task()` (must be `function automatic` — `process::self()` is illegal in a static
+  function context) and written through `weave_sv_set_owner()` (0 deletes the entry, which is how the
+  table stays bounded: `weave_task_main` clears it when the body returns).
+- SystemC: one `int g_owner` (the simulation is a single OS thread; the coroutines that SystemC calls
+  "processes" are not OS threads), saved and restored *inside* `port::wait` — a coroutine resumes
+  into exactly the frame that suspended, so the value it had on entry is its own identity again.
+  Without that save/restore a resumed task would read the identity of whichever process suspended
+  last.
+- Ownerless suspension: `port::wait` accepts `abort_id < 0` (no cancel leg) for exactly the leaf
+  waits that may run outside a task body (`sleep`, `Event::wait`, `sv::Edge::wait`). SystemC builds
+  the wait without the abort leg; SV's `weave_sv_wait` already handled `abort_id < 0` because the
+  package's own `weave_edge::wait_edge` uses that form. Everything else — combinators and
+  ownership-carrying primitives — still rejects an ownerless caller with
+  `std::logic_error("weave: blocking primitive outside task context")`: they hand a `TaskRecord` to a
+  queue head or need the cancel leg, so an ownerless waiter would never be handed off.
+- Consumption side (SVDPI): every suspension — and `current_task()`, which now asks the backend —
+  calls back into the package, so C++ code reached from a **consumer's own** DPI import must have the
+  DPI scope set to `weave_pkg` before it touches weave. VCS 2018.09 otherwise aborts the whole run
+  with `Error-[DPI-DXFNF] … 'weave_sv_current_task' … is not defined or visible` because the entry
+  scope is the consumer's package, not a module that imported ours. Setting it once per import
+  (`svGetScopeFromName("weave_pkg")` cached, `svSetScope` re-entrantly restored on exit) is
+  sufficient; a testbench that imports `weave_pkg` at module scope needs nothing.
+
 ## Adding a backend
 
 1. Add a macro to `src/core/config.hpp` (including the mutual-exclusion check and default
    logic).
 2. Create `src/backend/<name>.cpp`, the whole file guarded by
-   `#if defined(WEAVE_BACKEND_<NAME>)`, implementing the 7 `weave::port` primitives plus a bootstrap
-   entry point of your choice (see svdpi.cpp / systemc.cpp).
+   `#if defined(WEAVE_BACKEND_<NAME>)`, implementing the 6 `weave::port` primitives, the timer/identity
+   queries and writes (`ticks_per_sec` / `now_ticks` / `owner_task` / `set_owner_task`) plus a
+   bootstrap entry point of your choice (see svdpi.cpp / systemc.cpp).
 3. xmake mapping: add a value to the `--backend` option, compare `get_config` inside the target to
    define the macro and the dependencies.
 4. Regression: `just smoke` must be fully green (name any new self-check target `weave_smoke_*` and

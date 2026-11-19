@@ -14,7 +14,6 @@ namespace weave {
 namespace detail {
 
 std::deque<TaskRecord> g_tasks;
-int g_current = -1;
 int g_root = -1;
 
 TaskRecord& record(int id) {
@@ -25,22 +24,48 @@ TaskRecord& record(int id) {
   return g_tasks[static_cast<std::size_t>(id - 1)];
 }
 
-TaskRecord& current() {
-  if (g_current < 0) throw std::logic_error("weave: blocking primitive outside task context");
-  return record(g_current);
+int current_id() noexcept {
+  // port::owner_task reports the process's task, or 0 when the process runs none; 0 is not a task
+  // id (ids start at 1). An out-of-range id is unreachable (an id is only published while its
+  // record lives, and records are never destroyed) — map it to "no task" rather than throwing,
+  // because "never throws" is part of this query's contract.
+  const int id = port::owner_task();
+  return id >= 1 && static_cast<std::size_t>(id) <= g_tasks.size() ? id : -1;
 }
 
-int backend_wait(int ev_id, std::int64_t timeout_ticks) {
-  TaskRecord& me = current();  // The suspended party is always the current task (only itself)
-  if (me.cancel_armed) {       // A cancellation issued while suspended is injected at the next
-                               // blocking point
+TaskRecord& current() {
+  const int id = current_id();
+  if (id < 0) throw std::logic_error("weave: blocking primitive outside task context");
+  return g_tasks[static_cast<std::size_t>(id - 1)];
+}
+
+int backend_wait(int ev_id, std::int64_t timeout_ticks, Ownerless ownerless) {
+  const int id = current_id();
+  if (id < 0) {
+    if (ownerless != Ownerless::Allow)
+      throw std::logic_error("weave: blocking primitive outside task context");
+    // Ownerless leaf wait: the process runs no task body (a testbench process, a backend bootstrap
+    // callback), so there is no TaskRecord to mark, no wait-graph node to publish and nothing that
+    // could cancel the wait — the abort leg is left out instead of attached to some task's event.
+    int status = 0;
+    port::wait(ev_id, timeout_ticks, -1, &status);
+    return status;
+  }
+  TaskRecord& me = g_tasks[static_cast<std::size_t>(id - 1)];
+  if (terminal(me.state))
+    // The body already returned and the done callbacks are running (inside weave_task_main, after
+    // the identity has been cleared for the outer context): a suspension here would attach a
+    // terminal record to the wait graph and could never be cancelled.
+    throw std::logic_error("weave: blocking primitive outside task context");
+  if (me.cancel_armed) {  // A cancellation issued while suspended is injected at the next
+                          // blocking point
     me.cancel_armed = false;
-    trace_task()->debug("task {} '{}': CancelledError injected at blocking point ({})", g_current,
-                        me.name, me.cancel_msg.empty() ? "no reason" : me.cancel_msg);
+    trace_task()->debug("task {} '{}': CancelledError injected at blocking point ({})", id, me.name,
+                        me.cancel_msg.empty() ? "no reason" : me.cancel_msg);
     throw cancelled_with_msg(me.cancel_msg);
   }
   me.state = TaskState::WAITING;
-  trace_task()->trace("task {} '{}': suspend on ev={} timeout={}", g_current, me.name, ev_id,
+  trace_task()->trace("task {} '{}': suspend on ev={} timeout={}", id, me.name, ev_id,
                       timeout_ticks < 0 ? "none" : std::to_string(timeout_ticks));
   // Publish the suspension for the wait-graph diagnostics (debug::snapshot), and retract it on
   // every way out of this function — the cancellation throw included, which is why it is a guard
@@ -48,15 +73,13 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
   me.wait_ev = ev_id;
   me.wait_since = weave::now_ticks();
   auto retract = on_scope_exit([&me] { me.wait_ev = -1; });
-  const int saved = g_current;  // Slices of other tasks overwrite g_current while we are suspended
+  // No identity juggling around the suspension: the identity is owned by the backend per process,
+  // so a slice of another task (in its own process) cannot overwrite it, and this process is parked
+  // here — its entry keeps naming the task that is stopped. The port's single-active-process
+  // guarantee is what makes the read at the top of this function and the wait below one consistent
+  // observation.
   int status = 0;
-  // No task is "current" while the backend holds the process: the whole point of the identity is
-  // that it names the task *executing* right now. Without this, a caller running between two
-  // suspension points (the harness chain, a done callback, a backend bootstrap callback) would see
-  // whatever task happened to suspend last.
-  g_current = -1;
   port::wait(ev_id, timeout_ticks, me.abort_ev, &status);  // ← the only suspension point
-  g_current = saved;                                       // Restore this slice's task identity
   me.state = TaskState::RUNNING;
   if (status == WS_ABORTED) {
     me.cancel_armed = false;
@@ -66,11 +89,11 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks) {
     // cancellation hit.
     port::destroy_event(me.abort_ev);
     me.abort_ev = port::create_event();
-    trace_task()->debug("task {} '{}': woken by cancellation, injecting CancelledError ({})",
-                        g_current, me.name, me.cancel_msg.empty() ? "no reason" : me.cancel_msg);
+    trace_task()->debug("task {} '{}': woken by cancellation, injecting CancelledError ({})", id,
+                        me.name, me.cancel_msg.empty() ? "no reason" : me.cancel_msg);
     throw cancelled_with_msg(me.cancel_msg);
   }
-  trace_task()->trace("task {} '{}': resumed by {}", g_current, me.name,
+  trace_task()->trace("task {} '{}': resumed by {}", id, me.name,
                       status == WS_TIMEOUT ? "timeout" : "event");
   return status;
 }
@@ -106,7 +129,7 @@ void Task::await() {
   // The only deadlock edge the core can see: a task waiting for itself. Without the check this is
   // an eternal block (the task can never reach its own terminal state), which no timer can break
   // and no diagnostics can attribute.
-  if (id_ == detail::g_current) throw DeadlockError("weave: a task cannot await itself");
+  if (id_ == detail::current_id()) throw DeadlockError("weave: a task cannot await itself");
   auto& r = detail::record(id_);
   if (!detail::terminal(r.state)) detail::backend_wait(r.done_ev, -1);
   detail::dispatch_completed(r);
@@ -164,15 +187,18 @@ Task create_task(std::string name, std::function<void()> body) {
 }
 
 void sleep(duration t) {
-  detail::backend_wait(-1, detail::to_ticks(t));
+  // A leaf wait: usable outside a task context too (a testbench process has nothing to cancel and
+  // no wait-graph node to publish).
+  detail::backend_wait(-1, detail::to_ticks(t), detail::Ownerless::Allow);
 }
 
 std::optional<Task> current_task() noexcept {
   // record()/task_from_id() throw on an id that is out of range; the identity is only set to a live
   // id, so this is unreachable, but "never throws" is part of the contract here.
   try {
-    if (detail::g_current < 0) return std::nullopt;
-    return detail::task_from_id(detail::g_current);
+    const int id = detail::current_id();
+    if (id < 0) return std::nullopt;
+    return detail::task_from_id(id);
   } catch (...) {
     return std::nullopt;
   }
@@ -213,10 +239,13 @@ CancelledError cancelled_with_msg(std::string_view msg) noexcept {
 
 extern "C" void weave_task_main(int task_id) {
   auto& r = weave::detail::record(task_id);
-  // No save/restore of the previous identity: a backend process runs exactly one task and returns
-  // into simulation code afterwards, where "no task is current" is the truth. The identity is
-  // cleared again below before the done callbacks and the backend return.
-  weave::detail::g_current = task_id;
+  // The identity is the backend's, per simulation process (port::owner_task), so it is published
+  // and restored here — through the port, because only the backend can write it. Saving the
+  // previous value is what makes a body nested on this same stack (a harness calling
+  // weave_task_main from a cross-language callback) give the identity back to its caller; a slice
+  // of a *different* task lives in its own process and cannot reach this value at all.
+  const int saved_owner = weave::port::owner_task();
+  weave::port::set_owner_task(task_id);
   if (r.cancel_armed) {
     // The cancellation happened before the body was first scheduled: the body never runs
     r.cancel_armed = false;
@@ -245,8 +274,11 @@ extern "C" void weave_task_main(int task_id) {
                                          r.name);
     }
   }
-  weave::detail::g_current = -1;  // Done callbacks run with no task context
+  // Done callbacks run with no task context (they count completions, they do not suspend): 0 is
+  // published instead of the previous value, and the outer identity is restored on the way out.
+  weave::port::set_owner_task(0);
   auto cbs = std::exchange(r.done_callbacks, {});
   for (auto& cb : cbs) cb();        // e.g. gather counting (runs with no task context)
   weave::port::trigger(r.done_ev);  // Wakes awaiters / the test wait chain
+  weave::port::set_owner_task(saved_owner);
 }

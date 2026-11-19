@@ -157,9 +157,10 @@ private:
 // asyncio.current_task(), including the None case. Non-suspending, never throws: it may be used
 // from logging and diagnostic code.
 //
-// "Outside a task context" is now real: backend_wait clears the identity before the process
-// suspends (so a task resumed in a different process slice does not look current), and the task
-// dispatch entry clears it before running done callbacks and before returning to the backend.
+// "Outside a task context" is now real: the identity is owned per simulation process by the backend
+// (port::owner_task), so a task suspended in its own process cannot disturb the identity of a
+// process that called into C++ from simulation code, and the task dispatch entry clears it before
+// running done callbacks and before returning to the backend.
 std::optional<Task> current_task() noexcept;
 
 // Creates a task. As in asyncio: the new task does not run immediately, it is scheduled only after

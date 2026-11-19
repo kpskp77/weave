@@ -347,7 +347,7 @@ void TaskGroup::wait() {
   // took the wrong path.
   const auto& children = impl_->children;
   for (const Task& t : children) {
-    if (detail::task_id(t) == detail::g_current)
+    if (detail::task_id(t) == detail::current_id())
       throw DeadlockError("weave: TaskGroup::wait() called from one of the group's own children");
   }
   impl_->exited = true;

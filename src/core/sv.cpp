@@ -46,7 +46,9 @@ void Edge::fire() {
 
 void Edge::wait() {
   // Qualified: an unqualified detail:: here would mean weave::sv::detail, not the core one.
-  ::weave::detail::backend_wait(entry_->id, -1);  // No timeout leg: fire or cancellation only
+  // No timeout leg: fire or cancellation only. A leaf wait, so an ownerless caller (a testbench
+  // process) is allowed: it has no task record to cancel and no wait-graph node to publish.
+  ::weave::detail::backend_wait(entry_->id, -1, ::weave::detail::Ownerless::Allow);
 }
 
 bool Edge::bound() const noexcept {

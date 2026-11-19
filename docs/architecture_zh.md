@@ -12,7 +12,8 @@ C++ 测试逻辑 (WEAVE_TEST)
         │  公共 API (include/weave/)
         ▼
 核心状态管理 (src/core/) ── task/event/sync/time/registry + locks/queue/semaphore/barrier
-        │  唯一依赖：port.hpp（6 个原语 + 不挂起的 now_ticks 查询 + weave_task_main 派发入口）
+        │  唯一依赖：port.hpp（6 个原语 + 不挂起的 now_ticks / owner_task 查询
+        │  + set_owner_task 身份写入 + weave_task_main 派发入口）
         ▼
 后端适配器 (src/backend/) ── svdpi.cpp（默认）/ systemc.cpp
         │
@@ -34,12 +35,13 @@ C++ 测试逻辑 (WEAVE_TEST)
 1. **进程模型**：`spawn(id)` 创建一个仿真进程来执行 `weave_task_main(id)`；子进程只有在父进程到达
    下一个挂起点（或结束）之后才运行，等价于 asyncio `create_task` 的"已调度，但不立即执行"。
 2. **同一时刻只有一个活跃进程**：任意时刻至多有一个进程执行 C++ 状态维护代码（核心依赖这一点维持全局
-   状态一致，因此 `g_current` 之类的变量无需加锁）。
+   状态一致，因此核心的簿记状态无需加锁；"此刻执行的是哪个任务"的身份按进程保存在后端，见
+   [backends_zh](backends_zh.md) 的身份一节）。
 3. **一次性事件**：`create/trigger/destroy`；`trigger` 绝不能指向一个已被销毁的 id。
 4. **唯一的挂起点** `wait(ev, timeout, abort, status)`：事件、超时、取消三路竞争，同一时隙冲突时
-   **取消一路优先**。`ev_id < 0` 表示没有事件一路，`timeout_ticks < 0` 表示没有超时一路，但
-   **`abort_id` 必须始终是有效 id**：SystemC 适配器会无条件解析它（`event_by_id(abort_id)`），只有
-   SV 侧恰好能容忍它缺失。
+   **取消一路优先**。`ev_id < 0` 表示没有事件一路，`timeout_ticks < 0` 表示没有超时一路，
+   `abort_id < 0` 表示没有取消一路（此时 status 绝不会报 2）——这正是无主叶子等待所用的形状；
+   三路全关的等待会被拒绝。
 
 ## 关键设计决策
 
@@ -83,9 +85,13 @@ Python 3.8+ 中 `CancelledError` 是 `BaseException`），这样惯用的
 `Task::await` 的环（`a` 等 `b`、`b` 等 `a`）：await 这条边没有被记录，core 只知道
 终态事件。
 
-相关的一致性卫生：`g_current` 在进程挂起前、以及 done 回调运行前被清空，因此 `current_task()` 的含义
-是“此刻正在执行的任务”，而不是“最后挂起的那个任务”。否则 harness 链（注册测试驱动器、后端 bootstrap
-回调）会看到陈旧的 id，而任务上下文之外的 `current_task()` 也永远无法返回 `nullopt`。
+相关的一致性卫生：执行中任务的身份由**后端按仿真进程**保存（`port::owner_task`），不再是核心里的全局
+变量。因此，某个在自己的进程里挂起的任务，无法再干扰"从仿真代码回调进 C++ 的那个进程"的身份——过去
+测试台调用库的导出函数、而另一个任务正处于冻结状态时，看到的是"最后挂起的那个任务"。派发入口在 body
+前后发布身份（`port::set_owner_task`，并保存旧值，使同一栈上嵌套的 body 结束后原样归还），并在 done
+回调运行前清空，因此 `current_task()` 的含义是"此刻正在执行的任务"，任务上下文之外返回 `nullopt`。
+叶子等待（`sleep`、`Event::wait`、`sv::Edge::wait`）允许完全没有身份地运行：它退化为一次没有取消一路、
+也不进等待图的后端等待。
 
 ### 为什么 Event 采用边沿触发而非水平触发
 
@@ -128,7 +134,7 @@ SystemVerilog 的 `-> ev` 就是这种语义，而把它塞进 sticky 的 `Event
 
 内部以 int64 飞秒（10⁻¹⁵ s，与 SV 的最高精度一致）表示时间，提交给后端时按 `ticks_per_sec()` 向上
 取整，以保证"至少睡这么久"，而不是可能偏短。`now()` 走反方向：向后端询问当前 tick 数
-（`port::now_ticks`，端口契约里唯一不挂起的原语），用同一 tick 率换算，因此 `wait_until(now() + d)`
+（`port::now_ticks`，端口契约两个不挂起查询之一），用同一 tick 率换算，因此 `wait_until(now() + d)`
 与 `sleep(d)` 落在同一个 tick 上。读时钟不会推进时钟（仿真器在两个挂起点之间本就不走时间），且 core
 把返回值单调钳制：测量空闲区间的调用方不会看到时间倒退。`sleep(0)` 被钳制为 0 tick，但仍经过唯一的阻塞点：调用方
 真的挂起并让出调度步，而仿真时钟不前进（≡ `asyncio.sleep(0)`）。零 tick 等待并不是绕过端口的空操作

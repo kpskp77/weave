@@ -26,6 +26,7 @@ DPI 边界（`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`）：
   `weave_sv_trigger`（一次性唤醒：触发事件并标记注册在该 id 上的等待者）、
   `weave_sv_create_event` / `destroy_event`（事件表）、`weave_sv_ticks_per_sec`、
   `weave_sv_now_ticks`（当前 `$time` 的 tick 数——纯查询，不挂起）、
+  `weave_sv_current_task` / `weave_sv_set_owner`（调用进程的任务身份，见下文）、
   `weave_sv_set_root_done_ev`、`weave_sv_wait`（三路等待，唯一的阻塞原语：先在包的等待者注册表中
   注册，再在等待者自己的唤醒事件上挂起 `if (w_state[wd] == 0) @(w_evt[wd])`，即一个持久标志加
   一条每等待者边沿，因为对注册表数组做水平敏感的 `wait` 在 VCS 上是 O(N²) 开销（见
@@ -123,11 +124,38 @@ linkage：每个用到该类型的翻译单元都会发出一个弱定义；又�
 通过 `-sv_lib` 加载 `weave` 与示例/测试库（VCS 场景）的机制相同：库中唯一的一份 RTTI 通过动态链接器
 共享。
 
+### 跨 DPI 边界的任务身份
+
+`port::owner_task()`——"这个**进程**正在执行哪个任务 body，没有则 0"——是唯一无法放在 `src/core` 里的
+状态：它按仿真进程存活，而 C++ 全局变量是整进程唯一的。跨语言回调时两者并不等同：当测试台（或 harness）
+在另一个任务冻结于某个导出窗口期间回调进 C++ 时，C++ 栈属于**调用方**，于是"最内层的
+`weave_task_main` 帧"回答的是错误的问题，只有后端能把两者区分开。
+
+- SVDPI：`sv/weave_pkg.sv` 中的 `int p_owner [process]`，经 `weave_sv_current_task()` 读（必须是
+  `function automatic`——`process::self()` 在静态函数上下文里非法），经 `weave_sv_set_owner()` 写
+  （0 即删除条目，表因此保持有界：`weave_task_main` 在 body 返回时清空）。
+- SystemC：一个 `int g_owner`（仿真是单 OS 线程，SystemC 所谓的"进程"是协程而不是线程），在
+  `port::wait` **内部**保存并恢复——协程恢复到的正是它挂起时的那个栈帧，因此进入时的值与恢复后的值
+  属于同一个身份。没有这次保存/恢复，被恢复的任务会读到"最后挂起的那个进程"的身份。
+- 无主挂起：`port::wait` 接受 `abort_id < 0`（没有取消一路），只给那些可能跑在任务 body 之外的叶子
+  等待使用（`sleep`、`Event::wait`、`sv::Edge::wait`）。SystemC 构造不带 abort 一路的等待；SV 的
+  `weave_sv_wait` 本来就支持 `abort_id < 0`，包自己的 `weave_edge::wait_edge` 用的就是这个形状。
+  其余全部——组合子与携带所有权的原语——仍以
+  `std::logic_error("weave: blocking primitive outside task context")` 拒绝无主调用方：它们要么把
+  `TaskRecord` 交给队列头，要么需要取消一路，无主等待者永远不会被交接。
+- 消费侧（SVDPI）：每次挂起、以及现在会向后端询问的 `current_task()`，都要回调进包，因此从**消费者
+  自己的** DPI import 到达的 C++ 代码，在触碰 weave 之前必须把 DPI 作用域设为 `weave_pkg`。否则
+  VCS 2018.09 会以 `Error-[DPI-DXFNF] … 'weave_sv_current_task' … is not defined or visible`
+  中止整场仿真——因为入口作用域是消费者的 package，而不是导入了 weave 的 module。每个 import 设一次
+  （缓存 `svGetScopeFromName("weave_pkg")`，退出时恢复 `svSetScope`）即可；在 module 作用域里
+  `import weave_pkg::*` 的测试台什么也不用做。
+
 ## 新增后端
 
 1. 在 `src/core/config.hpp` 中加入一个宏（包括互斥检查与默认逻辑）。
 2. 创建 `src/backend/<name>.cpp`，整个文件用 `#if defined(WEAVE_BACKEND_<NAME>)` 保护，实现
-   7 个 `weave::port` 原语，外加一个自选的 bootstrap 入口点（参考 svdpi.cpp / systemc.cpp）。
+   6 个 `weave::port` 原语、计时与身份查询/写入（`ticks_per_sec` / `now_ticks` / `owner_task` /
+   `set_owner_task`），外加一个自选的 bootstrap 入口点（参考 svdpi.cpp / systemc.cpp）。
 3. xmake 映射：给 `--backend` 选项加一个取值，在目标内比较 `get_config` 来定义宏与依赖。
 4. 回归：`just smoke` 必须全绿（新增自检目标请命名为 `weave_smoke_*`，并加入 justfile 的 `smoke`
    配方）。

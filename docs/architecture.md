@@ -13,8 +13,8 @@ C++ test logic (WEAVE_TEST)
         │  public API (include/weave/)
         ▼
 core bookkeeping (src/core/) ── task/event/sync/time/registry + locks/queue/semaphore/barrier
-        │  only dependency: port.hpp (6 primitives + the non-suspending now_ticks query
-        │  + the weave_task_main dispatch entry)
+        │  only dependency: port.hpp (6 primitives + the non-suspending now_ticks / owner_task
+        │  queries + the set_owner_task identity write + the weave_task_main dispatch entry)
         ▼
 backend adapters (src/backend/) ── svdpi.cpp (default) / systemc.cpp
         │
@@ -41,14 +41,16 @@ guarantees in summary:
    the child runs only after the parent hits its next suspension point (or finishes) — ≡ asyncio's
    `create_task` "scheduled, not run immediately".
 2. **Single active process**: at any instant at most one process executes C++ bookkeeping (the core
-   relies on this to maintain global state, so `g_current` and friends need no locks).
+   relies on this to maintain global state, so its bookkeeping needs no locks; the identity of the
+   executing task is per process and is kept by the backend, see the identity section of
+   [backends](backends.md)).
 3. **One-shot events**: `create/trigger/destroy`; `trigger` must never target an already destroyed
    id.
 4. **Single suspension point** `wait(ev, timeout, abort, status)`: a three-legged race
    (event/timeout/cancel), with the **cancel leg winning** same-slot conflicts. `ev_id < 0` drops
-   the event leg and `timeout_ticks < 0` drops the timeout leg, but **`abort_id` is always a live
-   id**: the SystemC adapter resolves it unconditionally (`event_by_id(abort_id)`), only the SV side
-   happens to tolerate a missing one.
+   the event leg, `timeout_ticks < 0` drops the timeout leg, and `abort_id < 0` drops the cancel leg
+   (status then never reports 2) — the shape an ownerless leaf wait uses. A wait with all three legs
+   off is rejected.
 
 ## Key design decisions
 
@@ -101,10 +103,15 @@ letting a human or a failing test decide. The same limit applies to a mutual
 `Task::await` cycle (`a` awaits `b` while `b` awaits `a`): the await edge is not recorded anywhere,
 only the terminal-state event is.
 
-Related hygiene: `g_current` is cleared before the process suspends and before done callbacks run,
-so `current_task()` means "the task executing right now" rather than "the last task that happened to
-suspend". Without it, the harness chain (the registered-test driver, backend bootstrap callbacks)
-would observe a stale id and `current_task()` outside a task could never return `nullopt`.
+Related hygiene: the identity of the executing task is kept **per simulation process by the backend**
+(`port::owner_task`), not in a core global. A task suspended in its own process therefore cannot
+disturb the identity of a process that called into C++ from simulation code — a testbench calling a
+library export while another task is frozen used to see whatever task suspended last. The dispatch
+entry publishes the identity around the body (`port::set_owner_task`, saving the previous value so a
+body nested on the same stack gives it back) and clears it before done callbacks run, so
+`current_task()` means "the task executing right now" and returns `nullopt` outside a body. A leaf
+wait (`sleep`, `Event::wait`, `sv::Edge::wait`) is allowed to run with no identity at all: it becomes
+a plain backend wait with no cancel leg and no wait-graph node.
 
 ### Why Event is edge-triggered, not level-triggered
 
@@ -159,7 +166,7 @@ leg winning a same-slot conflict).
 Internally int64 femtoseconds (10⁻¹⁵ s, matching SV's maximum precision); values are rounded up by
 `ticks_per_sec()` when submitted to the backend — guaranteeing "sleep at least this long" rather
 than possibly too short. `now()` goes the other way: it asks the backend for its current tick count
-(`port::now_ticks`, the contract's only non-suspending primitive) and converts with the same tick
+(`port::now_ticks`, one of the contract's two non-suspending queries) and converts with the same tick
 rate, so `wait_until(now() + d)` and `sleep(d)` land on the same tick. Reading the clock never
 advances it (a simulator does not move between two suspension points) and the core clamps the value
 monotonically: a caller measuring an idle interval cannot observe time going backwards. `sleep(0)` clamps to 0 ticks, which still passes through the single

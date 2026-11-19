@@ -44,6 +44,12 @@ namespace {
 
 std::unordered_map<int, std::unique_ptr<sc_core::sc_event>> g_events;
 int g_next_ev = 0;
+// Task identity of the process executing right now (src/core/port.hpp — owner_task): an SC_THREAD
+// runs exactly one weave task body and its C++ stack freezes with it. The whole simulation is one
+// OS thread, so a plain int is the exact analogue of the SV package's per-process table — what
+// makes it per *process* is wait()'s save/restore below. 0 = no task body (the reporting process,
+// sc_main).
+int g_owner = 0;
 
 sc_core::sc_event& event_by_id(int ev_id) {
   const auto it = g_events.find(ev_id);
@@ -91,30 +97,56 @@ std::int64_t now_ticks() {
   return static_cast<std::int64_t>(sc_core::sc_time_stamp().value());
 }
 
+int owner_task() {
+  return g_owner;
+}
+
+void set_owner_task(int task_id) {
+  g_owner = task_id;
+}
+
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
-  const sc_core::sc_event& ab = event_by_id(abort_id);
   const bool has_to = timeout_ticks >= 0;
+  const bool has_ab =
+      abort_id >= 0;  // No cancel leg: an ownerless suspension has nothing to cancel
+  // Every SystemC process is a coroutine on the one simulation thread, so g_owner holds whatever
+  // the last writer put there; the coroutine, however, resumes into exactly this frame, so the
+  // process's own identity is the value it had when it suspended. (The SVDPI backend needs no
+  // equivalent: there the identity is keyed by a real SV process, which no other process can
+  // disturb.)
+  const int saved_owner = g_owner;
   // Without a timeout leg, do not build an sc_time from a negative tick (negative time is
   // meaningless); SC_ZERO_TIME is used as a placeholder
   const sc_core::sc_time to =
       has_to ? sc_core::sc_time(timeout_ticks * tick_seconds(), sc_core::SC_SEC)
              : sc_core::SC_ZERO_TIME;
-  if (ev_id >= 0) {
-    const sc_core::sc_event& e = event_by_id(ev_id);
+  const sc_core::sc_event* e = ev_id >= 0 ? &event_by_id(ev_id) : nullptr;
+  const sc_core::sc_event* ab = has_ab ? &event_by_id(abort_id) : nullptr;
+  if (e != nullptr && ab != nullptr) {
     if (has_to)
-      sc_core::wait(to, e | ab);
+      sc_core::wait(to, *e | *ab);
     else
-      sc_core::wait(e | ab);
+      sc_core::wait(*e | *ab);
+  } else if (e != nullptr) {
+    if (has_to)
+      sc_core::wait(to, *e);
+    else
+      sc_core::wait(*e);
+  } else if (ab != nullptr) {
+    if (has_to)
+      sc_core::wait(to, *ab);
+    else
+      sc_core::wait(*ab);
+  } else if (has_to) {
+    sc_core::wait(to);  // Timeout leg only (ownerless sleep: no event to hit, nothing can cancel)
   } else {
-    if (has_to)
-      sc_core::wait(to, ab);
-    else
-      sc_core::wait(ab);
+    throw std::logic_error("weave: wait with no leg");
   }
+  g_owner = saved_owner;
   // On a same-slot conflict the cancel leg wins (consistent with weave_sv_wait in sv/weave_pkg.sv)
-  if (ab.triggered())
+  if (ab != nullptr && ab->triggered())
     *status = 2;
-  else if (ev_id >= 0 && event_by_id(ev_id).triggered())
+  else if (e != nullptr && e->triggered())
     *status = 0;
   else
     *status = 1;
