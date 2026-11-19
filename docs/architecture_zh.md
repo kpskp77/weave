@@ -90,8 +90,8 @@ Python 3.8+ 中 `CancelledError` 是 `BaseException`），这样惯用的
 测试台调用库的导出函数、而另一个任务正处于冻结状态时，看到的是"最后挂起的那个任务"。派发入口在 body
 前后发布身份（`port::set_owner_task`，并保存旧值，使同一栈上嵌套的 body 结束后原样归还），并在 done
 回调运行前清空，因此 `current_task()` 的含义是"此刻正在执行的任务"，任务上下文之外返回 `nullopt`。
-叶子等待（`sleep`、`Event::wait`、`sv::Edge::wait`）允许完全没有身份地运行：它退化为一次没有取消一路、
-也不进等待图的后端等待。
+叶子等待（`sleep`、`Event::wait`、`Pulse::wait`、`sv::Edge::wait`）允许完全没有身份地运行：它退化为
+一次没有取消一路、也不进等待图的后端等待。
 
 ### 为什么 Event 采用边沿触发而非水平触发
 

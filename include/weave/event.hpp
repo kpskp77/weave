@@ -35,8 +35,9 @@ class Pulse {
 public:
   Pulse();
 
-  // Blocks until the next fire(); a fire() that happened before this call is NOT remembered. Must
-  // be called from a task context (it suspends).
+  // Blocks until the next fire(); a fire() that happened before this call is NOT remembered. A leaf
+  // wait: it may also run outside a task context (a testbench process has nothing to cancel and no
+  // wait-graph node to publish).
   void wait();
 
   // Wakes every waiter present right now and advances generation(). Leaves no flag behind: a later

@@ -110,8 +110,8 @@ library export while another task is frozen used to see whatever task suspended 
 entry publishes the identity around the body (`port::set_owner_task`, saving the previous value so a
 body nested on the same stack gives it back) and clears it before done callbacks run, so
 `current_task()` means "the task executing right now" and returns `nullopt` outside a body. A leaf
-wait (`sleep`, `Event::wait`, `sv::Edge::wait`) is allowed to run with no identity at all: it becomes
-a plain backend wait with no cancel leg and no wait-graph node.
+wait (`sleep`, `Event::wait`, `Pulse::wait`, `sv::Edge::wait`) is allowed to run with no identity at
+all: it becomes a plain backend wait with no cancel leg and no wait-graph node.
 
 ### Why Event is edge-triggered, not level-triggered
 

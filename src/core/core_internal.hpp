@@ -99,11 +99,11 @@ TaskRecord& current();
 int current_id() noexcept;
 
 // Whether a suspension may happen outside a task context. Only leaf waits (sleep / Event::wait /
-// sv::Edge::wait) allow it: they are a bare backend wait, so an ownerless caller loses nothing but
-// cancellation and the wait-graph entry. Every combinator and every ownership-carrying primitive
-// (Lock/Semaphore/Barrier/Queue, Task::await, wait_for/timeout, gather, ...) keeps rejecting it —
-// they hand a TaskRecord to a queue head or need the cancel leg, which an ownerless caller does not
-// have.
+// Pulse::wait / sv::Edge::wait) allow it: they are a bare backend wait, so an ownerless caller
+// loses nothing but cancellation and the wait-graph entry. Every combinator and every
+// ownership-carrying primitive (Lock/Semaphore/Barrier/Queue, Task::await, wait_for/timeout,
+// gather, ...) keeps rejecting it — they hand a TaskRecord to a queue head or need the cancel leg,
+// which an ownerless caller does not have.
 enum class Ownerless { Forbid, Allow };
 
 // The single blocking point: every primitive enters the backend wait through here. Duties: identity

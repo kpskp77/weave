@@ -142,8 +142,8 @@ linkage：每个用到该类型的翻译单元都会发出一个弱定义；又�
   （`tests/scope_sc_thread_semantics.cpp` 钉住这一点）。用标量加 `port::wait` 内的保存/恢复，只能隔离
   "通过端口挂起"的协程，并且会把冻结任务的旧值留在那里给后来者读到。
 - 无主挂起：`port::wait` 接受 `abort_id < 0`（没有取消一路），只给那些可能跑在任务 body 之外的叶子
-  等待使用（`sleep`、`Event::wait`、`sv::Edge::wait`）。SystemC 构造不带 abort 一路的等待；SV 的
-  `weave_sv_wait` 本来就支持 `abort_id < 0`，包自己的 `weave_edge::wait_edge` 用的就是这个形状。
+  等待使用（`sleep`、`Event::wait`、`Pulse::wait`、`sv::Edge::wait`）。SystemC 构造不带 abort 一路的等待；
+  SV 的 `weave_sv_wait` 本来就支持 `abort_id < 0`，包自己的 `weave_edge::wait_edge` 用的就是这个形状。
   其余全部——组合子与携带所有权的原语——仍以
   `std::logic_error("weave: blocking primitive outside task context")` 拒绝无主调用方：它们要么把
   `TaskRecord` 交给队列头，要么需要取消一路，无主等待者永远不会被交接。

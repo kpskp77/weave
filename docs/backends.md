@@ -164,10 +164,10 @@ the backend is the only layer that can tell the two parties apart.
   have isolated coroutines that suspend *through* the port, and would leave the parked task's value
   behind for anyone else.
 - Ownerless suspension: `port::wait` accepts `abort_id < 0` (no cancel leg) for exactly the leaf
-  waits that may run outside a task body (`sleep`, `Event::wait`, `sv::Edge::wait`). SystemC builds
-  the wait without the abort leg; SV's `weave_sv_wait` already handled `abort_id < 0` because the
-  package's own `weave_edge::wait_edge` uses that form. Everything else — combinators and
-  ownership-carrying primitives — still rejects an ownerless caller with
+  waits that may run outside a task body (`sleep`, `Event::wait`, `Pulse::wait`, `sv::Edge::wait`).
+  SystemC builds the wait without the abort leg; SV's `weave_sv_wait` already handled
+  `abort_id < 0` because the package's own `weave_edge::wait_edge` uses that form. Everything else —
+  combinators and ownership-carrying primitives — still rejects an ownerless caller with
   `std::logic_error("weave: blocking primitive outside task context")`: they hand a `TaskRecord` to a
   queue head or need the cancel leg, so an ownerless waiter would never be handed off.
 - Consumption side (SVDPI) — the backend owns the DPI scope: every suspension, and
