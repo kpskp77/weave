@@ -3,10 +3,18 @@
 # target with on_run (see xmake.lua), the same arrangement as the simlog project:
 #
 #   xmake run weave_smoke_svdpi_vcs      # payload: libweave_smoke_svdpi    (tests/ bodies)
+#   xmake run weave_smoke_fatal_svdpi_vcs # payload: libweave_fatal_svdpi   (fatal path, inverted
+#                                         #   judgement, see --expect-fatal)
 #   xmake run weave_examples_svdpi_vcs   # payload: libweave_examples_svdpi  (examples/ programs)
 #
 # Usage:
 #   tests/svdpi/run.sh <payload.so>
+#   tests/svdpi/run.sh --expect-fatal <payload.so>
+#
+# --expect-fatal inverts the judgement: the payload deliberately violates the port contract
+# (tests/fatal_semantics.cpp), so the run must be terminated by the package's $fatal with the core's
+# "weave: fatal:" headline and must never print the pass marker. Anything else is a failure — a
+# fatal path that is caught or swallowed has to be visible as one.
 #
 # Flow: locate vcs ($VCS_HOME/bin/vcs or PATH) → compile sv/weave_pkg.sv + tests/weave_tb.sv
 # in a dedicated work directory next to the payload → run simv with the payload via
@@ -19,6 +27,11 @@ set -uo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd -- "$here/../.." && pwd)
+expect_fatal=0
+if [[ ${1:-} == "--expect-fatal" ]]; then
+  expect_fatal=1
+  shift
+fi
 lib=${1:-}
 
 # Locate vcs exactly the way the old C++ driver did: $VCS_HOME/bin/vcs first, then PATH.
@@ -33,7 +46,7 @@ if [[ -z $vcs ]]; then
   exit 0
 fi
 if [[ -z $lib || ! -f $lib ]]; then
-  echo "[svdpi-test] usage: run.sh <payload.so>" >&2
+  echo "[svdpi-test] usage: run.sh [--expect-fatal] <payload.so>" >&2
   exit 2
 fi
 lib=$(cd -- "$(dirname -- "$lib")" && pwd)/$(basename -- "$lib")
@@ -57,13 +70,31 @@ if ! (cd "$work" &&
 fi
 
 echo "[svdpi-test] running simv (-sv_lib $base)"
-if ! (cd "$work" && timeout 300 ./simv -sv_root "$libdir" -sv_lib "$base" \
-  >simv.log 2>&1 </dev/null); then
-  cat "$work/simv.log"
+simv_status=0
+(cd "$work" && timeout 300 ./simv -sv_root "$libdir" -sv_lib "$base" \
+  >simv.log 2>&1 </dev/null) || simv_status=$?
+cat "$work/simv.log"
+
+if [[ $expect_fatal == 1 ]]; then
+  # Inverted judgement (see the header): the pass marker must be absent, the fatal headline present.
+  # The exit status is deliberately not required to be non-zero: VCS is not documented to fail every
+  # $fatal flow, so the markers stay authoritative, exactly as they are for the normal judgement.
+  if grep -q "WEAVE TEST PASSED" "$work/simv.log"; then
+    echo "[svdpi-test] FAIL: the run reached the pass marker instead of dying on the fatal path" >&2
+    exit 1
+  fi
+  if ! grep -q "weave: fatal:" "$work/simv.log"; then
+    echo "[svdpi-test] FAIL: no 'weave: fatal:' headline, see $work/simv.log" >&2
+    exit 1
+  fi
+  echo "[svdpi-test] ok $base (fatal path: the run was terminated)"
+  exit 0
+fi
+
+if [[ $simv_status -ne 0 ]]; then
   echo "[svdpi-test] FAIL: simv exited non-zero, see $work/simv.log" >&2
   exit 1
 fi
-cat "$work/simv.log"
 
 if ! grep -q "WEAVE TEST PASSED" "$work/simv.log"; then
   echo "[svdpi-test] FAIL: pass marker missing, see $work/simv.log" >&2

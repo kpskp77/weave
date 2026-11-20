@@ -67,15 +67,14 @@ Python 3.8+ 中 `CancelledError` 是 `BaseException`），这样惯用的
 `catch (const std::exception&)` 兜底就不会悄悄吞掉取消——一旦吞掉，任务会错误地以 DONE 结束，
 破坏 gather / TaskGroup / wait_for 对 CANCELLED 终态的判定。反之，`TimeoutError` **确实派生自
 `std::exception`**（对应 asyncio 的 `TimeoutError`，它是普通的 `Exception`），因为超时属于正常
-失败路径，通用的日志与兜底代码应当能够处理。`DeadlockError` 同理属于普通失败：它是 `std::logic_error`，
-是编程错误而不是取消。
+失败路径，通用的日志与兜底代码应当能够处理。
 
 ### 死锁诊断：只诊断 core 能看见的边
 
-`DeadlockError`（派生自 `std::logic_error`，即普通的 `std::exception`）只针对内部记账确实知道的两条
-等待环：`Task::await()` 自身（比较正在执行的任务 id 与句柄 id），以及在组内某个子任务里调用
-`TaskGroup::wait()`（组要等全部子任务落地，包括调用者自己）。后一项检查发生在**封组之前**，因此抛出
-异常不会把这个组弄坏。两者都是对已有数据的一次比较，代价可忽略。
+内部记账确实能看见的等待环**直接终止运行**，而不是抛异常：`Task::await()` 自身（比较正在执行的任务 id
+与句柄 id），以及在组内某个子任务里调用 `TaskGroup::wait()`（组要等全部子任务落地，包括调用者自己）。
+两者都走 `detail::fatal_violation` → `port::fatal`，先打印诊断并 dump 等待图（见下文"契约违例为何直接
+终止运行"）。两者都是对已有数据的一次比较，代价可忽略；`TaskGroup` 的检查发生在封组之前。
 
 刻意**不**诊断的是经过 `Event` 的环：“谁会 set 我正在等的事件”在 API 表面上不可表达——`Event` 是值
 对象，任何人都可以 `set()`——所以 core 若去建这张图只能是猜。这一类挂死只能被“勘察”而不是被“证明”：
@@ -92,6 +91,37 @@ Python 3.8+ 中 `CancelledError` 是 `BaseException`），这样惯用的
 回调运行前清空，因此 `current_task()` 的含义是"此刻正在执行的任务"，任务上下文之外返回 `nullopt`。
 叶子等待（`sleep`、`Event::wait`、`Pulse::wait`、`sv::Edge::wait`）允许完全没有身份地运行：它退化为
 一次没有取消一路、也不进等待图的后端等待。
+
+### 契约违例为何直接终止运行
+
+有些违例并不是某次运行失败，而是运行前提失败：对这类问题，core 不能指望调用方配合——异常总是可捕获的，
+被吞掉之后运行只能挂死：没有 `TaskRecord` 进入 FAILED，`root_status()` 保持 0，于是照样打出
+`WEAVE TEST PASSED`。无主站点更糟：调用方可能是使用方自己的 `export "DPI-C"` 回调进来的进程，
+经仿真器退栈进入那个 export 是未定义行为，weave 无法防护。类型层次在这里帮不上忙——`catch (...)`
+总是存在的。
+
+于是 port 有了第五个原语 `port::fatal`：`detail::fatal_violation`（src/core/task.cpp）拼好诊断，
+以 `critical` 级别写进 simlog——致命诊断是关于仿真状态的报告，所以它和其余 trace 在同一个流、同一个
+仿真时间戳下（`WEAVE_SITE` 提供 `file:line`）：
+
+```
+[           0 ps][weave.debug][critical] weave: fatal: a task cannot await itself (site src/core/task.cpp:185, task 2 'fatal_semantics')
+```
+
+这正是它进入仿真器自己的记录（SVDPI 的 sink 经 `vpi_printf` 输出，所以 `simv -l run.log` 里有它）
+以及使用方文件 sink 的原因——直接写 `stderr` 两边都不会有。随后 `debug::dump("fatal")` 打印等待图，
+`detail::flush_trace()` 刷 sink，再调 `port::fatal`，由各后端映射到自己的失败通道：SVDPI 调用
+`sv/weave_pkg.sv` 的 `weave_sv_fatal`（`$fatal(1, …)`，走既有的 DPI scope guard），SystemC 报
+`SC_REPORT_FATAL("weave", …)`。第二条通道会把同一行诊断再带一次，因此即使 `SIMLOG_LEVEL` 把 weave
+的所有 sink 都静音，诊断依然存在——两条路径都不会让运行被误认为通过。全程没有任何退栈，仿真以非零
+状态结束。回归正是钉这一点：`tests/fatal_semantics.cpp`（故意的自 await）编进独立载荷对，由
+`tests/expect_fatal.sh` 与 `tests/svdpi/run.sh --expect-fatal` 以**反向**期望判定——诊断行必须在，
+通过标记必须不在。
+
+四处致命站点：可诊断的等待环（`Task::await()` 自身、组内子任务里的 `TaskGroup::wait()`）、在没有
+weave 任务的进程里调用阻塞原语、body 返回之后的挂起（done 回调）。其余调用方能恢复的误用——
+`Lock`/`Semaphore` 协议错误、`as_completed`/`TaskGroup` 误用、无效任务句柄——都在任何状态被改动之前
+抛出，依然是普通的 `std::logic_error`。
 
 ### 为什么 Event 采用边沿触发而非水平触发
 

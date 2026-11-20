@@ -110,12 +110,32 @@ int current_id() noexcept;
 // which an ownerless caller does not have.
 enum class Ownerless { Forbid, Allow };
 
+// "where the violation was detected" for fatal_violation's report: file:line, plus the primitive in
+// `what`. __func__ is deliberately not concatenated — it is a predefined identifier rather than a
+// macro, so it cannot be spliced into a literal at compile time.
+#define WEAVE_DETAIL_STRINGIFY2(x) #x
+#define WEAVE_DETAIL_STRINGIFY(x) WEAVE_DETAIL_STRINGIFY2(x)
+#define WEAVE_SITE (__FILE__ ":" WEAVE_DETAIL_STRINGIFY(__LINE__))
+
 // The single blocking point: every primitive enters the backend wait through here. Duties: identity
 // resolution (port::owner_task) → cancel pre-check → state marking → cancellation injection.
 // The suspended party is always current(): under asyncio semantics a suspension is always a
 // self-suspension (operating on other tasks is always wakeup/cancellation, never suspension), so
 // no external task record is accepted as a parameter.
 int backend_wait(int ev_id, std::int64_t timeout_ticks, Ownerless ownerless = Ownerless::Forbid);
+
+// Unrecoverable contract violation: prints the diagnosis together with the identity that hit it,
+// dumps the wait graph, flushes the trace and ends the run through port::fatal (never returns).
+//
+// Violations that are *state-independent* come here instead of throwing because the core cannot
+// guarantee the caller's catch: the exception would either be swallowed — leaving a run that can
+// only hang looking green, since there is no failing task to report — or, at a site reached
+// without a task context, unwind through the simulator into a consumer's own DPI export, which is
+// undefined behaviour weave cannot guard. Sites where nothing was mutated and the caller can
+// recover (Lock/Semaphore misuse, combinator misuse) still throw std::logic_error.
+//
+// site: the diagnostic location, built from WEAVE_SITE; what: one line, no trailing period.
+[[noreturn]] void fatal_violation(const char* site, const char* what);
 
 void dispatch_completed(TaskRecord& r);
 void add_done_callback(int id, std::function<void()> cb);

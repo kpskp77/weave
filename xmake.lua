@@ -5,6 +5,8 @@
 -- Target grouping (keep same-kind targets adjacent, do not interleave):
 --   weave           core library (backend chosen by --backend)
 --   smoke payloads  weave_smoke_sc / weave_smoke_svdpi (+ weave_smoke_svdpi_vcs phony runner)
+--   fatal payloads  weave_fatal_sc / weave_fatal_svdpi (+ inverted-judgement phony runners: a
+--                   violation must end the run, so these cannot share the smoke payloads)
 --   examples        weave_examples_sc (systemc) / weave_examples_svdpi (svdpi, + phony runner)
 -- Regression entries live in the justfile (just smoke / just examples); this file
 -- defines build targets only, and the two regressions are independent.
@@ -156,6 +158,66 @@ target("weave_smoke_svdpi_vcs", function()
     os.execv("bash", {
       path.join(os.projectdir(), "tests/svdpi/run.sh"),
       target:dep("weave_smoke_svdpi"):targetfile(),
+    })
+  end)
+end)
+
+-- ── fatal-path payloads (tests/fatal_semantics.cpp; run by just smoke) ─────
+
+-- Unrecoverable contract violations (port.hpp guarantee 5: self-await, a TaskGroup child waiting on
+-- its own group, a suspension with no task) terminate the simulation instead of throwing, so their
+-- assertions cannot live in the shared smoke payloads: the process dies inside the first case. Each
+-- backend gets its own payload pair here, and the wrapper targets judge with reversed expectation
+-- (tests/expect_fatal.sh, tests/svdpi/run.sh --expect-fatal): the run must die with the core's
+-- "weave: fatal:" headline and must never print the pass marker.
+--
+-- The payloads are named weave_fatal_* rather than weave_smoke_*: the smoke prefix marks the phony
+-- wrappers actually run by the regression (see the top-of-file grouping note).
+target("weave_fatal_sc", function()
+  set_kind("binary")
+  set_default(false)
+  set_warnings("all", "extra", "error")
+  add_includedirs("include")
+  add_defines("WEAVE_BACKEND_SYSTEMC")
+  add_files("src/**.cpp", "tests/fatal_semantics.cpp", "tests/sc_main.cpp")
+  add_packages("systemc", "simlog")
+end)
+
+target("weave_fatal_svdpi", function()
+  set_kind("shared")
+  set_default(false)
+  set_warnings("all", "extra", "error")
+  add_includedirs("include")
+  add_defines("WEAVE_BACKEND_SVDPI")
+  add_files("src/**.cpp", "tests/fatal_semantics.cpp")
+  add_packages("svdpi", "simlog")
+end)
+
+-- SystemC: the binary aborts (SC_REPORT_FATAL), so the phony wrapper runs it through
+-- tests/expect_fatal.sh, which asserts the death instead of passing it to `just` as a build error.
+target("weave_smoke_fatal_sc", function()
+  set_kind("phony")
+  set_default(false)
+  add_deps("weave_fatal_sc")
+  on_run(function(target)
+    os.execv("bash", {
+      path.join(os.projectdir(), "tests/expect_fatal.sh"),
+      target:dep("weave_fatal_sc"):targetfile(),
+    })
+  end)
+end)
+
+-- SVDPI: the same VCS flow as weave_smoke_svdpi_vcs with the judgement inverted ($fatal terminates
+-- simv, so the pass marker is absent by construction and its absence is what is required).
+target("weave_smoke_fatal_svdpi_vcs", function()
+  set_kind("phony")
+  set_default(false)
+  add_deps("weave_fatal_svdpi")
+  on_run(function(target)
+    os.execv("bash", {
+      path.join(os.projectdir(), "tests/svdpi/run.sh"),
+      "--expect-fatal",
+      target:dep("weave_fatal_svdpi"):targetfile(),
     })
   end)
 end)

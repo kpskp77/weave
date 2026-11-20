@@ -72,5 +72,18 @@ inline std::shared_ptr<spdlog::logger> trace_debug() {
   return log;
 }
 
+// Flushes every registered simlog/spdlog sink. For the fatal path (detail::fatal_violation): the
+// run is terminated by the backend immediately afterwards, so nothing else gets a chance to drain
+// the log. noexcept because it is the last thing before the run dies — a sink error must not turn
+// the diagnosis into a different failure.
+inline void flush_trace() noexcept {
+  try {
+    spdlog::apply_all([](const std::shared_ptr<spdlog::logger>& log) {
+      if (log) log->flush();
+    });
+  } catch (...) {
+  }
+}
+
 }  // namespace detail
 }  // namespace weave

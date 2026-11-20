@@ -2,9 +2,12 @@
 // Backend-agnostic — every backend interaction goes through the port contract (port.hpp).
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include <weave/debug.hpp>
 #include <weave/task.hpp>
 
 #include "core_internal.hpp"
@@ -39,11 +42,64 @@ TaskRecord& current() {
   return g_tasks[static_cast<std::size_t>(id - 1)];
 }
 
+namespace {
+
+// Who hit the violation: the process's task (id and name), or the fact that it has none at all.
+// Written by hand into a fixed buffer — the fatal path must not allocate, because a std::bad_alloc
+// here would replace the actual diagnosis with an unrelated one.
+void describe_identity(char* out, std::size_t size) noexcept {
+  const int id = current_id();
+  if (id < 1) {
+    std::snprintf(out, size, "no task context (port::owner_task() == 0)");
+    return;
+  }
+  std::snprintf(out, size, "task %d '%s'", id,
+                g_tasks[static_cast<std::size_t>(id - 1)].name.c_str());
+}
+
+}  // namespace
+
+void fatal_violation(const char* site, const char* what) {
+  char identity[192];
+  char line[1024];
+  describe_identity(identity, sizeof identity);
+  std::snprintf(line, sizeof line, "weave: fatal: %s (site %s, %s)", what, site, identity);
+  // The headline goes through simlog, at critical: a fatal diagnosis is a report about simulation
+  // state, so it belongs in the same stream as the snapshot with the same time stamp — which is
+  // also what puts it into the simulator's own transcript (SVDPI's sink prints through vpi_printf,
+  // so `simv -l run.log` carries it) and into a consumer's file sinks. Critical because it must
+  // survive any per-module level setting short of `off`.
+  try {
+    trace_debug()->critical("{}", line);
+    // Evidence before dying: which tasks are blocked on what and for how long, and which are still
+    // live.
+    weave::debug::dump("fatal");
+  } catch (...) {
+    // Best effort: a logger that cannot even be created, or a sink that throws, must not turn the
+    // diagnosis into an unrelated exception on a path that is not allowed to unwind. The
+    // backend's own channel below repeats the headline regardless.
+  }
+  // Flushed on purpose — the backend terminates the run right after (neither abort() nor $fatal
+  // runs destructors or drains spdlog's sinks).
+  flush_trace();
+  // The backend's own failure channel carries the same headline again ($fatal / SC_REPORT_FATAL),
+  // so the diagnosis survives even if every simlog sink was silenced; the `weave: fatal:` marker
+  // that the regression greps for is present on either path.
+  port::fatal(line);
+  std::abort();  // Unreachable: keeps the [[noreturn]] promise even if a backend returns
+}
+
 int backend_wait(int ev_id, std::int64_t timeout_ticks, Ownerless ownerless) {
   const int id = current_id();
   if (id < 0) {
     if (ownerless != Ownerless::Allow)
-      throw std::logic_error("weave: blocking primitive outside task context");
+      // No task to suspend: this can never become a legitimate wait, and the caller may be a
+      // consumer's process reached through its own DPI export — an exception here would unwind
+      // into the simulator (undefined behaviour) or be swallowed and leave the run hanging.
+      fatal_violation(WEAVE_SITE,
+                      "blocking primitive outside task context: this process runs no weave task "
+                      "(non-task processes may only use sleep/Event::wait/Pulse::wait/"
+                      "sv::Edge::wait)");
     // Ownerless leaf wait: the process runs no task body (a testbench process, a backend bootstrap
     // callback), so there is no TaskRecord to mark, no wait-graph node to publish and nothing that
     // could cancel the wait — the abort leg is left out instead of attached to some task's event.
@@ -56,7 +112,9 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks, Ownerless ownerless) {
     // The body already returned and the done callbacks are running (inside weave_task_main, after
     // the identity has been cleared for the outer context): a suspension here would attach a
     // terminal record to the wait graph and could never be cancelled.
-    throw std::logic_error("weave: blocking primitive outside task context");
+    fatal_violation(WEAVE_SITE,
+                    "blocking primitive after the body returned (a done callback must not "
+                    "suspend)");
   if (me.cancel_armed) {  // A cancellation issued while suspended is injected at the next
                           // blocking point
     me.cancel_armed = false;
@@ -133,8 +191,10 @@ Task task_from_id(int id) {
 void Task::await() {
   // The only deadlock edge the core can see: a task waiting for itself. Without the check this is
   // an eternal block (the task can never reach its own terminal state), which no timer can break
-  // and no diagnostics can attribute.
-  if (id_ == detail::current_id()) throw DeadlockError("weave: a task cannot await itself");
+  // and no diagnostics can attribute — so it ends the run instead of throwing: a cancellation or a
+  // catch-all around await() must not be able to turn a guaranteed hang into a green run.
+  if (id_ == detail::current_id())
+    detail::fatal_violation(WEAVE_SITE, "a task cannot await itself");
   auto& r = detail::record(id_);
   if (!detail::terminal(r.state)) detail::backend_wait(r.done_ev, -1);
   detail::dispatch_completed(r);
@@ -219,11 +279,7 @@ const char* CancelledError::what() const noexcept {
   return msg_ ? msg_->data() : "weave::CancelledError";
 }
 
-// Out-of-line destructor: the key function of DeadlockError, so its vtable/typeinfo are emitted
-// only here (cross-DSO catch, same reason as CancelledError::what() above). The message comes from
-// the inherited std::logic_error, so there is nothing else to define.
-DeadlockError::~DeadlockError() = default;
-
+// Message-carrying factory (see task.hpp): the view stays borrowed from TaskRecord::cancel_msg.
 namespace detail {
 
 CancelledError cancelled_with_msg(std::string_view msg) noexcept {

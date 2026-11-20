@@ -111,7 +111,7 @@ extern "C" int sc_main(int, char**) { return weave::sc::run(); }
 // uses C++ linkage, drop extern "C"
 ```
 
-**ABI notes (exception types across DSOs)**: `CancelledError` / `TimeoutError` / `DeadlockError` are
+**ABI notes (exception types across DSOs)**: `CancelledError` / `TimeoutError` are
 thrown by the library and caught by user code. On Linux/Android, libc++abi follows the Itanium ABI and assumes type
 information is globally unique (`type_info` is compared by pointer), so both sides must share **the
 same** typeinfo object. Writing inline definitions directly in a public header makes GCC/Clang treat
@@ -123,8 +123,7 @@ link or start-up; the exception just flies out to the outermost level).
 
 The fix lives in the **type definitions**, not in build flags: `what()` for both types is **declared
 only in the public header and defined out-of-line in the library** (`src/core/sync.cpp` /
-`src/core/task.cpp`); `DeadlockError` has no own `what()` (it inherits `std::logic_error`'s) and
-instead gets its key function from an out-of-line destructor. An out-of-line, non-inline virtual function acts as the **key function**, so the
+`src/core/task.cpp`). An out-of-line, non-inline virtual function acts as the **key function**, so the
 vtable and typeinfo are emitted exactly once, in that library TU; consumer TUs keep only undefined
 references that the dynamic linker resolves to that same copy at load time. Consequently:
 
@@ -137,6 +136,13 @@ references that the dynamic linker resolves to that same copy at load time. Cons
 - The cost: `CancelledError` thereby becomes a polymorphic type (with a virtual destructor, no
   longer trivially copyable); its invariants reduce to "borrowed view, no heap members, nothrow
   copy" (the `static_assert`s in `task.hpp` watch exactly these three things).
+
+**Fatal report across the ABI**: the unrecoverable path (see the "Why contract violations are fatal"
+section of [architecture](architecture.md)) never throws, so it has no typeinfo to share. It leaves
+through `port::fatal`, which is backend-specific and therefore lives in the backend DSO: SVDPI calls
+`weave_sv_fatal` (an `export "DPI-C" task` in `sv/weave_pkg.sv`, `$fatal(1, …)`), SystemC calls
+`SC_REPORT_FATAL`. Both terminate the process, so no frame of the consumer's ever unwinds — which is
+precisely why a consumer cannot make a contract violation disappear.
 
 Loading the `weave` and example/test libraries via `-sv_lib` (the VCS scenario) works the same way:
 the single copy of RTTI inside the library is shared through the dynamic linker.

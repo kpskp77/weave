@@ -63,8 +63,8 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
   never branch on the macro, so it is not part of the installed API.
 - A new backend = one macro-guarded `src/backend/*.cpp` implementing the port contract + a bootstrap
   entry point, with **zero changes to core code**.
-- **Touch the port contract only when a new suspension shape is required**; its four guarantees are
-  in the `port.hpp` header comment.
+- **Touch the port contract only when a new suspension shape is required**, and a new *failure* shape
+  only when an exception cannot carry it; its guarantees are in the `port.hpp` header comment.
 
 ## Invariants (check each one when changing `src/core/`)
 
@@ -77,12 +77,22 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
   swallows it and returns normally ends DONE. Killing processes is forbidden; cascade cancellation
   of siblings passes an empty msg (injection and the rethrow at `await` keep the original).
 - **The exception type hierarchy must not change**: `CancelledError` **does not derive** from
-  `std::exception`, `TimeoutError` and `DeadlockError` **do** (`std::runtime_error` /
-  `std::logic_error` respectively).
+  `std::exception`, `TimeoutError` **does** (`std::runtime_error`).
 - **`what()` and `~BrokenBarrierError` stay out-of-line** (key functions → one typeinfo in
   libweave.so, which is what makes cross-DSO `catch` match; see the ABI notes in backends.md), and
-  `CancelledError` stays polymorphic with a virtual destructor; `DeadlockError`'s out-of-line
-  destructor serves the same purpose.
+  `CancelledError` stays polymorphic with a virtual destructor.
+- **Unrecoverable violations end the run, they are never thrown**: a blocking call with no task
+  context (or after the body returned) and a diagnosed wait cycle (`Task::await()` on itself,
+  `TaskGroup::wait()` from its own child) go through `detail::fatal_violation(WEAVE_SITE, what)` →
+  `port::fatal` — headline logged through simlog at `critical` (so `simv -l` and file sinks carry it),
+  `debug::dump("fatal")`, `detail::flush_trace()`, then the backend's own failure channel
+  (`$fatal(1, …)` via `weave_sv_fatal`, `SC_REPORT_FATAL`) which repeats the headline — never a bare
+  `stderr` write, which no simulator log records. Never `throw`: a `catch (...)` would turn a
+  guaranteed hang into a run whose pass marker still prints,
+  and at an ownerless site the unwind escapes through the consumer's own DPI export (UB). Misuse the
+  caller can recover from — `Lock`/`Semaphore` protocol errors, `as_completed`/`TaskGroup` misuse, an
+  invalid handle — still throws `std::logic_error` before mutating anything. `DeadlockError` was
+  removed for this reason; do not reintroduce a catchable type for a contract violation.
 - **Event edge semantics**: `set()` snapshots the current waiters; on **both** paths (success and
   cancellation) `wait()` must unlink its wake event from `wake_evs` before destroying it, carried by
   a single `detail::scope_exit`.
@@ -116,10 +126,12 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
 | New communication primitive (Queue/Lock/Semaphore/…) | New public header `include/weave/<domain>.hpp` + add the include to the umbrella |
 | New backend | `src/backend/<name>.cpp` (macro-guarded) + macro in `src/core/config.hpp` + xmake mapping |
 | New self-check assertions | `tests/<domain>_semantics.cpp`, added to both `weave_smoke_sc` and `weave_smoke_svdpi` (a backend-only body needs its own file and target, e.g. `tests/svdpi_scope_semantics.cpp`) |
+| New self-check on a body that must **end the run** | `tests/fatal_semantics.cpp` → the `weave_fatal_*` payloads, judged with **inverted** expectation by `tests/expect_fatal.sh` / `tests/svdpi/run.sh --expect-fatal` |
 | New example | `examples/<domain>_demo.cpp` (picked up automatically by glob, no xmake.lua change needed) |
 
 Principle: **a primitive composable from "task bookkeeping + Event + three-legged wait" goes into the
-core layer; only a new suspension shape justifies touching the port contract.** Public header
+core layer; only a new suspension shape justifies touching the port contract, and only a failure an
+exception cannot carry justifies a new fatal site.** Public header
 layering (dependencies point downwards): time → task/event → sync → test, umbrella
 `weave.hpp` last; core internal state lives only in `src/core/*_internal.hpp`.
 
@@ -148,6 +160,11 @@ layering (dependencies point downwards): time → task/event → sync → test, 
   `SC_THREAD` sees, so it needs a raw `sc_spawn` and is linked into `weave_smoke_sc` only;
   `tests/svdpi_scope_semantics.cpp` switches the DPI scope with `svdpi.h`, so it exists only in the
   SVDPI payload (`weave_smoke_svdpi`).
+- **A body that is supposed to die cannot live in a smoke payload**: `expect_fatal.sh` and
+  `run.sh --expect-fatal` only accept an exit that *lacks* the pass marker and *carries* the
+  `weave: fatal:` headline, so such a case goes into `tests/fatal_semantics.cpp` (payloads
+  `weave_fatal_sc` / `weave_fatal_svdpi`) and the smoke run keeps its normal expectation. Only one
+  fatal site is covered end-to-end; the others share `detail::fatal_violation`.
 - **A task body must not reference a stack frame that dies earlier**: a lambda capturing a local
   `Event`/`Task` by reference must be guaranteed to finish before that frame exits (`await`/`gather`,
   or draining the siblings on the exception path), otherwise resuming is a use-after-free.

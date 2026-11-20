@@ -86,12 +86,12 @@ timeout is a normal failure path that generic logging/backstop code may handle.
 
 ### Deadlock diagnostics: only the edges the core can see
 
-`DeadlockError` (deriving from `std::logic_error`, i.e. an ordinary `std::exception`) is raised for
-the two wait cycles the bookkeeping actually knows: `Task::await()` on itself (the executing task id
-is compared with the handle's id) and `TaskGroup::wait()` called from one of the group's own
-children (the group waits for every child, itself included). The second check runs **before** the
-group is sealed, so the exception does not poison the group. Both are cheap single comparisons on
-data the core already holds.
+A wait cycle the bookkeeping can actually see **ends the run** instead of raising: `Task::await()` on
+itself (the executing task id is compared with the handle's id) and `TaskGroup::wait()` called from
+one of the group's own children (the group waits for every child, itself included) go through
+`detail::fatal_violation` → `port::fatal`, after printing the diagnosis and dumping the wait graph
+(see "Why contract violations are fatal" below). Both are cheap single comparisons on data the core
+already holds; the `TaskGroup` check runs before the group is sealed.
 
 What is deliberately **not** diagnosed is a cycle through `Event`: "who will set the event I am
 blocked on" is not expressible in the API surface — `Event` is a value object and any party may call
@@ -112,6 +112,43 @@ body nested on the same stack gives it back) and clears it before done callbacks
 `current_task()` means "the task executing right now" and returns `nullopt` outside a body. A leaf
 wait (`sleep`, `Event::wait`, `Pulse::wait`, `sv::Edge::wait`) is allowed to run with no identity at
 all: it becomes a plain backend wait with no cancel leg and no wait-graph node.
+
+### Why contract violations are fatal
+
+Some violations are not failures of the run but failures of its premises, and for those the core must
+not rely on the caller: an exception is always catchable, and a swallowed one leaves a run that can
+only hang — no `TaskRecord` reaches FAILED, so `root_status()` stays 0 and `WEAVE TEST PASSED`
+prints. At an ownerless site the situation is worse: the caller may be a consumer's process reached
+through its own `export "DPI-C"`, and unwinding through the simulator into that export is undefined
+behaviour weave cannot guard. Type hierarchies do not help here — `catch (...)` exists.
+
+So the port has a fifth primitive, `port::fatal`: `detail::fatal_violation` (src/core/task.cpp)
+composes the diagnosis, logs it through simlog at `critical` — a fatal diagnosis is a report about
+simulation state, so it belongs in the same stream, with the same sim-time stamp, as the rest of the
+trace (`WEAVE_SITE` supplies `file:line`):
+
+```
+[           0 ps][weave.debug][critical] weave: fatal: a task cannot await itself (site src/core/task.cpp:185, task 2 'fatal_semantics')
+```
+
+which is what puts it into the simulator's own transcript (SVDPI's sink prints through `vpi_printf`,
+so `simv -l run.log` carries it) and into a consumer's file sinks — a bare `stderr` write would be
+missing from either. It then logs the wait graph through `debug::dump("fatal")`, flushes the simlog
+sinks (`detail::flush_trace()`) and calls `port::fatal`, which each backend maps onto its own failure
+channel: SVDPI calls `weave_sv_fatal` in `sv/weave_pkg.sv` (`$fatal(1, …)`, under the usual DPI scope
+guard), SystemC reports `SC_REPORT_FATAL("weave", …)`. That second channel carries the same headline
+again, so the diagnosis survives even a `SIMLOG_LEVEL` that silences every weave sink — and it is why
+a run cannot be mistaken for a pass either way. Nothing unwinds; the simulation ends with a non-zero
+status. The regression pins exactly that: `tests/fatal_semantics.cpp`
+(a deliberate self-await) is compiled into its own payload pair and judged with **inverted**
+expectation by `tests/expect_fatal.sh` and `tests/svdpi/run.sh --expect-fatal` — the headline must be
+present, the pass marker must be absent.
+
+The four fatal sites: a diagnosed wait cycle (`Task::await()` on itself, `TaskGroup::wait()` from one
+of the group's own children), a blocking primitive in a process running no weave task, and a
+suspension after the body returned (a done callback). Everything else that a caller can recover from
+— `Lock`/`Semaphore` protocol errors, `as_completed`/`TaskGroup` misuse, an invalid task handle — is
+thrown before any state is mutated and stays an ordinary `std::logic_error`.
 
 ### Why Event is edge-triggered, not level-triggered
 

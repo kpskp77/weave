@@ -46,7 +46,6 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | 结构化并发；子任务失败会取消兄弟任务，全部落地后以 `ExceptionGroup` 抛出 |
 | `CancelledError` | `asyncio.CancelledError` | 取消信号；**不**派生自 `std::exception`，详见 [architecture](architecture_zh.md) |
 | `ExceptionGroup` | `ExceptionGroup`（由 `asyncio.TaskGroup` 抛出） | 聚合 `TaskGroup` 的子任务失败，按完成顺序排列；单个失败也会包组 |
-| `DeadlockError` | — | asyncio 无对应物（Python 对 join 自身抛 `RuntimeError`）：可诊断的等待环——自 await、`TaskGroup` 子任务等待自己的组。派生自 `std::logic_error` |
 | `TimeoutError` | `TimeoutError` | 超时信号；派生自 `std::exception` |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | 屏障被破坏/重置信号；派生自 `std::runtime_error`（≡ `RuntimeError`） |
 | `QueueEmpty` / `QueueFull` / `QueueShutDown` | `asyncio.QueueEmpty` / `asyncio.QueueFull` / `asyncio.QueueShutDown` | 由 `*_nowait` 形式抛出；派生自 `std::runtime_error`（≡ `RuntimeError`） |

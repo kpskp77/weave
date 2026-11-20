@@ -50,7 +50,6 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; a child failure cancels siblings and is thrown as `ExceptionGroup` after all have landed |
 | `CancelledError` | `asyncio.CancelledError` | Cancel signal; does NOT derive from `std::exception`, check more details in [architecture](docs/architecture.md) |
 | `ExceptionGroup` | `ExceptionGroup` (raised by `asyncio.TaskGroup`) | Aggregates a `TaskGroup`'s child failures, in completion order; even a single failure is wrapped |
-| `DeadlockError` | — | No asyncio counterpart (Python raises `RuntimeError` for join-on-self): a diagnosable wait cycle — self-await, a `TaskGroup` child waiting on its own group. Derives from `std::logic_error` |
 | `TimeoutError` | `TimeoutError` | Timeout signal; derives from `std::exception` |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | Barrier-broken/reset signal; derives from `std::runtime_error` (≡ `RuntimeError`) |
 | `QueueEmpty` / `QueueFull` / `QueueShutDown` | `asyncio.QueueEmpty` / `asyncio.QueueFull` / `asyncio.QueueShutDown` | Thrown by the `*_nowait` forms; derive from `std::runtime_error` (≡ `RuntimeError`) |
@@ -60,6 +59,14 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 
 Beyond the mapping table there are three structural differences; most misuse stems from these:
 
+- **Contract violations end the run**: the violations the core can prove are unrecoverable — a
+  diagnosed wait cycle, a blocking call in a process that runs no task, a suspension after a body
+  returned — terminate the simulation (`$fatal` / `SC_REPORT_FATAL`) after printing
+  `weave: fatal: <what> (site <file:line>, task N '<name>')` and dumping the wait graph. They are
+  deliberately not exceptions: a `catch (...)` anywhere would turn a guaranteed hang into a run that
+  merely looks slow, and at an ownerless site the unwind would go straight into the simulator
+  through the consumer's own DPI export. Misuse the caller can recover from (`Lock`/`Semaphore`
+  protocol errors, combinator misuse) still throws `std::logic_error`.
 - **No coroutine / await**: the combinators are ordinary blocking calls, not awaitables, and need a
   task context (outside one they throw `std::logic_error`). Nothing returns a future: the default
   `gather(...)` blocks until the tasks land or the first failure/cancellation and returns nothing.

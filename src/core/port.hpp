@@ -19,6 +19,11 @@
 //      the cancel leg winning same-slot conflicts; status 0=event hit 1=timeout 2=cancelled.
 //      ev_id < 0 means no event leg; timeout_ticks < 0 means no timeout leg; abort_id < 0 means no
 //      cancel leg (status then never reports 2) — the shape an ownerless suspension uses.
+//   5. fatal is the last port call of a run: the core has detected an unrecoverable contract
+//      violation (a diagnosed wait cycle, a suspension with no task to suspend). It reports the
+//      message through the backend's own failure channel and terminates the simulation on the
+//      spot — it must never return and never unwind into the caller, so the run cannot continue
+//      past the violation and cannot be mistaken for a pass.
 //
 // Two queries are part of the contract as well: now_ticks and owner_task, neither of which
 // suspends. now_ticks must report the same tick unit ticks_per_sec describes — every absolute
@@ -75,6 +80,10 @@ void set_owner_task(int task_id);
 
 // The only suspension point (see semantics 4 above).
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status);
+
+// Ends the run (see semantics 5 above). msg is NUL-terminated and outlives the call because it is
+// the report the backend prints; [[noreturn]] so the core cannot keep running after reporting.
+[[noreturn]] void fatal(const char* msg);
 
 }  // namespace port
 }  // namespace weave

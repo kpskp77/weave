@@ -2,9 +2,10 @@
 // (PENDING skips the body / injection at the blocking point / refusing cancellation), cancel
 // idempotence on terminal tasks, handle attributes (valid/get_name/id), sleep(0)'s zero-time
 // yield (it must really hand control over, on every call — case6 only proves that a 0-tick wait
-// returns, case10/case11 pin the hand-over itself), task identity (current_task, case12) and the
-// two deadlock edges the core can see (self-await / a TaskGroup child waiting on its own group,
-// case13/case14).
+// returns, case10/case11 pin the hand-over itself) and task identity (current_task, case12).
+// The two deadlock edges the core can diagnose are **not** here: they end the run
+// (detail::fatal_violation), so they live in tests/fatal_semantics.cpp with their own inverted
+// judgement.
 // Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
 // case_runner.hpp). It shares the assertion-body style with gather_semantics.cpp and is regressed
 // by both the weave_smoke_sc and weave_smoke_svdpi backends.
@@ -23,11 +24,9 @@ using namespace weave::literals;
 using weave_test::report;
 using weave_test::run_case;
 
-// The exception hierarchy is part of the API contract, not an implementation detail: a deadlock is
-// an ordinary failure (catchable as std::exception), while cancellation must never be swallowed by
-// a std::exception backstop. Pinned at compile time, both backends alike.
-static_assert(std::is_base_of_v<std::exception, DeadlockError>,
-              "DeadlockError must derive from std::exception");
+// Cancellation must never be swallowed by a std::exception backstop; a diagnosed deadlock is not an
+// exception at all any more (it ends the run, see detail::fatal_violation) — both pinned here so a
+// future change cannot quietly reintroduce either shape.
 static_assert(!std::is_base_of_v<std::exception, CancelledError>,
               "CancelledError must not derive from std::exception");
 
@@ -280,39 +279,6 @@ WEAVE_TEST(task_semantics) {
     const auto after = current_task();
     if (!after || after->id() != self->id())
       throw std::logic_error("case12: awaiting must restore the caller's identity");
-  });
-
-  // case 13: a task awaiting itself is a diagnosable deadlock, not an eternal block
-  run_case(__func__, "case13", [&] {
-    Event caught;
-    Task self;
-    self = create_task("self_await", [&] {
-      try {
-        self.await();
-      } catch (const DeadlockError&) {
-        caught.set();
-      }
-    });
-    caught.wait();
-    self.await();
-    if (!self.done())
-      throw std::logic_error("case13: the task must land after diagnosing its self-await");
-  });
-
-  // case 14: a TaskGroup child calling wait() on its own group waits for itself — also diagnosed,
-  // and the group stays usable afterwards (the exception is thrown before the group is sealed)
-  run_case(__func__, "case14", [&] {
-    TaskGroup tg;
-    Event caught;
-    tg.create_task("group_self_wait", [&] {
-      try {
-        tg.wait();
-      } catch (const DeadlockError&) {
-        caught.set();
-      }
-    });
-    caught.wait();  // The child has diagnosed the cycle and landed
-    tg.wait();      // The group completes normally: the child finished DONE
   });
 
   report(__func__);

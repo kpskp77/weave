@@ -16,6 +16,7 @@
 #include <svdpi.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <weave/sv.hpp>
 
 #include "../core/registry_internal.hpp"
@@ -36,6 +37,10 @@ void weave_sv_set_root_done_ev(int ev_id);
 int weave_sv_edge_id(const char* name);
 void weave_sv_edge_bind(const char* name, int ev_id);
 void weave_sv_wait(int ev_id, long long timeout_ticks, int abort_id, int* status);
+// Terminates the simulation through $fatal (see weave_sv_fatal in sv/weave_pkg.sv): the only way
+// the core can end a run it cannot continue, and the only one that keeps the report inside the
+// simulator's own failure channel.
+void weave_sv_fatal(const char* msg);
 }
 
 namespace weave {
@@ -118,6 +123,16 @@ void set_owner_task(int task_id) {
 void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
   const DpiScopeGuard scope;
   weave_sv_wait(ev_id, timeout_ticks, abort_id, status);
+}
+
+void fatal(const char* msg) {
+  // $fatal in the package: it reports the message and ends the simulation immediately (non-zero
+  // status), which is exactly the contract — no unwind through any C++ frame, no chance to
+  // continue. std::abort() only covers an engine whose $fatal returns anyway, so the [[noreturn]]
+  // promise holds either way.
+  const DpiScopeGuard scope;
+  weave_sv_fatal(msg);
+  std::abort();
 }
 
 }  // namespace port

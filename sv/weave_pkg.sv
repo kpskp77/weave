@@ -1,7 +1,8 @@
 // ── Weave SystemVerilog backend ──────────────────────────────────────────
 // DPI contract with src/backend/svdpi.cpp:
 //   export (C++→SV): spawn/trigger/event table/ticks/generic wait, forming the only blocking
-//                    mechanism
+//                    mechanism; plus the fatal report (weave_sv_fatal) that ends a run the core
+//                    cannot continue
 //   import (SV→C++): weave_start bootstrap, weave_task_main task body, weave_test_status
 //
 // Convention: this package's timeunit determines the conversion base for #() and the 1s literal;
@@ -162,6 +163,7 @@ package weave_pkg;
   export "DPI-C" function weave_sv_set_root_done_ev;
   export "DPI-C" task weave_sv_wait;
   export "DPI-C" task weave_sv_wait_done;
+  export "DPI-C" task weave_sv_fatal;
 
   // Task identity of the calling process. Both must be automatic: process::self() is illegal in a
   // static (module/package-scope) function context. A process that runs no task body — a
@@ -350,6 +352,15 @@ package weave_pkg;
   // Test wait chain: the harness suspends here until the root task finishes
   task automatic weave_sv_wait_done();
     wait (ev_table[root_done_ev].triggered);
+  endtask
+
+  // Fatal report (src/core/port.hpp, guarantee 5): the core has detected a violation it cannot
+  // continue from — a diagnosed wait cycle, a suspension with no task to suspend. $fatal ends the
+  // simulation immediately with a non-zero status and the message below, so the violation stays a
+  // failure of the run even though the C++ caller must not receive it as an exception. It is a
+  // task (not a function) because $fatal may only appear in a process/task context.
+  task automatic weave_sv_fatal(input string msg);
+    $fatal(1, "%s", msg);
   endtask
 
   task automatic weave_run(output int status);

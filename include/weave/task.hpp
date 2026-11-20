@@ -18,7 +18,6 @@ namespace weave {
 
 class Task;
 struct CancelledError;
-class DeadlockError;
 
 namespace detail {
 struct TaskRecord;  // core bookkeeping (defined in src/core/core_internal.hpp)
@@ -81,23 +80,18 @@ static_assert(std::is_nothrow_copy_constructible_v<CancelledError> &&
                   std::is_nothrow_destructible_v<CancelledError>,
               "CancelledError must be cheap to throw: nothrow copy, no heap members");
 
-// A wait that can never be satisfied because the waiter is part of what it waits for. Only the
-// edges visible in the core are diagnosed — `Task::await()` on itself and `TaskGroup::wait()`
-// called from one of the group's own children — because those are the only "who waits for whom"
-// relations the bookkeeping knows. A cycle through Event set/wait (who will set the event this
-// task is blocked on) is not expressible in the API surface, so it is not diagnosed: that hang has
-// to be surveyed instead (debug::snapshot(), see docs/architecture.md, "Deadlock diagnostics").
+// A wait that can never be satisfied because the waiter is part of what it waits for is *not* an
+// exception: only the edges visible in the core are diagnosable — `Task::await()` on itself and
+// `TaskGroup::wait()` called from one of the group's own children — because those are the only
+// "who waits for whom" relations the bookkeeping knows. A cycle through Event set/wait (who will
+// set the event this task is blocked on) is not expressible in the API surface, so it is not
+// diagnosed: that hang has to be surveyed instead (debug::snapshot(), see docs/architecture.md,
+// "Deadlock diagnostics").
 //
-// Derives from std::logic_error, i.e. it **is** a std::exception (a deadlock is a programming
-// error, not a cancellation: the generic catch (const std::exception&) backstop may and should
-// report it, unlike CancelledError). The destructor is declared out-of-line so the
-// vtable/typeinfo are emitted once, in the library — the same cross-DSO catch requirement as
-// CancelledError::what() (see backends.md's ABI notes).
-class DeadlockError : public std::logic_error {
-public:
-  using std::logic_error::logic_error;
-  ~DeadlockError() override;
-};
+// Such a violation ends the simulation on the spot (detail::fatal_violation → port::fatal). There
+// is deliberately no exception type for it: a `catch (...)` anywhere in user code could swallow the
+// diagnosis, and a hang that was swallowed is indistinguishable from a run that merely takes long —
+// these are the only failures for which the core cannot rely on the caller's cooperation.
 
 namespace detail {
 // Combinator entry points (defined in src/core/sync.cpp); declared here only for Task's friends.

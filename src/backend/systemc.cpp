@@ -31,6 +31,8 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <systemc>
@@ -151,7 +153,10 @@ void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
   } else if (has_to) {
     sc_core::wait(to);  // Timeout leg only (ownerless sleep: no event to hit, nothing can cancel)
   } else {
-    throw std::logic_error("weave: wait with no leg");
+    // No event leg, no timeout, no cancel leg: the core never asks for that shape (a wait always
+    // carries at least one leg), so this is a backend-visible contract violation, not a runtime
+    // condition — aborting through port::fatal rather than throwing keeps it out of any catch.
+    fatal("weave: fatal: port::wait with no leg (systemc backend)");
   }
   // On a same-slot conflict the cancel leg wins (consistent with weave_sv_wait in sv/weave_pkg.sv)
   if (ab != nullptr && ab->triggered())
@@ -160,6 +165,22 @@ void wait(int ev_id, std::int64_t timeout_ticks, int abort_id, int* status) {
     *status = 0;
   else
     *status = 1;
+}
+
+void fatal(const char* msg) {
+  // Through the kernel's own failure channel: the default action set displays the report and aborts
+  // the process, so nothing unwinds through a C++ frame and no caller can catch the violation. The
+  // explicit std::abort() covers a build whose report handler throws instead of aborting
+  // (SC_THROW), keeping this function's [[noreturn]] promise either way.
+  //
+  // The message carries the core's own "weave: " prefix (it is the same line SVDPI hands to $fatal,
+  // which has no message-type field); the report type supplies that prefix here, so it is stripped
+  // to report the headline once instead of as "weave: weave: fatal: ...".
+  constexpr char kPrefix[] = "weave: ";
+  const char* body = msg;
+  if (std::strncmp(msg, kPrefix, sizeof kPrefix - 1) == 0) body += sizeof kPrefix - 1;
+  SC_REPORT_FATAL("weave", body);
+  std::abort();
 }
 
 }  // namespace port

@@ -100,7 +100,7 @@ extern "C" int sc_main(int, char**) { return weave::sc::run(); }
 // → 把 root_status() 作为进程退出码返回；如果你的目标平台上 SystemC 使用 C++ 链接，去掉 extern "C"
 ```
 
-**ABI 说明（跨 DSO 的异常类型）**：`CancelledError` / `TimeoutError` / `DeadlockError` 由库抛出、由用户代码捕获。
+**ABI 说明（跨 DSO 的异常类型）**：`CancelledError` / `TimeoutError` 由库抛出、由用户代码捕获。
 在 Linux/Android 上，libc++abi 遵循 Itanium ABI，假定类型信息全局唯一（`type_info` 按指针比较），
 因此两侧必须共享**同一个** typeinfo 对象。若在公共头里直接写内联定义，GCC/Clang 会视之为 vague
 linkage：每个用到该类型的翻译单元都会发出一个弱定义；又因为例如 xmake `mode.release` 默认对所有
@@ -109,8 +109,7 @@ linkage：每个用到该类型的翻译单元都会发出一个弱定义；又�
 启动期都没有任何报错，异常只是直接飞到最外层）。
 
 解决办法在**类型定义本身**，而不在构建开关：两个类型的 `what()` 都**只在公共头中声明，定义放在
-库中且为非内联（out-of-line）**（`src/core/sync.cpp` / `src/core/task.cpp`）；`DeadlockError`
-自己没有 `what()`（继承 `std::logic_error` 的），改为用 out-of-line 的析构函数充当关键函数。一个非
+库中且为非内联（out-of-line）**（`src/core/sync.cpp` / `src/core/task.cpp`）。一个非
 内联的虚函数充当**关键函数（key function）**，于是 vtable 与 typeinfo 只在那一个库翻译单元中发出；使用方的翻译
 单元只保留未定义引用，由动态链接器在加载时解析到同一份副本。因此：
 
@@ -124,6 +123,12 @@ linkage：每个用到该类型的翻译单元都会发出一个弱定义；又�
 
 通过 `-sv_lib` 加载 `weave` 与示例/测试库（VCS 场景）的机制相同：库中唯一的一份 RTTI 通过动态链接器
 共享。
+
+**跨 ABI 的 fatal 报告**：不可恢复路径（见 [architecture](architecture_zh.md) 的"契约违例为何直接终止运行"）
+从不抛异常，因此没有 typeinfo 需要共享。它经 `port::fatal` 离开，而这是后端相关的，因而实现在后端 DSO 中：
+SVDPI 调用 `weave_sv_fatal`（`sv/weave_pkg.sv` 中的 `export "DPI-C" task`，内部 `$fatal(1, …)`），
+SystemC 调用 `SC_REPORT_FATAL`。两者都直接终止进程，使用方任何栈帧都不会退栈——这正是使用方无法把契约违例
+“消化掉”的原因。
 
 ### 跨 DPI 边界的任务身份
 
