@@ -45,12 +45,15 @@ struct TimeoutError : std::exception {
 //   · all complete normally → returns
 //   · gather itself is cancelled → cancel all unfinished tasks first (asyncio: when gather is
 //     cancelled, its unfinished child tasks are cancelled too), then throw CancelledError
+// Takes the tasks by forwarding reference, so a temporary is as good as a named handle:
+// gather(a, b) and gather(create_task(...), create_task(...)) both work. Only the handles are
+// copied/moved into the argument list — the tasks themselves are untouched.
 template <typename... Ts>
-void gather(Ts&... tasks) {
-  static_assert((std::is_convertible_v<Ts&, Task> && ...),
+void gather(Ts&&... tasks) {
+  static_assert((std::is_convertible_v<Ts, Task> && ...),
                 "weave: gather arguments must all be Tasks (asyncio.gather takes awaitables, "
                 "weave takes the Task handles)");
-  detail::gather_impl({tasks...});
+  detail::gather_impl({std::forward<Ts>(tasks)...});
 }
 
 // Tag for the return_exceptions form: corresponding to asyncio.gather(*aws, return_exceptions=True)

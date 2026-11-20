@@ -251,5 +251,29 @@ WEAVE_TEST(gather_semantics) {
       throw std::logic_error("case10: outer cancel must cancel pending children");
   });
 
+  // case 11: rvalue Tasks are accepted — gather(create_task(...)) is the idiomatic form (asyncio's
+  // gather(*aws) takes the awaitables handed to it), and a temporary must behave exactly like a
+  // named handle: only the handles are moved into the argument list, and every task still runs to
+  // completion
+  run_case(__func__, "case11", [&] {
+    Event go;
+    int finished = 0;
+    auto named = create_task("rv11_named", [&] {
+      go.wait();
+      ++finished;
+    });
+    gather(create_task("rv11_tmp",
+                       [&] {
+                         go.set();
+                         ++finished;
+                       }),
+           named);
+    if (finished != 2)
+      throw std::logic_error("case11: gather must accept a temporary and wait for every task");
+    gather(create_task("rv11_a", [&] { ++finished; }), create_task("rv11_b", [&] { ++finished; }));
+    if (finished != 4)
+      throw std::logic_error("case11: gather must accept an all-temporary argument list");
+  });
+
   report(__func__);
 }
