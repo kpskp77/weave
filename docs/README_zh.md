@@ -39,7 +39,7 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | 默认形式（首个失败即抛出） |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | 返回 `vector<exception_ptr>`，不提前抛出 |
 | `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义；取消**等待者**同样会取消并等 `t` 落地 |
-| `timeout(body, d)` | `async with asyncio.timeout(d)` | 给一段工作设定上界：body 作为子任务运行，超时先取消并等其落地再抛 `TimeoutError`；期限覆盖 body 的整体执行（没有协程块可以用来"上弦"） |
+| `timeout(body, d)` | `async with asyncio.timeout(d)` | 给一段工作设定上界：body 作为子任务运行，超时先取消并等其落地再抛 `TimeoutError`；期限覆盖 body 的整体执行（没有协程块可以用来“上弦”） |
 | `wait({t1, ...}, return_when, timeout)` | `await asyncio.wait(fs, ...)` | 返回 `{done, pending}`；不取消子任务 |
 | `shield(t)` | `asyncio.shield(aw)` | 返回代理任务；取消/超时止步于代理 |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` 阻塞并按完成顺序产出 |
@@ -53,7 +53,14 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 
 ### 模型差异（相对 Python，务必先读）
 
-除映射表之外还有三处结构性差异，绝大多数误用都源于此：
+除映射表之外还有五处结构性差异，绝大多数误用都源于此：
+
+- **契约违例直接终止运行**：core 能够证明的违例不可恢复——可诊断的等待环、在没有 weave 任务的进程里
+  调用阻塞原语、body 返回之后仍然挂起——都会先打印
+  `weave: fatal: <what> (site <file:line>, task N '<name>')`、dump 等待图，然后终止仿真（`$fatal` /
+  `SC_REPORT_FATAL`）。它们刻意不用异常：`catch (...)` 会把必然的挂死变成一场“只是有点慢”的运行，
+  而在无主的调用点上退栈会直接穿过使用方自己的 DPI export。调用方能恢复的误用
+  （`Lock`/`Semaphore` 协议错误、组合子误用）仍然抛 `std::logic_error`。
 
 - **没有协程，也没有 await**：组合子是普通的阻塞调用，不是 awaitable，并且需要在任务上下文中调用
   （在任务外调用会抛 `std::logic_error`）。所有组合子都不返回 future：默认的 `gather(...)` 会阻塞到
@@ -63,6 +70,11 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 - **取消永不撕裂调用栈**：`cancel()` 只置位标志并唤醒任务，`CancelledError` 在阻塞点注入，因此栈通过
   普通异常传播展开，RAII 总会执行；杀掉仿真进程（`process::kill()`、SV `disable`）是被禁止的，因此
   不会有任何东西被异步拆除。
+- **在 weave 之外挂起的代码，在那段时间里不可取消**：`cancel()` 只在 weave 自己的阻塞点落地，所以
+  body 阻塞在另一个 DPI export、SV 等待或第三方阻塞调用期间会继续运行（`state` 仍是 `RUNNING`，
+  等待图里没有节点），`wait_for` / `TaskGroup` 的收尾也只能等它返回之后再进行。这类区域应当交给
+  `shield`，或者把通知改造成对 `Event` / `sv::Edge` 的等待；在任务之外则只允许叶子等待。见
+  [架构](architecture_zh.md#weave-之外的挂起外部阻塞与无主等待)。
 
 ### 已知偏差
 
@@ -92,7 +104,7 @@ WEAVE_TEST(my_test) {
 阻塞在哪个后端事件上、已阻塞多久（**仿真**时间）——`debug::dump(tag)` 把它逐行经 simlog（`weave.debug`，info 级）打出。两者都不
 挂起、也不改状态，因此可以从 done 回调或 harness 链里调用；dump 与 core trace 共用同一条输出流、
 同一个仿真时间戳和同一个 `SIMLOG_LEVEL` 开关（`SIMLOG_LEVEL="weave*=debug"` 打开生命周期 trace）。快照能描述挂死，但**不能**证明存在环
-（任何人都可以 `set()` 一个 `Event`，"谁该唤醒它"没有任何地方记录）。
+（任何人都可以 `set()` 一个 `Event`，“谁该唤醒它”没有任何地方记录）。
 
 ## 构建与运行
 

@@ -57,7 +57,7 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 
 ### Model differences (versus Python, must read)
 
-Beyond the mapping table there are three structural differences; most misuse stems from these:
+Beyond the mapping table there are five structural differences; most misuse stems from these:
 
 - **Contract violations end the run**: the violations the core can prove are unrecoverable — a
   diagnosed wait cycle, a blocking call in a process that runs no task, a suspension after a body
@@ -77,6 +77,12 @@ Beyond the mapping table there are three structural differences; most misuse ste
   and `CancelledError` is injected at the blocking point, so the stack unwinds through ordinary
   exception propagation and RAII always runs; killing a simulation process (`process::kill()`, SV
   `disable`) is banned, so nothing is ever torn down asynchronously.
+- **Code that suspends outside weave is not cancellable there**: `cancel()` lands only at weave's own
+  blocking points, so a body blocked in another DPI export, an SV wait or a third-party blocking call
+  keeps running (state `RUNNING`, no wait-graph node), and `wait_for` / `TaskGroup` teardown can only
+  return once it does. Route such a region through `shield` (or convert the notification into an
+  `Event` / `sv::Edge`); outside a task body only leaf waits may suspend. See
+  [architecture](docs/architecture.md#suspension-outside-weave-foreign-blocking-and-ownerless-waits).
 
 ### Known deviations
 

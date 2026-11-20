@@ -84,14 +84,81 @@ cancellation — swallowing it would make the task wrongly finish as DONE and br
 from `std::exception`** (matching asyncio's `TimeoutError`, an ordinary `Exception`), because a
 timeout is a normal failure path that generic logging/backstop code may handle.
 
+### Suspension outside weave: foreign blocking and ownerless waits
+
+Weave owns exactly one suspension point, so code leaves that contract in two ways. Both are
+**invisible** to the bookkeeping rather than mis-recorded by it:
+
+- **A foreign suspension**: a task body blocked in something weave does not drive — an SV wait
+  reached through another `export "DPI-C"`, a `#delay` inside a consumer's import, a third-party or
+  HLS call that blocks. The body is simply not running: `TaskRecord::state` stays `RUNNING`,
+  `wait_ev` stays -1, and `debug::snapshot()` shows no wait node. It does not lie; it cannot see the
+  wait.
+- **An ownerless wait**: the calling process runs no task body at all — a testbench process calling
+  a library export, `sc_main`, an `SC_THREAD` that is not a task, or a done callback.
+
+**What a foreign suspension costs.** Cancellation is delivered only at a blocking point, so
+`cancel()` on a foreign-blocked task is armed and stays armed: it lands when the body reaches its
+next weave wait after returning — or never, if the body returns without one (the task then ends DONE,
+which is what asyncio does when cancelling a coroutine that never awaits again). Nothing shortens
+that without a preemptive kill, which this design bans (see "Why cancellation is cooperative").
+
+The consequence is narrower than it sounds, and it is worth stating precisely, because the promise
+it strains is the *landing* one, not the timeout one: `wait_for(t, d)` reaches `d` honestly, cancels,
+then waits for `t` to land, and that second leg is not bounded by `d`; `TaskGroup::wait()` drains the
+same way after cancelling the siblings, so it also returns no earlier than they land. (A cancelled
+`gather` is the other shape: it only cascades the cancellation and propagates at once — its children
+keep running, so it is not held up by a foreign region.) So the shape to avoid is
+`wait_for`/`TaskGroup::wait()` on a task that may be foreign-blocked — the timeout keeps its meaning
+(d is when the cancellation is issued), but the call returns no earlier than the foreign region does.
+
+**The shape that keeps the contract: wait on a proxy.** `shield` gives the foreign worker a
+cancellable front — everyone, combinators included, waits on the proxy, whose body is only
+`inner.await()`, a real weave wait with every leg attached. `wait_for` then fires at `d`,
+`TaskGroup`/`gather` teardown lands immediately, and the worker keeps running underneath. What
+stays outside the contract is confined to the worker: its side effects, its resource lifetime and
+its promptness are the caller's business — deliberately, since weave cannot interrupt it and must
+not pretend to.
+
+Two cheaper alternatives are preferred when the blocking can be reshaped at all:
+
+- **Convert the notification instead of blocking on it**: let the SV side fire a shared
+  `weave_edge` (`weave_edge::fire()`) instead of calling into a blocking export; the C++ side waits
+  on `sv::Edge::wait()` (or on an `Event::set()`). The wait is then a weave wait, so cancellation
+  and timeouts apply directly and no proxy is needed.
+- **Poll cooperatively between chunks**: a body that can break its work into steps may call
+  `sleep(0)` between them. It passes through the blocking point, so an armed cancellation is
+  injected there and the body stops with ordinary unwinding (at the cost of a scheduling step per
+  chunk).
+
+**Ownerless waits** are the second tier of the same problem, and `backend_wait` splits them by what
+the primitive does with the identity. Leaf waits (`sleep`, `Event::wait`, `Pulse::wait`,
+`sv::Edge::wait`) are allowed without one: they become a plain backend wait with no abort leg and no
+wait-graph node, losing exactly cancellation and the diagnostic entry. Everything else — every
+combinator, `Task::await`, ownership-carrying primitives (`Lock`, `Semaphore`, `Barrier`, `Queue`) —
+rejects an ownerless caller with a **fatal**: such a primitive hands a `TaskRecord` to a queue head
+or needs the cancel leg, and at an ownerless site an exception would unwind into the consumer's own
+DPI export (undefined behaviour) or be caught, leaving a run that still prints its pass marker. The
+same fatal covers a suspension *after* the body returned (a done callback), which would attach a
+terminal record to the wait graph and could never be cancelled. Identity itself is per process
+(see "Related hygiene" under "Deadlock diagnostics"), which is what lets a non-task `SC_THREAD` call
+into weave while a task is parked and see `current_task() == nullopt` instead of the parked task's
+name.
+
+Honest diagnostics limitation: a cancelled-but-foreign-blocked task is indistinguishable from a busy
+one — `RUNNING`, no wait node — and `cancelled()` reports the terminal state only, so nothing in the
+public API tells the two apart.
+
 ### Deadlock diagnostics: only the edges the core can see
 
 A wait cycle the bookkeeping can actually see **ends the run** instead of raising: `Task::await()` on
-itself (the executing task id is compared with the handle's id) and `TaskGroup::wait()` called from
-one of the group's own children (the group waits for every child, itself included) go through
+itself (the executing task id is compared with the handle's id), `TaskGroup::wait()` called from
+one of the group's own children (the group waits for every child, itself included), and `shield()`
+on the running task (the proxy would wait for its caller) go through
 `detail::fatal_violation` → `port::fatal`, after printing the diagnosis and dumping the wait graph
-(see "Why contract violations are fatal" below). Both are cheap single comparisons on data the core
-already holds; the `TaskGroup` check runs before the group is sealed.
+(see "Why contract violations are fatal" below). All three are cheap single comparisons on data the
+core already holds; the `TaskGroup` check runs before the group is sealed and `shield`'s before the
+proxy task is created.
 
 What is deliberately **not** diagnosed is a cycle through `Event`: "who will set the event I am
 blocked on" is not expressible in the API surface — `Event` is a value object and any party may call
@@ -100,8 +167,9 @@ surveyed, not proved: `debug::snapshot()` (include/weave/debug.hpp) exports the 
 single blocking point records `TaskRecord::wait_ev` and `wait_since`, so a snapshot can say who is
 blocked on which backend event and for how long in simulation time — and `debug::dump()` prints it,
 letting a human or a failing test decide. The same limit applies to a mutual
-`Task::await` cycle (`a` awaits `b` while `b` awaits `a`): the await edge is not recorded anywhere,
-only the terminal-state event is.
+`Task::await` cycle (`a` awaits `b` while `b` awaits `a`) and to a cycle built through another
+task's shield (`a` shields `b` while `b` awaits `a`): the edge is not recorded anywhere, only the
+terminal-state event is.
 
 Related hygiene: the identity of the executing task is kept **per simulation process by the backend**
 (`port::owner_task`), not in a core global. A task suspended in its own process therefore cannot
@@ -144,9 +212,9 @@ status. The regression pins exactly that: `tests/fatal_semantics.cpp`
 expectation by `tests/expect_fatal.sh` and `tests/svdpi/run.sh --expect-fatal` — the headline must be
 present, the pass marker must be absent.
 
-The four fatal sites: a diagnosed wait cycle (`Task::await()` on itself, `TaskGroup::wait()` from one
-of the group's own children), a blocking primitive in a process running no weave task, and a
-suspension after the body returned (a done callback). Everything else that a caller can recover from
+The five fatal sites: a diagnosed wait cycle (`Task::await()` on itself, `TaskGroup::wait()` from one
+of the group's own children, `shield()` on the running task), a blocking primitive in a process
+running no weave task, and a suspension after the body returned (a done callback). Everything else that a caller can recover from
 — `Lock`/`Semaphore` protocol errors, `as_completed`/`TaskGroup` misuse, an invalid task handle — is
 thrown before any state is mutated and stays an ordinary `std::logic_error`.
 
