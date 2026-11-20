@@ -43,8 +43,9 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `wait({t1, ...}, return_when, timeout)` | `await asyncio.wait(fs, ...)` | 返回 `{done, pending}`；不取消子任务 |
 | `shield(t)` | `asyncio.shield(aw)` | 返回代理任务；取消/超时止步于代理 |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` 阻塞并按完成顺序产出 |
-| `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | 结构化并发；首个失败会取消兄弟任务 |
+| `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | 结构化并发；子任务失败会取消兄弟任务，全部落地后以 `ExceptionGroup` 抛出 |
 | `CancelledError` | `asyncio.CancelledError` | 取消信号；**不**派生自 `std::exception`，详见 [architecture](architecture_zh.md) |
+| `ExceptionGroup` | `ExceptionGroup`（由 `asyncio.TaskGroup` 抛出） | 聚合 `TaskGroup` 的子任务失败，按完成顺序排列；单个失败也会包组 |
 | `DeadlockError` | — | asyncio 无对应物（Python 对 join 自身抛 `RuntimeError`）：可诊断的等待环——自 await、`TaskGroup` 子任务等待自己的组。派生自 `std::logic_error` |
 | `TimeoutError` | `TimeoutError` | 超时信号；派生自 `std::exception` |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | 屏障被破坏/重置信号；派生自 `std::runtime_error`（≡ `RuntimeError`） |
@@ -66,11 +67,6 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 
 ### 已知偏差
 
-- `TaskGroup` 没有 `ExceptionGroup`：`wait()` 直接重抛首个失败，即仍在等待时按完成顺序取第一个
-  FAILED（在调用 `wait()` 之前就已结束的子任务则按创建顺序回放）；
-- `gather` 提前返回后，其余任务后续的失败不会报告到任何地方：仍可通过任务句柄取回，并且完全不存在
-  "异常从未被取出"这类诊断（asyncio 在这里同样抑制该警告，因为 `gather` 的 `_done_callback` 会把
-  遗留任务标记为已取出；但对无人 await 的任务，asyncio 是会告警的）；
 - `Barrier` 没有 `async with` 形式：守卫无法把 `wait()` 的索引交还给函数体，而 Python 的
   `async with barrier` 可以（它返回 `wait()` 的索引），所以请显式调用 `wait()`；
   `abort()` / `reset()` 是普通的非挂起成员函数，尽管 asyncio 把它们写作 `async def`。

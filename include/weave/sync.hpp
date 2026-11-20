@@ -144,18 +144,48 @@ private:
 
 AsCompleted as_completed(std::initializer_list<Task> tasks);
 
+// ── ExceptionGroup (asyncio.ExceptionGroup) ──────────────────────────────────
+
+// Aggregates the failures of a TaskGroup's child tasks, thrown by TaskGroup::wait() — asyncio's
+// ExceptionGroup, raised by asyncio.TaskGroup since 3.11. Even a single failure is wrapped (the
+// group IS the exception wait() throws), and the individual failures stay reachable through
+// exceptions() in completion order. Deriving from std::exception mirrors asyncio, where
+// ExceptionGroup derives from Exception: a TaskGroup failure is an ordinary failure path that a
+// generic catch (const std::exception&) backstop may handle, unlike CancelledError. Members are
+// std::exception-derived by construction (the dispatch path stores only what survived the
+// CancelledError split).
+//
+// what() and the destructor are defined out-of-line (src/core/sync.cpp): each acts as a key
+// function, so the vtable/typeinfo are emitted exactly once, in libweave.so, and a cross-DSO catch
+// matches (see TimeoutError's comment, and backends.md's ABI notes).
+class ExceptionGroup : public std::exception {
+public:
+  explicit ExceptionGroup(std::vector<std::exception_ptr> exceptions);
+  // The aggregated child failures, in completion order
+  const std::vector<std::exception_ptr>& exceptions() const noexcept { return exceptions_; }
+  const char* what() const noexcept override;
+  ~ExceptionGroup() override;
+
+private:
+  std::vector<std::exception_ptr> exceptions_;
+  std::string what_;  // Built at construction, mirroring CPython's message
+};
+
 // ── TaskGroup (asyncio.TaskGroup) ────────────────────────────────────────────
 
 // Structured concurrency: child tasks are created with the group's create_task, and wait() blocks
 // until all of them finish:
 //   · all finished (successfully or cancelled externally) → returns normally
-//   · the first FAILED (in completion order) → cancel all unfinished siblings, wait for them all to
-//     land, then rethrow its exception
+//   · any FAILED (in completion order — children that had already landed before wait() replay
+//     in creation order) → the first one cancels all unfinished siblings; once every child has
+//     landed, wait() throws ExceptionGroup aggregating EVERY child failure — including failures
+//     that landed during the drain — even a single one is wrapped (matching asyncio.TaskGroup
+//     since 3.11)
 //   · the waiter is cancelled → cascade-cancel all unfinished child tasks, wait for them to land,
-//     then throw CancelledError
+//     then throw CancelledError (failures collected meanwhile are consumed by the group machinery,
+//     as in asyncio)
 // A child task cancelled externally (CANCELLED) is not a failure and does not trigger sibling
 // cancellation (matching asyncio.TaskGroup's tolerance of externally cancelled child tasks).
-// Deviation: no ExceptionGroup, only the first failure is rethrown.
 // After wait(), create_task or a second wait() throws std::logic_error.
 //
 // cancel() (asyncio.TaskGroup.cancel, Python 3.15+): actively cancels all unfinished child tasks

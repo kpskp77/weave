@@ -4,6 +4,7 @@
 // Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
 // case_runner.hpp).
 
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <weave/weave.hpp>
@@ -13,6 +14,20 @@
 using namespace weave;
 using weave_test::report;
 using weave_test::run_case;
+
+namespace {
+// Unwraps the i-th sub-exception of an ExceptionGroup as its what() text, carrying the same case
+// prefix as the inline assertions so a failure names the case it belongs to.
+std::string sub_what(const char* cs, const ExceptionGroup& eg, std::size_t i) {
+  try {
+    std::rethrow_exception(eg.exceptions().at(i));
+  } catch (const std::exception& e) {
+    return e.what();
+  } catch (...) {
+  }
+  throw std::logic_error(std::string(cs) + ": sub-exception must be a std::exception");
+}
+}  // namespace
 
 WEAVE_TEST(taskgroup_semantics) {
   // case 1: everything succeeds → wait returns normally and every child is finished
@@ -28,8 +43,8 @@ WEAVE_TEST(taskgroup_semantics) {
       throw std::logic_error("case1: all children must finish DONE");
   });
 
-  // case 2: first failure → cancel siblings and rethrow the first exception after all have
-  // landed
+  // case 2: a child failure → cancel siblings, and after all have landed throw an ExceptionGroup
+  // wrapping that failure (asyncio wraps even a single failure)
   run_case(__func__, "case2", [&] {
     Event block;
     TaskGroup tg;
@@ -39,9 +54,11 @@ WEAVE_TEST(taskgroup_semantics) {
     try {
       tg.wait();
       throw std::logic_error("case2: unreachable");
-    } catch (const std::runtime_error& e) {
-      if (std::string(e.what()) != "tg2_boom")
-        throw std::logic_error("case2: first failure must be rethrown");
+    } catch (const ExceptionGroup& eg) {
+      if (eg.exceptions().size() != 1)
+        throw std::logic_error("case2: a single failure must still be wrapped");
+      if (sub_what("case2", eg, 0) != "tg2_boom")
+        throw std::logic_error("case2: the child failure must be aggregated into the group");
     }
     if (!victim.cancelled()) throw std::logic_error("case2: sibling must be cancelled on failure");
     if (!victim.done())
@@ -110,7 +127,7 @@ WEAVE_TEST(taskgroup_semantics) {
   });
 
   // case 6: failures follow completion order, not creation order: a later-created task that fails
-  // earlier wins
+  // earlier wins; the group keeps that completion order
   run_case(__func__, "case6", [&] {
     Event gate;
     TaskGroup tg;
@@ -123,8 +140,10 @@ WEAVE_TEST(taskgroup_semantics) {
     try {
       tg.wait();
       throw std::logic_error("case6: unreachable");
-    } catch (const std::runtime_error& e) {
-      if (std::string(e.what()) != "tg6_early")
+    } catch (const ExceptionGroup& eg) {
+      if (eg.exceptions().size() != 1)
+        throw std::logic_error("case6: only the landed failure is in the group");
+      if (sub_what("case6", eg, 0) != "tg6_early")
         throw std::logic_error("case6: first failure by completion order must win");
     }
     if (!late.cancelled()) throw std::logic_error("case6: pending sibling must be cancelled");
@@ -168,6 +187,64 @@ WEAVE_TEST(taskgroup_semantics) {
       throw std::logic_error("case8: child must observe cancel msg from TaskGroup.cancel()");
     if (!done_child.done() || done_child.cancelled())
       throw std::logic_error("case8: already-DONE child must be untouched");
+  });
+
+  // case 9: two children fail → ExceptionGroup aggregates BOTH, in completion order — the first
+  // failure (in completion order) triggers the sibling cancellation, and a failure landing during
+  // the drain is collected too (asyncio aggregates it into the group as well)
+  run_case(__func__, "case9", [&] {
+    Event gate, blocked;
+    TaskGroup tg;
+    auto a = tg.create_task("tg9_a", [&] {
+      blocked.set();
+      try {
+        gate.wait();
+      } catch (const CancelledError&) {
+        // Refuses the cascade cancellation: lands FAILED during the drain, not CANCELLED
+        throw std::runtime_error("tg9_a");
+      }
+    });
+    [[maybe_unused]] auto b =
+        tg.create_task("tg9_b", [] { throw std::runtime_error("tg9_b"); });  // Lands first
+    blocked.wait();  // tg9_a is parked on gate; tg9_b has failed and is waiting to be collected
+    try {
+      tg.wait();
+      throw std::logic_error("case9: unreachable");
+    } catch (const ExceptionGroup& eg) {
+      if (eg.exceptions().size() != 2)
+        throw std::logic_error("case9: both failures must be aggregated");
+      if (sub_what("case9", eg, 0) != "tg9_b" || sub_what("case9", eg, 1) != "tg9_a")
+        throw std::logic_error("case9: the group must keep completion order, not creation order");
+    }
+    if (!a.done() || !b.done())
+      throw std::logic_error("case9: every child must be settled before wait returns");
+  });
+
+  // case 10: a sibling that swallows the cascade cancellation and returns normally is not a
+  // failure → the group contains only the genuine failure, and wait() still throws
+  run_case(__func__, "case10", [&] {
+    Event never;
+    TaskGroup tg;
+    [[maybe_unused]] auto failer =
+        tg.create_task("tg10_failer", [] { throw std::runtime_error("tg10_boom"); });
+    auto stubborn = tg.create_task("tg10_stubborn", [&] {
+      try {
+        never.wait();
+      } catch (const CancelledError&) {
+        // Refuses cancellation: finishes DONE, which is not a failure
+      }
+    });
+    try {
+      tg.wait();
+      throw std::logic_error("case10: unreachable");
+    } catch (const ExceptionGroup& eg) {
+      if (eg.exceptions().size() != 1)
+        throw std::logic_error("case10: only the genuine failure belongs to the group");
+      if (sub_what("case10", eg, 0) != "tg10_boom")
+        throw std::logic_error("case10: the genuine failure must be aggregated");
+    }
+    if (!stubborn.done() || stubborn.cancelled())
+      throw std::logic_error("case10: the DONE sibling must be settled, not cancelled");
   });
 
   report(__func__);

@@ -205,7 +205,7 @@ weave/time.hpp     duration (int64 femtoseconds) + literals
 weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event / Pulse
 weave/sv.hpp       sv::Edge (named cross-language edge; no dependencies)
-weave/debug.hpp    debug::snapshot / debug::dump
+weave/debug.hpp    debug::snapshot / debug::dump / debug::take_unretrieved_failures
 weave/locks.hpp    Lock / LockGuard / Condition (communication primitive, built on Event)
 weave/queue.hpp    Queue<T> / PriorityQueue<T> / LifoQueue<T> + QueueEmpty / QueueFull /
                   QueueShutDown (communication primitives, built on Event; header-only aliases
@@ -214,7 +214,8 @@ weave/queue.hpp    Queue<T> / PriorityQueue<T> / LifoQueue<T> + QueueEmpty / Que
 weave/semaphore.hpp Semaphore / SemaphoreGuard / BoundedSemaphore / BoundedSemaphoreGuard
                   (communication primitive, built on Event)
 weave/barrier.hpp Barrier / BrokenBarrierError (communication primitive, built on Condition)
-weave/sync.hpp     gather / wait_for / wait / shield / as_completed / TaskGroup
+weave/sync.hpp     gather / wait_for / wait / shield / as_completed / TaskGroup +
+                  ExceptionGroup (combinators and structured concurrency)
 weave/test.hpp     WEAVE_TEST registration
 weave/sc.hpp       SystemC backend bootstrap entry point
 weave.hpp          umbrella: including this file alone yields the whole public API

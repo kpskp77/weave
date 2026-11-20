@@ -99,7 +99,12 @@ int backend_wait(int ev_id, std::int64_t timeout_ticks, Ownerless ownerless) {
 }
 
 void dispatch_completed(TaskRecord& r) {
-  if (r.state == TaskState::FAILED) std::rethrow_exception(r.eptr);
+  if (r.state == TaskState::FAILED) {
+    // await retrieves the failure (wait_for/timeout rethrow through await too), which silences the
+    // unretrieved-failure sweep — as awaiting a failed future does in asyncio.
+    r.eptr_retrieved = true;
+    std::rethrow_exception(r.eptr);
+  }
   // Rethrow a CancelledError carrying the original msg for the CANCELLED terminal state (as in
   // asyncio: whoever awaits a cancelled task receives the same CancelledError(msg))
   if (r.state == TaskState::CANCELLED) throw cancelled_with_msg(r.cancel_msg);

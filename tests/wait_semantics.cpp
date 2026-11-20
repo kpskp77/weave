@@ -59,6 +59,15 @@ WEAVE_TEST(wait_semantics) {
     if (slow.done()) throw std::logic_error("case3: slow must still be pending");
     if (r.done.size() + r.pending.size() != 3)
       throw std::logic_error("case3: done/pending must partition all tasks");
+    // wait() never retrieves child failures (matching asyncio.wait); consume this one explicitly
+    // so the unretrieved-failure sweep stays silent — left alone, it would be reported once as
+    // "exception was never retrieved" (debug::take_unretrieved_failures)
+    try {
+      failer.await();
+      throw std::logic_error("case3: unreachable");
+    } catch (const std::runtime_error& e) {
+      if (std::string(e.what()) != "w3") throw;
+    }
     killer.await();
     try {
       victim.await();

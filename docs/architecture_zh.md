@@ -163,7 +163,7 @@ weave/time.hpp     duration（int64 飞秒）+ 字面量
 weave/task.hpp     Task / create_task / sleep / CancelledError
 weave/event.hpp    Event / Pulse
 weave/sv.hpp       sv::Edge（具名跨语言边沿；无依赖）
-weave/debug.hpp    debug::snapshot / debug::dump
+weave/debug.hpp    debug::snapshot / debug::dump / debug::take_unretrieved_failures
 weave/locks.hpp    Lock / LockGuard / Condition（通信原语，构建在 Event 之上）
 weave/queue.hpp    Queue<T> / PriorityQueue<T> / LifoQueue<T> + QueueEmpty / QueueFull /
                   QueueShutDown（通信原语，构建在 Event 之上；是 detail::QueueBase<T, Store>
@@ -171,7 +171,8 @@ weave/queue.hpp    Queue<T> / PriorityQueue<T> / LifoQueue<T> + QueueEmpty / Que
 weave/semaphore.hpp Semaphore / SemaphoreGuard / BoundedSemaphore / BoundedSemaphoreGuard
                   （通信原语，构建在 Event 之上）
 weave/barrier.hpp Barrier / BrokenBarrierError（通信原语，构建在 Condition 之上）
-weave/sync.hpp     gather / wait_for / wait / shield / as_completed / TaskGroup
+weave/sync.hpp     gather / wait_for / wait / shield / as_completed / TaskGroup +
+                  ExceptionGroup（组合子与结构化并发）
 weave/test.hpp     WEAVE_TEST 注册
 weave/sc.hpp       SystemC 后端 bootstrap 入口点
 weave.hpp          伞头：仅包含这一个文件即可获得完整公共 API

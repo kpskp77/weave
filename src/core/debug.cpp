@@ -8,6 +8,7 @@
 // same SIMLOG_LEVEL switch.
 
 #include <algorithm>
+#include <exception>
 #include <weave/debug.hpp>
 
 #include "core_internal.hpp"
@@ -37,6 +38,33 @@ Snapshot snapshot() {
     snap.waiters.push_back(std::move(w));
   }
   return snap;
+}
+
+std::vector<UnretrievedFailure> take_unretrieved_failures() {
+  std::vector<UnretrievedFailure> out;
+  for (std::size_t i = 0; i < detail::g_tasks.size(); ++i) {
+    detail::TaskRecord& r = detail::g_tasks[i];
+    if (r.state != detail::TaskState::FAILED || r.eptr_retrieved) continue;
+    const int id = static_cast<int>(i) + 1;  // Index = id - 1 (see core_internal.hpp)
+    // The root task's failure is the run's own result, already surfaced by the runner ([FAIL] /
+    // root_status): it is never an "unretrieved" failure.
+    if (id == detail::g_root) continue;
+    UnretrievedFailure f;
+    f.task_id = id;
+    f.task_name = r.name;
+    try {
+      std::rethrow_exception(r.eptr);
+    } catch (const std::exception& e) {
+      f.what = e.what();
+    } catch (...) {
+      // A foreign throw (weave_task_main stores whatever is not CancelledError); there is no
+      // portable type name to show, so report the fact itself.
+      f.what = "non-std exception";
+    }
+    r.eptr_retrieved = true;  // Report at most once per task, as asyncio's warning does
+    out.push_back(std::move(f));
+  }
+  return out;
 }
 
 void dump(const char* tag) noexcept {

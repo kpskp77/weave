@@ -38,6 +38,24 @@ struct Snapshot {
 // Pure export: no suspension, no state change. Only allocation may fail (std::bad_alloc).
 Snapshot snapshot();
 
+// One FAILED task whose exception nobody ever retrieved — the entries consumed by
+// take_unretrieved_failures().
+struct UnretrievedFailure {
+  int task_id = -1;
+  std::string task_name;
+  std::string what;  // The failure's what() text ("non-std exception" for a foreign throw)
+};
+
+// Every FAILED task whose exception has never been retrieved (awaited, gathered, collected by a
+// combinator) nor reported before — and marks each as reported, so the report fires at most once
+// per task. This is the analogue of asyncio's "Task exception was never retrieved" warning: the
+// registered-test driver (src/core/registry.cpp) calls it after every test and prints the entries;
+// a task that fails and is never awaited shows up exactly once, between that test's [PASS]/[FAIL]
+// line and the next test's. Like asyncio, reporting is warning-only: it does not fail the run.
+// Pure bookkeeping walk: no suspension, no task context needed, never touches the simulation
+// state (allocation failures propagate, as in snapshot()).
+std::vector<UnretrievedFailure> take_unretrieved_failures();
+
 // One line per waiter and one per live task, prefixed with tag, through simlog ("weave.debug",
 // info) — the same stream and sim-time stamp as the rest of the core trace, so SIMLOG_LEVEL
 // controls it like any other module. Never suspends and never throws (allocation and formatting

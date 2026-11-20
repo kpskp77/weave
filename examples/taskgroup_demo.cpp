@@ -1,8 +1,10 @@
 // Common TaskGroup usage: structured concurrency — it returns only once every task in the group
-// has finished; the first failure (in completion order) cancels the remaining siblings and is
-// rethrown after all of them have landed; an outer cancellation cascade-cancels every child.
+// has finished; a child failure (in completion order) cancels the remaining siblings and is
+// thrown as an ExceptionGroup once all of them have landed; an outer cancellation cascade-cancels
+// every child.
 
 #include <cstdio>
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <weave/weave.hpp>
@@ -21,7 +23,7 @@ WEAVE_TEST(taskgroup_demo) {
   }
 
   // ── failure path: the first failure cancels siblings, and wait()
-  // rethrows that exception after everything has landed ─────────────────
+  // throws an ExceptionGroup wrapping it after everything has landed ────
   {
     TaskGroup tg;
     Event block;
@@ -30,9 +32,14 @@ WEAVE_TEST(taskgroup_demo) {
     auto victim = tg.create_task("tg_victim", [&] { block.wait(); });
     try {
       tg.wait();
-      throw std::logic_error("taskgroup_demo: wait must rethrow the first failure");
-    } catch (const std::runtime_error& e) {
-      if (std::string(e.what()) != "boom") throw;
+      throw std::logic_error("taskgroup_demo: wait must throw the ExceptionGroup");
+    } catch (const ExceptionGroup& eg) {
+      if (eg.exceptions().size() != 1) throw;
+      try {
+        std::rethrow_exception(eg.exceptions().front());
+      } catch (const std::runtime_error& e) {
+        if (std::string(e.what()) != "boom") throw;
+      }
     }
     if (!victim.cancelled())
       throw std::logic_error("taskgroup_demo: siblings must be cancelled on failure");

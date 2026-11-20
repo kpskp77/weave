@@ -63,6 +63,10 @@ struct TaskRecord {
   std::function<void()> body;
   TaskState state = TaskState::PENDING;
   std::exception_ptr eptr;
+  // Set once the failure has been retrieved (Task::await / a combinator's collection) or reported
+  // through the unretrieved-failure sweep — the analogue of asyncio's "Task exception was never
+  // retrieved" bookkeeping, which fires at most once per task. Only meaningful in FAILED.
+  bool eptr_retrieved = false;
   int abort_ev = -1;  // Per-task private cancel event (attached as a leg to every blocking wait)
   int done_ev = -1;   // Task completion event (monotonic, may be awaited by any number of parties)
   bool cancel_armed = false;

@@ -29,6 +29,22 @@ const char* TimeoutError::what() const noexcept {
   return "weave::TimeoutError";
 }
 
+ExceptionGroup::ExceptionGroup(std::vector<std::exception_ptr> exceptions)
+    : exceptions_(std::move(exceptions)) {
+  // Mirrors CPython's TaskGroup message: "unhandled errors in a TaskGroup (2 sub-exceptions)".
+  const std::size_t n = exceptions_.size();
+  what_ = "unhandled errors in a weave::TaskGroup (" + std::to_string(n) +
+          (n == 1 ? " sub-exception)" : " sub-exceptions)");
+}
+
+// Out-of-line key functions (see the class comment in include/weave/sync.hpp): emitted once, in
+// the library, so the vtable/typeinfo stay unique across DSOs and a cross-DSO catch matches.
+const char* ExceptionGroup::what() const noexcept {
+  return what_.c_str();
+}
+
+ExceptionGroup::~ExceptionGroup() = default;
+
 namespace detail {
 
 // Semantics follow asyncio.gather(return_exceptions=False):
@@ -54,7 +70,12 @@ void gather_impl(std::initializer_list<Task> tasks) {
     const int id = t.id_;
     add_done_callback(id, [st, id]() {
       auto& r = record(id);
-      if (!st->failed && (r.state == TaskState::FAILED || r.state == TaskState::CANCELLED)) {
+      if (st->failed) {
+        // The first failure already completed gather: retrieve this late completion silently, as
+        // asyncio's _done_callback does (fut.exception() once outer.done()), so a leftover
+        // sibling's late failure never triggers the unretrieved-failure sweep.
+        if (r.state == TaskState::FAILED) r.eptr_retrieved = true;
+      } else if (r.state == TaskState::FAILED || r.state == TaskState::CANCELLED) {
         st->failed = true;
         st->first_failed_id = id;
         st->wake.set();  // First failure: wake up immediately, without waiting for the rest
@@ -106,9 +127,13 @@ std::vector<std::exception_ptr> gather(std::initializer_list<Task> tasks, return
     const int id = detail::task_id(t);
     detail::add_done_callback(id, [st, i, id]() {
       auto& r = detail::record(id);
-      if (r.state == detail::TaskState::FAILED)
+      if (r.state == detail::TaskState::FAILED) {
+        // The result vector hands the exception to the caller, who retrieves it — like asyncio's
+        // gather(return_exceptions=True), whose _done_callback calls fut.exception() and thereby
+        // silences the "exception was never retrieved" warning.
+        r.eptr_retrieved = true;
         st->results[i] = r.eptr;
-      else if (r.state == detail::TaskState::CANCELLED)
+      } else if (r.state == detail::TaskState::CANCELLED)
         // CANCELLED mapping for the return_exceptions form: rethrow a CancelledError carrying the
         // original msg, matching how asyncio.gather(*aws, return_exceptions=True) preserves
         // CancelledError(msg)
@@ -355,9 +380,9 @@ void TaskGroup::wait() {
 
   struct GroupState {
     long remaining;
-    bool failed = false;
-    int first_failed = -1;  // The first FAILED, in completion order
-    int wake_ev = -1;       // Phase one: first failure or everything completed
+    std::vector<int> failed_ids;  // Every FAILED child, in completion order (a done callback runs
+                                  // at landing, so appending keeps that order)
+    int wake_ev = -1;             // Phase one: first failure or everything completed
     int drain_ev = -1;      // Phase two: wait for everything to land after cancelling siblings
     bool waiting = false;   // Blocked on wake_ev
     bool draining = false;  // Blocked on drain_ev
@@ -382,20 +407,19 @@ void TaskGroup::wait() {
       const auto state = detail::record(id).state;
       --st->remaining;
       // CANCELLED tolerance (matching asyncio.TaskGroup's handling of externally cancelled child
-      // tasks): only a genuine FAILED triggers sibling cancellation
-      const bool first_failure = state == detail::TaskState::FAILED && !st->failed;
-      if (first_failure) {
-        st->failed = true;
-        st->first_failed = id;
-      }
+      // tasks): only a genuine FAILED counts, and EVERY failure is collected — including ones
+      // landing during the drain after the sibling cancellation (asyncio aggregates those into the
+      // ExceptionGroup too)
+      const bool first_failure = state == detail::TaskState::FAILED && st->failed_ids.empty();
+      if (state == detail::TaskState::FAILED) st->failed_ids.push_back(id);
       if (st->waiting && (first_failure || st->remaining == 0)) port::trigger(st->wake_ev);
       if (st->draining && st->remaining == 0) port::trigger(st->drain_ev);
     });
   }
 
   bool cancelled = false;
-  if (!st->failed && st->remaining > 0) {  // Block only if the wakeup condition was not met during
-                                           // registration
+  if (st->failed_ids.empty() && st->remaining > 0) {  // Block only if the wakeup condition was not
+                                                      // met during registration
     st->waiting = true;
     try {
       detail::backend_wait(st->wake_ev, -1);
@@ -405,15 +429,15 @@ void TaskGroup::wait() {
     st->waiting = false;
   }
 
-  if (cancelled || st->failed) {
-    // First FAILED or the waiter was cancelled: cancel all unfinished siblings (matching asyncio
+  if (cancelled || !st->failed_ids.empty()) {
+    // A FAILED child or the waiter was cancelled: cancel all unfinished siblings (matching asyncio
     // TaskGroup). The cascade-cancelled siblings do not carry the caller's msg (msg belongs to the
     // context of whoever initiated the cancellation).
-    if (st->failed)
+    if (!st->failed_ids.empty())
       detail::trace_sync()->debug(
           "TaskGroup: task {} '{}' failed, cancelling unfinished "
           "siblings",
-          st->first_failed, detail::record(st->first_failed).name);
+          st->failed_ids.front(), detail::record(st->failed_ids.front()).name);
     else
       detail::trace_sync()->debug("TaskGroup: waiter cancelled, cancelling unfinished children");
     for (const Task& t : children) {
@@ -437,10 +461,26 @@ void TaskGroup::wait() {
   if (cancelled) {
     // The TaskGroup waiter was cancelled: throw a CancelledError carrying the calling task's
     // current cancel_msg, so that an outer layer awaiting this task sees the outer cancellation
-    // reason (matching the propagation of asyncio's CancelledError(msg)).
+    // reason (matching the propagation of asyncio's CancelledError(msg)). Failures collected
+    // meanwhile are consumed by the group machinery below the cancellation, as in asyncio.
     throw detail::cancelled_with_msg(detail::current().cancel_msg);
   }
-  if (st->failed) detail::dispatch_completed(detail::record(st->first_failed));
+  if (!st->failed_ids.empty()) {
+    // Aggregate every child failure, in completion order, and throw it as the group's exception —
+    // even a single failure is wrapped, matching asyncio.TaskGroup. Collecting consumes the
+    // failures (the group retrieved them, like asyncio's), so the unretrieved-failure sweep stays
+    // silent about them.
+    std::vector<std::exception_ptr> failures;
+    failures.reserve(st->failed_ids.size());
+    for (const int id : st->failed_ids) {
+      auto& r = detail::record(id);
+      r.eptr_retrieved = true;
+      failures.push_back(r.eptr);
+    }
+    detail::trace_sync()->debug("TaskGroup: {} child task(s) failed, throwing ExceptionGroup",
+                                failures.size());
+    throw ExceptionGroup(std::move(failures));
+  }
 }
 
 }  // namespace weave

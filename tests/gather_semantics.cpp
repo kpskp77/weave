@@ -69,8 +69,10 @@ WEAVE_TEST(gather_semantics) {
       throw std::logic_error("case2: gather must return at first failure, not wait for peers");
     if (slow.cancelled())
       throw std::logic_error("case2: sibling must not be cancelled on peer failure");
-    // A sibling's late failure stays only in the task bookkeeping (no unretrieved warning, which
-    // the MVP accepts); this also covers "an Event is set() again after gather returned early"
+    // The sibling's late failure stays retrievable through the task handle (gather retrieves its
+    // late-completing children silently, as asyncio's _done_callback does, so even a never-awaited
+    // leftover is not reported by the sweep — tests/debug_semantics.cpp pins that); this also
+    // covers "an Event is set() again after gather returned early"
     go_slow.set();
     try {
       slow.await();

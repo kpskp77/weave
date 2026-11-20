@@ -6,6 +6,7 @@
 // (see case_runner.hpp). It shares the assertion-body style with task_semantics.cpp and is
 // regressed by both the weave_smoke_sc and weave_smoke_svdpi backends.
 
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <weave/weave.hpp>
@@ -120,6 +121,71 @@ WEAVE_TEST(debug_semantics) {
     const debug::Snapshot after = debug::snapshot();
     if (find_waiter(after, t.id()) != nullptr)
       throw std::logic_error("case4: the woken task must have left the graph");
+  });
+
+  // case 5: a FAILED task nobody retrieved is reported exactly once by
+  // take_unretrieved_failures (asyncio's "Task exception was never retrieved"), while an awaited
+  // failure is never listed; reporting does not consume the exception itself — a later await
+  // still rethrows it
+  run_case(__func__, "case5", [&] {
+    auto orphan = create_task("dbg5_orphan", [] { throw std::runtime_error("dbg5_boom"); });
+    auto retrieved = create_task("dbg5_retrieved", [] { throw std::runtime_error("dbg5_seen"); });
+    try {
+      retrieved.await();
+      throw std::logic_error("case5: unreachable");
+    } catch (const std::runtime_error&) {
+      // Expected path: await retrieves the failure
+    }
+    // dbg5_orphan was created first and its body has no suspension point, so it has already
+    // landed by the time the await above returns
+    const auto unretrieved = debug::take_unretrieved_failures();
+    if (unretrieved.size() != 1)
+      throw std::logic_error("case5: exactly the unawaited failure must be reported");
+    if (unretrieved[0].task_id != orphan.id())
+      throw std::logic_error("case5: the reported task must be the orphan");
+    if (unretrieved[0].task_name != "dbg5_orphan")
+      throw std::logic_error("case5: the report must carry the task name");
+    if (unretrieved[0].what != "dbg5_boom")
+      throw std::logic_error("case5: the report must carry the failure's what()");
+    const auto again = debug::take_unretrieved_failures();
+    if (!again.empty()) throw std::logic_error("case5: each failure must be reported at most once");
+    try {
+      orphan.await();
+      throw std::logic_error("case5: unreachable");
+    } catch (const std::runtime_error& e) {
+      if (std::string(e.what()) != "dbg5_boom")
+        throw std::logic_error("case5: reporting must not consume the exception");
+    }
+  });
+
+  // case 6: failures a combinator consumes are never listed — gather(return_exceptions=True)
+  // retrieves the mapped failure, TaskGroup collects into ExceptionGroup — and a CANCELLED task
+  // is not a failure at all
+  run_case(__func__, "case6", [&] {
+    auto bad = create_task("dbg6_bad", [] { throw std::runtime_error("dbg6_boom"); });
+    (void)gather({bad}, return_exceptions);  // Maps the failure into the result: retrieved
+    TaskGroup tg;
+    [[maybe_unused]] auto grouped =
+        tg.create_task("dbg6_grouped", [] { throw std::runtime_error("dbg6_grouped"); });
+    try {
+      tg.wait();
+      throw std::logic_error("case6: unreachable");
+    } catch (const ExceptionGroup&) {
+      // Expected path: the group consumed the failure
+    }
+    Event block;
+    auto victim = create_task("dbg6_victim", [&] { block.wait(); });
+    auto killer = create_task("dbg6_killer", [&victim] { victim.cancel(); });
+    try {
+      victim.await();
+      throw std::logic_error("case6: unreachable");
+    } catch (const CancelledError&) {
+      // Expected path: cancellation is not a failure
+    }
+    killer.await();
+    const auto left = debug::take_unretrieved_failures();
+    if (!left.empty())
+      throw std::logic_error("case6: combinator-consumed and cancelled tasks must not be listed");
   });
 
   report(__func__);

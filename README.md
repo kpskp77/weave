@@ -47,8 +47,9 @@ differences from asyncio are listed under [known deviations](#known-deviations).
 | `wait({t1, ...}, return_when, timeout)` | `await asyncio.wait(fs, ...)` | Returns `{done, pending}`; does not cancel child tasks |
 | `shield(t)` | `asyncio.shield(aw)` | Returns a proxy task; cancellation/timeout stops at the proxy |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` blocks and yields in completion order |
-| `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; first failure cancels siblings |
+| `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | Structured concurrency; a child failure cancels siblings and is thrown as `ExceptionGroup` after all have landed |
 | `CancelledError` | `asyncio.CancelledError` | Cancel signal; does NOT derive from `std::exception`, check more details in [architecture](docs/architecture.md) |
+| `ExceptionGroup` | `ExceptionGroup` (raised by `asyncio.TaskGroup`) | Aggregates a `TaskGroup`'s child failures, in completion order; even a single failure is wrapped |
 | `DeadlockError` | — | No asyncio counterpart (Python raises `RuntimeError` for join-on-self): a diagnosable wait cycle — self-await, a `TaskGroup` child waiting on its own group. Derives from `std::logic_error` |
 | `TimeoutError` | `TimeoutError` | Timeout signal; derives from `std::exception` |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | Barrier-broken/reset signal; derives from `std::runtime_error` (≡ `RuntimeError`) |
@@ -72,13 +73,6 @@ Beyond the mapping table there are three structural differences; most misuse ste
 
 ### Known deviations
 
-- `TaskGroup` has no `ExceptionGroup`: `wait()` rethrows the first failure — the first FAILED in
-  completion order while it still waits (children that had already landed before the `wait()` call
-  are replayed in creation order);
-- after `gather` returns early, later failures of the remaining tasks are reported nowhere: they
-  stay retrievable through the task handle, and there is no "exception was never retrieved"
-  diagnostic at all (asyncio suppresses it here too — `gather`'s `_done_callback` marks the
-  leftovers retrieved — but does warn about a task nobody ever awaits);
 - `Barrier` has no `async with` form: a guard cannot hand `wait()`'s index back to the body, which
   Python's `async with barrier` can (it returns `wait()`'s index), so call `wait()` explicitly;
   `abort()`/`reset()` are plain non-suspending member functions even though asyncio spells them
