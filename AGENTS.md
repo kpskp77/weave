@@ -83,7 +83,8 @@ src/backend/      svdpi.cpp (default) / systemc.cpp, whole files guarded by WEAV
   `CancelledError` stays polymorphic with a virtual destructor.
 - **Unrecoverable violations end the run, they are never thrown**: a blocking call with no task
   context (or after the body returned) and a diagnosed wait cycle (`Task::await()` on itself,
-  `TaskGroup::wait()` from its own child) go through `detail::fatal_violation(WEAVE_SITE, what)` →
+  `TaskGroup::wait()` from its own child, `shield()` on the running task) go through
+  `detail::fatal_violation(WEAVE_SITE, what)` →
   `port::fatal` — headline logged through simlog at `critical` (so `simv -l` and file sinks carry it),
   `debug::dump("fatal")`, `detail::flush_trace()`, then the backend's own failure channel
   (`$fatal(1, …)` via `weave_sv_fatal`, `SC_REPORT_FATAL`) which repeats the headline — never a bare

@@ -12,9 +12,9 @@
 //   · the process must not exit 0.
 //
 // Only one violation can be exercised per process, and this is the one a test is most likely to
-// hit: a task awaiting itself. The other three sites (an ownerless suspension, a suspension after
-// the body returned, a TaskGroup child waiting on its own group) go through the very same
-// detail::fatal_violation path, so they are not repeated here.
+// hit: a task awaiting itself. The other four sites (an ownerless suspension, a suspension after
+// the body returned, a TaskGroup child waiting on its own group, shield() on the running task) go
+// through the very same detail::fatal_violation path, so they are not repeated here.
 //
 // Assertion bodies stay in tests/ (see AGENTS.md); the backend entry points are sc_main.cpp and
 // sv/weave_pkg.sv + tests/weave_tb.sv.

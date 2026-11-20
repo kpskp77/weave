@@ -3,6 +3,10 @@
 // depend on a real clock.
 // Each case prints [PASS]/[FAIL] through run_case, and report summarises at the end (see
 // case_runner.hpp).
+//
+// Not covered here: shield() on the running task, which is a diagnosed wait cycle and ends the run
+// (a body that must die cannot live in a smoke payload); it is listed with the other fatal sites in
+// tests/fatal_semantics.cpp.
 
 #include <stdexcept>
 #include <string>

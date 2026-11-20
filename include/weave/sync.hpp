@@ -124,7 +124,14 @@ WaitResult wait(std::initializer_list<Task> tasks,
 // Returns a proxy task: the proxy mirrors inner's terminal state and exception, but cancelling the
 // proxy / a wait_for timeout / a gather cascade cancellation stops at the proxy layer, and inner
 // keeps running. (Task::await never propagates cancellation to the task being awaited anyway — as
-// in asyncio; shield is for combinators that do cancel child tasks.)
+// in asyncio; shield is for combinators that do cancel child tasks.) Shielding the *calling* task
+// is a diagnosed wait cycle (the proxy would wait for the caller, which waits for the proxy) and
+// ends the run like Task::await() on itself.
+//
+// It is also how a body whose suspension weave cannot see — another DPI export, an SV wait, a
+// third-party blocking call — is kept composable: everyone waits on the proxy, so wait_for /
+// TaskGroup teardown keep their landing guarantees while the worker runs on. See "Suspension
+// outside weave" in docs/architecture.md.
 [[nodiscard]] Task shield(Task& inner);
 
 // ── as_completed (asyncio.as_completed) ──────────────────────────────────────

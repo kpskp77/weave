@@ -276,6 +276,14 @@ WaitResult wait(std::initializer_list<Task> tasks, ReturnWhen return_when,
 // ── shield (asyncio.shield) ────────────────────────────────────────────
 
 Task shield(Task& inner) {
+  // Shielding yourself is the same guaranteed hang as awaiting yourself, and the core can see the
+  // edge for the price of one comparison: the proxy would wait for the caller, which waits for the
+  // proxy. Like Task::await()'s self check it ends the run instead of throwing (fatal_violation
+  // explains why), and it runs before anything is mutated. The `self >= 0` guard keeps an invalid
+  // handle passed from a context without an identity on its normal path (get_name throws).
+  const int self = detail::current_id();
+  if (self >= 0 && inner.id() == self)
+    detail::fatal_violation(WEAVE_SITE, "a task cannot shield itself");
   // The proxy task waits on inner as-is: Task::await never propagates cancellation to the task
   // being awaited anyway, so cancelling the proxy / a timeout / a cascade cancellation stops at the
   // proxy layer and inner keeps running; the proxy mirrors inner's terminal state and exception
