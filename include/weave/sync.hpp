@@ -47,6 +47,9 @@ struct TimeoutError : std::exception {
 //     cancelled, its unfinished child tasks are cancelled too), then throw CancelledError
 template <typename... Ts>
 void gather(Ts&... tasks) {
+  static_assert((std::is_convertible_v<Ts&, Task> && ...),
+                "weave: gather arguments must all be Tasks (asyncio.gather takes awaitables, "
+                "weave takes the Task handles)");
   detail::gather_impl({tasks...});
 }
 

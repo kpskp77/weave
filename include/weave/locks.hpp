@@ -9,8 +9,26 @@
 
 #include <cstddef>
 #include <memory>
+#include <type_traits>
+#include <utility>
 
 namespace weave {
+
+namespace detail {
+
+// Shape check for the predicate a Condition::wait_for loop is built on: it must be callable as
+// pred() and its result must be boolean-testable through `!`, i.e. exactly the expressions the loop
+// body uses. Contextual conversion is deliberate — a result type carrying only an `explicit
+// operator bool` (or a bare int, as in CPython) is legal here, where std::is_invocable_r_v<bool, …>
+// would wrongly reject it, and a void-returning body is rejected here where `!pred()` alone would
+// report only "invalid use of void expression". SFINAE-safe: an uncallable F is false, never a hard
+// error inside the trait.
+template <typename F, typename = void>
+struct predicate_ok : std::false_type {};
+template <typename F>
+struct predicate_ok<F, std::void_t<decltype(!std::declval<F&>()())>> : std::true_type {};
+
+}  // namespace detail
 
 // ── Lock (asyncio.Lock) ───────────────────────────────────────────────────
 //
@@ -109,9 +127,16 @@ public:
   // comment for the cancellation semantics.
   void wait();
 
-  // Calls wait() repeatedly until pred() is true; the lock is held when it returns.
+  // Calls wait() repeatedly until pred() is true; the lock is held when it returns. pred() runs
+  // with the lock held, so it must not block (a sleep() / a Queue::get() / an inner wait() inside
+  // the predicate self-deadlocks) and is expected to inspect only the state the lock protects.
+  // Ill-formed predicates are rejected at compile time with a named diagnostic instead of the
+  // "no match for call to '(Pred) ()'" the loop body would produce.
   template <typename Pred>
   void wait_for(Pred pred) {
+    static_assert(detail::predicate_ok<Pred>::value,
+                  "weave: Condition::wait_for predicate must be callable as pred() and "
+                  "boolean-testable (!pred())");
     while (!pred()) wait();
   }
 
