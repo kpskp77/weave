@@ -118,6 +118,56 @@ chain, and the dump shares the core trace's stream, sim-time stamp and `SIMLOG_L
 it does not prove a cycle (any party may `set()` an `Event`, so "who should wake this" is not
 recorded anywhere). See [architecture](docs/architecture.md#deadlock-diagnostics-only-the-edges-the-core-can-see).
 
+## Dependencies and xmake integration
+
+weave and every library it links against are published as xmake packages in one repository,
+[`kpskp77/xmake-repo`](https://github.com/kpskp77/xmake-repo):
+
+| Package | What it provides | Pulled in by |
+|---|---|---|
+| `weave` | `include/weave/*.hpp` and `libweave.so` | you |
+| `simlog` | the logger behind every diagnostic and the optional trace, stamped with the simulator clock | `weave` — a public link, so depending on weave is enough |
+| `svdpi` | the SystemVerilog DPI-C headers | `weave` with `backend = "svdpi"` (the default) |
+| `systemc` | the Accellera SystemC class library | `weave` with `backend = "systemc"` |
+
+Register the repository once — globally, or per project inside `xmake.lua`:
+
+```console
+$ xrepo add-repo eda https://github.com:kpskp77/xmake-repo.git
+```
+
+```lua
+add_repositories("eda https://github.com:kpskp77/xmake-repo.git")  -- or the https:// URL, no SSH key
+```
+
+Then require weave; the `backend` config picks the kernel it is built against and pulls the matching
+package in, so `simlog` and `svdpi` / `systemc` are never named by hand:
+
+```lua
+add_requires("weave 1.2.0", { configs = { backend = "svdpi" } })  -- or backend = "systemc"
+
+target("my_test")
+    set_languages("c++17")
+    set_kind("shared")          -- SVDPI: the simulator loads the target with -sv_lib
+    add_files("src/*.cpp")
+    add_packages("weave")
+```
+
+`add_packages("weave")` supplies the include directories, the library itself and the transitive
+links. Requirements: xmake >= 2.8, a C++17 compiler, and CMake, which the package recipes build
+through.
+
+Two things the package does not cover:
+
+- **The SystemVerilog side of the SVDPI backend.** `sv/weave_pkg.sv` ships with the weave source
+  tree, not with the package (which installs headers and the library only): compile it next to your
+  testbench, `import weave_pkg::*;` there, and call `weave_run(status)` to bootstrap the run.
+- **The runtime library path.** `simlog` (and `systemc`) are shared, so anything that loads
+  `libweave.so` — `simv` included — has to find them: start it through `xmake run`, which puts the
+  package directories on `LD_LIBRARY_PATH`, or export those directories yourself.
+
+Per-backend integration details, `sc_main` included: [backends](docs/backends.md).
+
 ## Build and run
 
 ```bash

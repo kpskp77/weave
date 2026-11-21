@@ -108,6 +108,55 @@ dump 与 core trace 共用同一条输出流、同一个仿真时间戳和同一
 （谁都可以 `set()` 一个 `Event`，“该由谁唤醒它”没有任何地方记录）。详见
 [架构](architecture_zh.md#死锁诊断只诊断-core-看得见的边)。
 
+## 依赖与 xmake 集成
+
+weave 以及它链接的每一个库，都以 xmake 包的形式发布在同一个仓库里：
+[`kpskp77/xmake-repo`](https://github.com/kpskp77/xmake-repo)。
+
+| 包 | 内容 | 由谁引入 |
+|---|---|---|
+| `weave` | `include/weave/*.hpp` 与 `libweave.so` | 使用方自己 |
+| `simlog` | 所有诊断日志和可选 trace 背后的日志器，时间戳取自仿真时钟 | `weave`——公共链接，所以只依赖 weave 就够了 |
+| `svdpi` | SystemVerilog DPI-C 头文件 | `backend = "svdpi"` 的 `weave`（默认） |
+| `systemc` | Accellera SystemC 类库 | `backend = "systemc"` 的 `weave` |
+
+先注册仓库（全局注册一次，或在 `xmake.lua` 里按项目注册）：
+
+```console
+$ xrepo add-repo eda https://github.com:kpskp77/xmake-repo.git
+```
+
+```lua
+add_repositories("eda https://github.com:kpskp77/xmake-repo.git")  -- 也可以写 https:// 地址，不必配 SSH key
+```
+
+然后依赖 weave：`backend` 配置决定它针对哪个内核构建，并顺带把对应的包拉进来，`simlog` 与
+`svdpi` / `systemc` 都不必手写：
+
+```lua
+add_requires("weave 1.2.0", { configs = { backend = "svdpi" } })  -- 或者 backend = "systemc"
+
+target("my_test")
+    set_languages("c++17")
+    set_kind("shared")          -- SVDPI：仿真器用 -sv_lib 加载这个目标
+    add_files("src/*.cpp")
+    add_packages("weave")
+```
+
+`add_packages("weave")` 会带上头文件目录、库本身以及传递的链接关系。环境要求：xmake >= 2.8、
+支持 C++17 的编译器，以及 CMake（包的制作脚本用它构建）。
+
+有两件事包管不到：
+
+- **SVDPI 后端的 SystemVerilog 那一侧。** `sv/weave_pkg.sv` 随 weave 源码树发布，不在包里（包只安装
+  头文件和库）：把它和测试台一起编译，在测试台里 `import weave_pkg::*;`，再调用 `weave_run(status)`
+  启动整次运行。
+- **运行时的库搜索路径。** `simlog`（以及 `systemc`）是动态库，任何加载 `libweave.so` 的进程——包括
+  `simv`——都必须能找到它们：用 `xmake run` 启动（它会把包的库目录放进 `LD_LIBRARY_PATH`），或者
+  自己导出同样的目录。
+
+各后端的集成细节（包括 `sc_main` 的写法）见 [backends](backends_zh.md)。
+
 ## 构建与运行
 
 ```bash
