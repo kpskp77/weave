@@ -185,6 +185,7 @@ stylua <changed .xmake>                                                    # .st
 
 ## Docs and commits
 
+- Follow schema from [here](https://gist.githubusercontent.com/kpskp77/66866026b906531fa9682c851af83a0f/raw/352e036650bbc31d774a7e62f27ad6c5b3c6bff4/documentation-schema.md)
 - `README.md` and `docs/*.md` exist as English + `_zh` twins. Change one, update the other in the same
   commit. The `_zh` version is not a translation: read the English for meaning, then write what a
   Chinese engineer would write — established Chinese technical terms, Chinese sentence order, no
