@@ -40,10 +40,16 @@ guarantees in summary:
 1. **Process model**: `spawn(id)` creates a simulation process that executes `weave_task_main(id)`;
    the child runs only after the parent hits its next suspension point (or finishes) — ≡ asyncio's
    `create_task` "scheduled, not run immediately".
-2. **Single active process**: at any instant at most one process executes C++ bookkeeping (the core
-   relies on this to maintain global state, so its bookkeeping needs no locks; the identity of the
+2. **Single active process**: at any instant at most one process executes C++ bookkeeping, and it is
+   never preempted — a task body runs to its next blocking point without interference. Everything a
+   body does between two blocking points is therefore atomic with respect to every other task:
+   mutating the registry, unlinking a waiter, handing a lock to the queue head or clearing a flag
+   needs no `std::mutex` / `std::atomic` / spinlock / `std::thread` (all of which would be
+   meaningless inside the simulator and across DPI). The corollary is a publication rule: state that
+   must outlive a suspension has to be consistent and published *before* entering `port::wait`,
+   because from that instant another process may inspect or mutate it. (The identity of the
    executing task is per process and is kept by the backend, see the identity section of
-   [backends](backends.md)).
+   [backends](backends.md).)
 3. **One-shot events**: `create/trigger/destroy`; `trigger` must never target an already destroyed
    id.
 4. **Single suspension point** `wait(ev, timeout, abort, status)`: a three-legged race
@@ -70,8 +76,9 @@ arbitrary point tears the C++ call stack apart, RAII does not unwind, resources 
 bookkeeping state is corrupted. (The single `disable fork` in the backend — the timer service's, see
 `sv/weave_pkg.sv` — only disables its own service-local legs and can never reach another waiter's
 frame; that is the documented exception, not a loophole.) This is isomorphic to asyncio's
-cooperative cancellation (`CancelledError` raised at await points, catchable and refusable).
-`cancel(msg)` matches asyncio 3.9+'s `Task.cancel(msg)`: msg is stored in the task bookkeeping, and
+cooperative cancellation (`CancelledError` raised at await points, catchable and refusable — a body
+that catches it, cleans up and returns normally ends DONE, because cancellation is a request, not a
+kill). `cancel(msg)` matches asyncio 3.9+'s `Task.cancel(msg)`: msg is stored in the task bookkeeping, and
 the same msg is preserved both in the `CancelledError` injected at the blocking point and where
 later `await`/`gather` rethrow it; when a combinator cascade-cancels sibling tasks it passes an
 empty msg (msg belongs to the context of whoever initiated the cancellation).
@@ -83,6 +90,37 @@ cancellation — swallowing it would make the task wrongly finish as DONE and br
 / wait_for's judgement of the CANCELLED terminal state; `TimeoutError`, by contrast, **does derive
 from `std::exception`** (matching asyncio's `TimeoutError`, an ordinary `Exception`), because a
 timeout is a normal failure path that generic logging/backstop code may handle.
+
+### Failure propagation: who cancels whom, and who waits for the landing
+
+The combinators follow asyncio's default rules (no implicit cancellation of siblings), and each is
+shaped so that no child can outlive the stack frame it captured.
+
+- **`gather` reports, it does not govern.** The first failure it observes is rethrown, while the
+  siblings keep running — cancelling them is `TaskGroup`'s job, not `gather`'s. `gather` cascades a
+  cancellation only when `gather` itself is cancelled at its own blocking point, because then the
+  caller is unwinding and the children would otherwise keep a dead frame alive.
+- **A `wait_for` timeout is not a bare throw.** The timeout leg wins, then the child is cancelled and
+  *awaited to landing* before `TimeoutError` leaves the call, so the caller's next statement never
+  runs while the child is still executing. That internal cancellation carries a msg naming its
+  origin (`"wait_for timeout"`), the asyncio 3.12+ convention that keeps an internal timeout
+  distinguishable from an external cancel.
+- **A cancelled waiter never leaves its child running.** When the *caller* of `wait_for` is cancelled
+  at its blocking point, the awaited task is cascade-cancelled, its landing awaited, and only then
+  the original `CancelledError` rethrown — msg preserved, while the cascade carries none (a msg
+  belongs to whoever initiated the cancellation). `timeout(body, limit)` is exactly this pair with
+  the body spawned as a task: one implementation, so a timeout and a caller cancellation cannot
+  disagree.
+- **`TaskGroup` is the structured-concurrency counterpart** and therefore does the opposite by
+  default: the first *FAILED* child (a CANCELLED one does not count) cancels the unfinished siblings,
+  every failure — including those landing during the drain — is aggregated into an `ExceptionGroup`,
+  and `wait()` throws only after every child has landed. Its own waiter being cancelled is not a
+  failure: the children are taken down the same way and the caller's `CancelledError` (with its msg)
+  is what propagates.
+
+Waiting for a landing is bounded by the child actually stopping, not by the timeout, so a
+foreign-blocked child stretches `wait_for` / `TaskGroup::wait()` past their deadline — see the next
+section for why that is the accepted price.
 
 ### Suspension outside weave: foreign blocking and ownerless waits
 
@@ -165,7 +203,8 @@ blocked on" is not expressible in the API surface — `Event` is a value object 
 `set()` — so any attempt to build that graph from the core would be guesswork. That class of hang can only be
 surveyed, not proved: `debug::snapshot()` (include/weave/debug.hpp) exports the wait graph — the
 single blocking point records `TaskRecord::wait_ev` and `wait_since`, so a snapshot can say who is
-blocked on which backend event and for how long in simulation time — and `debug::dump()` prints it,
+blocked on which backend event and for how long in simulation time, and retracts both through a guard
+so the cancellation throw cannot leave a stale waiter behind — and `debug::dump()` prints it,
 letting a human or a failing test decide. The same limit applies to a mutual
 `Task::await` cycle (`a` awaits `b` while `b` awaits `a`) and to a cycle built through another
 task's shield (`a` shields `b` while `b` awaits `a`): the edge is not recorded anywhere, only the
@@ -234,6 +273,15 @@ return paths (success and cancellation) it must first unlink and then destroy th
 later `set()` triggers an already destroyed id. That ordering is the invariant (one
 `detail::scope_exit` carries it, with the order written inside the lambda body); its per-code
 reasoning stays in the header comment of `src/core/event.cpp`.
+
+That cleanup is held by `detail::on_scope_exit`, a guard whose destructors neither throw nor suspend
+— a guard that could suspend would turn cleanup into a second blocking point, i.e. a second place to
+be cancelled inside an unwind. How much the guard covers depends on whether a `CancelledError` can
+escape the frame: `Event::wait()` / `Pulse::wait()` throw out of the function, so the flag reset and
+the destruction are one pair inside a single guard (the asyncio.wait combinator in
+`src/core/sync.cpp` has the same pair), while `TaskGroup::wait()` catches the cancellation in place
+and rethrows only after its children have drained — nothing can escape between those steps, so only
+the event destruction needs guarding.
 
 **`Pulse` is the pure-edge variant of the same carrier** — identical wake-event bookkeeping, no
 flag. It exists because a SystemVerilog `-> ev` has exactly those semantics, and feeding it into the
