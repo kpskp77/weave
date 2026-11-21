@@ -11,7 +11,19 @@ reason is in the header comment of the file it names.
 Weave is a behaviour orchestration layer between C++ test logic and EDA simulation kernels: the API
 is borrowed from Python asyncio, but **does not use C++20 coroutines** — blocking semantics are
 carried by backend simulation processes (when an SV process / SystemC SC_THREAD suspends, the entire
-C++ call stack freezes).
+C++ call stack freezes). The model behind every rule in this file is that **a simulation process is
+a coroutine, not an OS process**: the kernel's scheduler runs exactly one simulation process at a
+CPU instant (no preemption, no parallelism between tasks), a process suspends only at its explicit
+blocking points — all of them the single `detail::backend_wait()` → `port::wait` path — so
+everything a body does between two blocking points is atomic with respect to every other task
+(registry mutation, unlinking a waiter, handing a lock to the queue head or clearing a flag needs no
+`std::mutex` / `std::atomic` / spinlock / `std::thread`, which would be meaningless inside the
+simulator and across DPI), while state that must outlive a suspension has to be consistent and
+published *before* entering `port::wait`, because from that point another process may inspect or
+mutate it. Everything else follows: cancellation is cooperative because a body cannot be preempted
+and a process cannot be killed; an edge is never buffered, so ordering comes from a preceding
+blocking point or event rather than from timing; and no test needs a sleep to "let the other side
+catch up".
 
 ## Build and verify (mandatory after changes)
 
