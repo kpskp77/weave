@@ -78,7 +78,11 @@ bookkeeping state is corrupted. (The single `disable fork` in the backend — th
 frame; that is the documented exception, not a loophole.) This is isomorphic to asyncio's
 cooperative cancellation (`CancelledError` raised at await points, catchable and refusable — a body
 that catches it, cleans up and returns normally ends DONE, because cancellation is a request, not a
-kill). `cancel(msg)` matches asyncio 3.9+'s `Task.cancel(msg)`: msg is stored in the task bookkeeping, and
+kill). A request that never reaches the body still decides the outcome: if the body ends normally
+with the flag still set (it hit no blocking point after the cancel — a foreign suspension, see
+below), the dispatch entry records CANCELLED instead of DONE, mirroring asyncio's `StopIteration`
+branch ("Task is cancelled right before coro stops", the result discarded); an exception the body
+raises still wins and leaves it FAILED. `cancel(msg)` matches asyncio 3.9+'s `Task.cancel(msg)`: msg is stored in the task bookkeeping, and
 the same msg is preserved both in the `CancelledError` injected at the blocking point and where
 later `await`/`gather` rethrow it; when a combinator cascade-cancels sibling tasks it passes an
 empty msg (msg belongs to the context of whoever initiated the cancellation).
@@ -137,9 +141,14 @@ Weave owns exactly one suspension point, so code leaves that contract in two way
 
 **What a foreign suspension costs.** Cancellation is delivered only at a blocking point, so
 `cancel()` on a foreign-blocked task is armed and stays armed: it lands when the body reaches its
-next weave wait after returning — or never, if the body returns without one (the task then ends DONE,
-which is what asyncio does when cancelling a coroutine that never awaits again). Nothing shortens
-that without a preemptive kill, which this design bans (see "Why cancellation is cooperative").
+next weave wait after returning. If the body returns without one, the terminal state is still
+CANCELLED — the dispatch entry honours a still-armed flag when the body ends normally (asyncio's
+`StopIteration` branch; an exception from the body still wins and leaves it FAILED), so the
+bookkeeping at least stops reporting a requested cancellation as a clean finish. What no flag can
+shorten is promptness: the body keeps running until it returns on its own, and a
+`wait_for` / `TaskGroup::wait()` landing leg attached to it waits exactly that long. Nothing
+shortens that without a preemptive kill, which this design bans (see "Why cancellation is
+cooperative").
 
 The consequence is narrower than it sounds, and it is worth stating precisely, because the promise
 it strains is the *landing* one, not the timeout one: `wait_for(t, d)` reaches `d` honestly, cancels,
@@ -167,7 +176,10 @@ Two cheaper alternatives are preferred when the blocking can be reshaped at all:
 - **Poll cooperatively between chunks**: a body that can break its work into steps may call
   `sleep(0)` between them. It passes through the blocking point, so an armed cancellation is
   injected there and the body stops with ordinary unwinding (at the cost of a scheduling step per
-  chunk).
+  chunk). The terminal state is CANCELLED under either shape — an armed flag that survives to the
+  end is honoured too (see "Why cancellation is cooperative") — so what chunking buys is stopping
+  *at a boundary* instead of after the whole region; that is also what bounds the landing leg, so
+  the chunk size is the responsiveness you are promising.
 
 **Ownerless waits** are the second tier of the same problem, and `backend_wait` splits them by what
 the primitive does with the identity. Leaf waits (`sleep`, `Event::wait`, `Pulse::wait`,
@@ -183,9 +195,10 @@ terminal record to the wait graph and could never be cancelled. Identity itself 
 into weave while a task is parked and see `current_task() == nullopt` instead of the parked task's
 name.
 
-Honest diagnostics limitation: a cancelled-but-foreign-blocked task is indistinguishable from a busy
-one — `RUNNING`, no wait node — and `cancelled()` reports the terminal state only, so nothing in the
-public API tells the two apart.
+Honest diagnostics limitation: while a cancelled task is foreign-blocked it is indistinguishable
+from a busy one — `RUNNING`, no wait node — so nothing in the public API tells the two apart;
+`cancelled()` has an answer only once the body ends, and then it is CANCELLED because the armed flag
+is honoured at completion (see "Suspension outside weave").
 
 ### Deadlock diagnostics: only the edges the core can see
 

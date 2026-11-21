@@ -127,7 +127,10 @@ public:
   // Cooperative cancellation (matching asyncio Task.cancel(msg), Python 3.9+):
   // PENDING → the body does not run; RUNNING → CancelledError(msg) is thrown at the next blocking
   // point; WAITING → woken immediately and CancelledError(msg) thrown at the blocking point. A task
-  // may catch CancelledError to refuse cancellation.
+  // may catch CancelledError to refuse cancellation. A RUNNING body that reaches no further
+  // blocking point (a suspension weave cannot see) still ends CANCELLED once it returns normally,
+  // as asyncio's Task does when the coroutine stops before its next await; an exception it raises
+  // still wins (the task ends FAILED).
   // msg is an optional cancellation reason; an empty string means a plain cancellation; whoever
   // awaits this task sees a CancelledError carrying the same msg.
   // const: Task is a handle, and cancelling changes the bookkeeping state of the referenced task,

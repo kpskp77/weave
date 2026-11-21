@@ -317,17 +317,36 @@ extern "C" void weave_task_main(int task_id) {
     weave::detail::trace_task()->trace("task {} '{}': running", task_id, r.name);
     try {
       r.body();
-      r.state = weave::detail::TaskState::DONE;  // Swallowing CancelledError and returning → DONE
-      weave::detail::trace_task()->debug("task {} '{}': done", task_id, r.name);
+      if (r.cancel_armed) {
+        // The cancel arrived while the body was not at a blocking point — in practice a foreign
+        // suspension (state stays RUNNING, see "Suspension outside weave" in
+        // docs/architecture.md) or a self-cancel — so it was never injected and the body ends
+        // first. The terminal state is still CANCELLED, exactly as asyncio's
+        // Task.__step_run_and_handle_result does in its StopIteration branch ("Task is cancelled
+        // right before coro stops"). cancel_msg is kept for the rethrow at await; a body that
+        // *received* CancelledError and refused it had the flag cleared at the injection site and
+        // still ends DONE. An exception from the body wins over an undelivered cancellation
+        // (FAILED, as in asyncio), so only this normal-return path converts.
+        r.cancel_armed = false;
+        r.state = weave::detail::TaskState::CANCELLED;
+        weave::detail::trace_task()->debug(
+            "task {} '{}': cancelled at body completion, before a blocking point ({})", task_id,
+            r.name, r.cancel_msg.empty() ? "no reason" : r.cancel_msg);
+      } else {
+        r.state = weave::detail::TaskState::DONE;  // Swallowing CancelledError and returning → DONE
+        weave::detail::trace_task()->debug("task {} '{}': done", task_id, r.name);
+      }
     } catch (const weave::CancelledError& e) {
       r.state = weave::detail::TaskState::CANCELLED;
       weave::detail::trace_task()->debug("task {} '{}': cancelled ({})", task_id, r.name,
                                          e.msg().value_or("no reason"));
     } catch (const std::exception& e) {
+      r.cancel_armed = false;  // The failure wins; a terminal record never keeps an armed flag
       r.state = weave::detail::TaskState::FAILED;
       r.eptr = std::current_exception();
       weave::detail::trace_task()->debug("task {} '{}': failed: {}", task_id, r.name, e.what());
     } catch (...) {
+      r.cancel_armed = false;
       r.state = weave::detail::TaskState::FAILED;
       r.eptr = std::current_exception();
       // Not a std::exception (CancelledError is caught above): no what() to print

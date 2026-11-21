@@ -1,5 +1,6 @@
 // Task primitive semantic self-check: create_task scheduling timing, the various cancel paths
-// (PENDING skips the body / injection at the blocking point / refusing cancellation), cancel
+// (PENDING skips the body / injection at the blocking point / refusing cancellation / a cancel that
+// is armed but never delivered before the body returns), cancel
 // idempotence on terminal tasks, handle attributes (valid/get_name/id), sleep(0)'s zero-time
 // yield (it must really hand control over, on every call — case6 only proves that a 0-tick wait
 // returns, case10/case11 pin the hand-over itself) and task identity (current_task, case12).
@@ -279,6 +280,51 @@ WEAVE_TEST(task_semantics) {
     const auto after = current_task();
     if (!after || after->id() != self->id())
       throw std::logic_error("case12: awaiting must restore the caller's identity");
+  });
+
+  // case 13: a cancel that is armed while the body is not at a blocking point and is never
+  // injected — the body ends first. asyncio still makes the task CANCELLED there (its
+  // __step_run_and_handle_result StopIteration branch, "Task is cancelled right before coro
+  // stops"), discarding the result, so `cancelled()` must not lie with DONE and await must rethrow
+  // the armed msg. A self-cancel stands in for a foreign suspension: it is the same bookkeeping
+  // state (RUNNING with cancel_armed set), reached without a second process.
+  run_case(__func__, "case13", [&] {
+    auto victim = create_task("armed_at_return", [&] {
+      const auto self = current_task();
+      if (!self) throw std::logic_error("case13: a running task must see itself");
+      self->cancel("too late");
+    });
+    try {
+      victim.await();
+      throw std::logic_error("case13: an undelivered cancel must not leave the task DONE");
+    } catch (const CancelledError& e) {
+      if (e.msg() != std::string_view{"too late"})
+        throw std::logic_error("case13: await must rethrow the armed cancel msg");
+    }
+    if (!victim.done() || !victim.cancelled())
+      throw std::logic_error("case13: victim must be CANCELLED");
+  });
+
+  // case 14: an exception from the body wins over an armed but undelivered cancellation (asyncio's
+  // set_exception branch): the task ends FAILED, so a cancel request can never mask a real failure.
+  run_case(__func__, "case14", [&] {
+    auto victim = create_task("armed_then_failed", [&] {
+      const auto self = current_task();
+      if (!self) throw std::logic_error("case14: a running task must see itself");
+      self->cancel("ignored");
+      throw std::runtime_error("boom");
+    });
+    try {
+      victim.await();
+      throw std::logic_error("case14: await must rethrow the failure");
+    } catch (const CancelledError&) {
+      throw std::logic_error("case14: an armed cancel must not mask the body's failure");
+    } catch (const std::runtime_error& e) {
+      if (std::string_view{e.what()} != "boom")
+        throw std::logic_error("case14: await must rethrow the original failure");
+    }
+    if (!victim.done() || victim.cancelled())
+      throw std::logic_error("case14: victim must be FAILED, not CANCELLED");
   });
 
   report(__func__);
