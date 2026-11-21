@@ -30,14 +30,14 @@ DPI 边界（`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`）：
   `weave_sv_set_root_done_ev`、`weave_sv_wait`（三路等待，唯一的阻塞原语：先在包的等待者注册表中
   注册，再在等待者自己的唤醒事件上挂起 `if (w_state[wd] == 0) @(w_evt[wd])`，即一个持久标志加
   一条每等待者边沿，因为对注册表数组做水平敏感的 `wait` 在 VCS 上是 O(N²) 开销（见
-  `sv/weave_pkg.sv` 文件头）；超时一路由常驻定时器服务承担，其截止时间放在小顶堆里，使"找最早"与
-  "清出已到期"各为 O(log N)，而不是 O(armed) 的两次扫描——绝不用 `fork … join_any`，参见
-  [../AGENTS.md](../AGENTS.md) 的 "Pitfalls" 一节）。
+  `sv/weave_pkg.sv` 文件头）；超时一路由常驻定时器服务承担，其截止时间放在小顶堆里，使“找最早”与
+  “清出已到期”各为 O(log N)，而不是 O(armed) 的两次扫描——绝不用 `fork … join_any`，参见
+  [../AGENTS.md](../AGENTS.md) 的 “Pitfalls” 一节）。
 - **export（由 C++ 提供）**：`weave_task_main`（任务派发，SV 侧可经 `weave_sv_spawn` 到达）、
   `weave_start` / `weave_test_status`（tb bootstrap；包里的 `weave_run` 任务会调用它们）、
   `weave_sv_edge_id` / `weave_sv_edge_bind`
   （具名的 `sv::Edge` 与测试台的 `weave_edge` 会合到同一个 id 上，见下）。反方向的 import 都在
-  后端自持的 DPI 作用域守卫下发出——见下文"跨 DPI 边界的任务身份"。
+  后端自持的 DPI 作用域守卫下发出——见下文“跨 DPI 边界的任务身份”。
 
 ### 与 SystemVerilog 共享的具名边沿
 
@@ -52,13 +52,13 @@ DPI 边界（`src/backend/svdpi.cpp` + `sv/weave_pkg.sv`）：
 | `e.fire()` | `weave_sv_trigger(e.id)` / `->ev_table[e.id]` |
 | `e.wait()` | `e.wait_edge()` / `weave_sv_wait(e.id, -1, -1, st)` / `@(ev_table[e.id])` |
 
-只有单向的 id 交换是廉价的——测试台读不到 C++ 变量，C++ 也没有测试台函数的符号——所以让"名字"
+只有单向的 id 交换是廉价的——测试台读不到 C++ 变量，C++ 也没有测试台函数的符号——所以让“名字”
 承担绑定，id 随之流动：C++ 的 `sv::Edge` 构造时登记自己创建（或已存在的）id，`weave_edge::new`
 按名字查询（`weave_sv_edge_id`），只有在 C++ 还没登记时才自己创建并发布（`weave_sv_edge_bind`）。
 因此两种创建顺序都成立；`bound()` 表示测试台是否已经认领该名字——SystemC 后端下 `Edge` 只是普通的
 `sc_event`，故恒为 false，与后端无关的 payload 就以它决定是否走跨语言分支（见 tests/sv_edge_semantics.cpp
 的 case1 / case4，由 tests/weave_tb.sv 驱动）。这里的边沿永不销毁：生命周期是整个 run，因此裸句柄
-那套"等待者不得活过事件"的纪律不适用。
+那套“等待者不得活过事件”的纪律不适用。
 
 手动运行方式（用于调试；`just examples` / `just smoke` 会自动执行同样的步骤）：
 
@@ -118,13 +118,13 @@ linkage：每个用到该类型的翻译单元都会发出一个弱定义；又�
 - 检查方式：`nm -D <exe> | grep _ZTIN5weave` 应全为 `U`（未定义），`D`/`V` 定义只出现在
   `libweave.so` 中；一旦把 `what()` 改回内联定义，这些定义就会重新出现在可执行文件里，`catch` 也会
   退化为不匹配；
-- 代价：`CancelledError` 因此成为多态类型（带有虚析构，不再可平凡拷贝）；其不变量归结为"借用视图、
-  无堆成员、拷贝不抛"（`task.hpp` 中的 `static_assert` 正好守着这三点）。
+- 代价：`CancelledError` 因此成为多态类型（带有虚析构，不再可平凡拷贝）；其不变量归结为“借用视图、
+  无堆成员、拷贝不抛”（`task.hpp` 中的 `static_assert` 正好守着这三点）。
 
 通过 `-sv_lib` 加载 `weave` 与示例/测试库（VCS 场景）的机制相同：库中唯一的一份 RTTI 通过动态链接器
 共享。
 
-**跨 ABI 的 fatal 报告**：不可恢复路径（见 [architecture](architecture_zh.md) 的"契约违例为何直接终止运行"）
+**跨 ABI 的 fatal 报告**：不可恢复路径（见 [architecture](architecture_zh.md) 的“契约违例为何直接终止运行”）
 从不抛异常，因此没有 typeinfo 需要共享。它经 `port::fatal` 离开，而这是后端相关的，因而实现在后端 DSO 中：
 SVDPI 调用 `weave_sv_fatal`（`sv/weave_pkg.sv` 中的 `export "DPI-C" task`，内部 `$fatal(1, …)`），
 SystemC 调用 `SC_REPORT_FATAL`。两者都直接终止进程，使用方任何栈帧都不会退栈——这正是使用方无法把契约违例
@@ -132,10 +132,10 @@ SystemC 调用 `SC_REPORT_FATAL`。两者都直接终止进程，使用方任何
 
 ### 跨 DPI 边界的任务身份
 
-`port::owner_task()`——"这个**进程**正在执行哪个任务 body，没有则 0"——是唯一无法放在 `src/core` 里的
+`port::owner_task()`——“这个**进程**正在执行哪个任务 body，没有则 0”——是唯一无法放在 `src/core` 里的
 状态：它按仿真进程存活，而 C++ 全局变量是整进程唯一的。跨语言回调时两者并不等同：当测试台（或 harness）
-在另一个任务冻结于某个导出窗口期间回调进 C++ 时，C++ 栈属于**调用方**，于是"最内层的
-`weave_task_main` 帧"回答的是错误的问题，只有后端能把两者区分开。
+在另一个任务冻结于某个导出窗口期间回调进 C++ 时，C++ 栈属于**调用方**，于是“最内层的
+`weave_task_main` 帧”回答的是错误的问题，只有后端能把两者区分开。
 
 - SVDPI：`sv/weave_pkg.sv` 中的 `int p_owner [process]`，经 `weave_sv_current_task()` 读（必须是
   `function automatic`——`process::self()` 在静态函数上下文里非法），经 `weave_sv_set_owner()` 写
@@ -144,11 +144,11 @@ SystemC 调用 `SC_REPORT_FATAL`。两者都直接终止进程，使用方任何
   经 `sc_get_current_process_handle().get_process_object()` 读取（不在任何进程里时 `valid()` 为假，
   即 `sc_main`，正好就是无主那一格）。按进程而不是按一个 int 存，才能让普通 `SC_THREAD` 安全：
   这种线程完全可能在某个任务 body 冻结时调进 weave，它必须读到**没有**身份，而不是那个任务的身份
-  （`tests/scope_sc_thread_semantics.cpp` 钉住这一点）。用标量加 `port::wait` 内的保存/恢复，只能隔离
-  "通过端口挂起"的协程，并且会把冻结任务的旧值留在那里给后来者读到。
+  （`tests/scope_sc_thread_semantics.cpp` 专门覆盖这一点）。用标量加 `port::wait` 内的保存/恢复，只能隔离
+  “通过端口挂起”的协程，并且会把冻结任务的旧值留在那里给后来者读到。
 - 无主挂起：`port::wait` 接受 `abort_id < 0`（没有取消一路），只给那些可能跑在任务 body 之外的叶子
   等待使用（`sleep`、`Event::wait`、`Pulse::wait`、`sv::Edge::wait`）。SystemC 构造不带 abort 一路的等待；
-  SV 的 `weave_sv_wait` 本来就支持 `abort_id < 0`，包自己的 `weave_edge::wait_edge` 用的就是这个形状。
+  SV 的 `weave_sv_wait` 本来就支持 `abort_id < 0`，包自己的 `weave_edge::wait_edge` 用的也是这种形式。
   其余全部——组合子与携带所有权的原语——仍以
   `std::logic_error("weave: blocking primitive outside task context")` 拒绝无主调用方：它们要么把
   `TaskRecord` 交给队列头，要么需要取消一路，无主等待者永远不会被交接。
@@ -160,7 +160,7 @@ SystemC 调用 `SC_REPORT_FATAL`。两者都直接终止进程，使用方任何
   泄漏给每个消费者，因此 `src/backend/svdpi.cpp` 给**每一个** import 套上作用域守卫：缓存
   `svGetScopeFromName("weave_pkg")`，调用期间切过去，返回时恢复调用方原来的作用域（消费者自己的
   export 仍然需要它）。消费者因此不再需要任何 `svSetScope`；`tests/svdpi_scope_semantics.cpp`
-  在一个不 import 任何包的 module 里钉住这点，也钉住守卫的"恢复"一半。
+  来自一个不 import 任何包的 module，既覆盖这一点，也覆盖守卫“恢复作用域”那一半。
 
 ## 新增后端
 

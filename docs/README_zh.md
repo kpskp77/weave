@@ -24,9 +24,9 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `task.get_name()` | `task.get_name()` | |
 | `task.id()` | `id(task)` | 稳定、单调递增、不回收；无效句柄为 -1 |
 | `current_task()` | `asyncio.current_task()` | 返回 `optional<Task>`；无任务上下文（harness 链、done 回调）为 `nullopt`；不挂起 |
-| `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 让出零时间 |
+| `sleep(d)` | `await asyncio.sleep(t)` | `sleep(0)` 让出一次、时间不前进 |
 | `now()` / `now_ticks()` | `loop.time()` | 绝对仿真时间；不挂起，单调不减 |
-| `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`；已到期的截止时间不挂起直接返回 |
+| `time_point` + `wait_until(tp)` | `loop.call_at` | `wait_until(now() + d)` ≡ `sleep(d)`；已到期的截止时间不挂起就返回 |
 | `Event` | `asyncio.Event` | set/clear 竞争按边沿语义处理；标志会保持（sticky） |
 | `Pulse` | — | 纯边沿（asyncio 无对应物，故用 C++ 命名）：`fire()` 只唤醒此刻在场的等待者、不留标志；先 fire 后 wait **不会**被记住；`generation()` 供调用方核对是否漏了边沿 |
 | `sv::Edge` | — | 具名跨语言边沿（asyncio 无对应物，故用 C++ 命名）：`sv::Edge e{"clk"}` 以“名字”把 C++ 与 SV 的 `weave_edge` 绑到同一个事件上，两种创建顺序都成立；`fire()`/`wait()` 与 `Pulse` 同语义（先 fire 后 wait 会丢失）；`bound()` 表示测试台是否已认领该名字（SystemC 后端恒为 false） |
@@ -38,14 +38,14 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 | `PriorityQueue<T>` / `LifoQueue<T>` | `asyncio.PriorityQueue` / `asyncio.LifoQueue` | API 与 `Queue` 相同；最小优先（小顶堆 ≡ heapq）/ 后进先出 |
 | `gather(t1, t2, ...)` | `await asyncio.gather(*aws)` | 默认形式（首个失败即抛出） |
 | `gather({t1, ...}, return_exceptions)` | `await asyncio.gather(*aws, return_exceptions=True)` | 返回 `vector<exception_ptr>`，不提前抛出 |
-| `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义；取消**等待者**同样会取消并等 `t` 落地 |
-| `timeout(body, d)` | `async with asyncio.timeout(d)` | 给一段工作设定上界：body 作为子任务运行，超时先取消并等其落地再抛 `TimeoutError`；期限覆盖 body 的整体执行（没有协程块可以用来“上弦”） |
+| `wait_for(t, d)` | `await asyncio.wait_for(aw, t)` | asyncio 3.12+ 超时语义；取消**等待者**同样会取消 `t`，并等它结束 |
+| `timeout(body, d)` | `async with asyncio.timeout(d)` | 给一段工作设定上界：body 作为子任务运行，超时先取消、等它结束，再抛 `TimeoutError`；期限覆盖 body 的整个执行过程（这里没有协程块可以在进入时开始计时） |
 | `wait({t1, ...}, return_when, timeout)` | `await asyncio.wait(fs, ...)` | 返回 `{done, pending}`；不取消子任务 |
 | `shield(t)` | `asyncio.shield(aw)` | 返回代理任务；取消/超时止步于代理 |
 | `as_completed({t1, ...})` | `asyncio.as_completed(fs)` | `next()` 阻塞并按完成顺序产出 |
-| `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | 结构化并发；子任务失败会取消兄弟任务，全部落地后以 `ExceptionGroup` 抛出 |
+| `TaskGroup` + `tg.create_task` / `tg.wait()` | `asyncio.TaskGroup` | 结构化并发；子任务失败会取消兄弟任务，等全部结束之后才以 `ExceptionGroup` 抛出 |
 | `CancelledError` | `asyncio.CancelledError` | 取消信号；**不**派生自 `std::exception`，详见 [architecture](architecture_zh.md) |
-| `ExceptionGroup` | `ExceptionGroup`（由 `asyncio.TaskGroup` 抛出） | 聚合 `TaskGroup` 的子任务失败，按完成顺序排列；单个失败也会包组 |
+| `ExceptionGroup` | `ExceptionGroup`（由 `asyncio.TaskGroup` 抛出） | 聚合 `TaskGroup` 的子任务失败，按完成顺序排列；只有一个失败时也会打包成组 |
 | `TimeoutError` | `TimeoutError` | 超时信号；派生自 `std::exception` |
 | `BrokenBarrierError` | `asyncio.BrokenBarrierError` | 屏障被破坏/重置信号；派生自 `std::runtime_error`（≡ `RuntimeError`） |
 | `QueueEmpty` / `QueueFull` / `QueueShutDown` | `asyncio.QueueEmpty` / `asyncio.QueueFull` / `asyncio.QueueShutDown` | 由 `*_nowait` 形式抛出；派生自 `std::runtime_error`（≡ `RuntimeError`） |
@@ -58,8 +58,8 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
 - **契约违例直接终止运行**：core 能够证明的违例不可恢复——可诊断的等待环、在没有 weave 任务的进程里
   调用阻塞原语、body 返回之后仍然挂起——都会先打印
   `weave: fatal: <what> (site <file:line>, task N '<name>')`、dump 等待图，然后终止仿真（`$fatal` /
-  `SC_REPORT_FATAL`）。它们刻意不用异常：`catch (...)` 会把必然的挂死变成一场“只是有点慢”的运行，
-  而在无主的调用点上退栈会直接穿过使用方自己的 DPI export。调用方能恢复的误用
+  `SC_REPORT_FATAL`）。它们刻意不用异常：随便一个 `catch (...)` 就会把必然的挂死变成一次“只是有点慢”的运行；
+  而在无主的调用点上退栈，会直接穿过使用方自己的 DPI export。调用方能恢复的误用
   （`Lock`/`Semaphore` 协议错误、组合子误用）仍然抛 `std::logic_error`。
 
 - **没有协程，也没有 await**：组合子是普通的阻塞调用，不是 awaitable，并且需要在任务上下文中调用
@@ -67,13 +67,13 @@ Weave 的 API 语义**遵循 asyncio**，下表为完整对照；与 asyncio 的
   任务结束或出现首个失败/取消，并且不返回值。
 - **没有事件循环对象**：调度由仿真内核负责。`create_task` 创建的任务只有在**父任务到达下一个真正的
   挂起点（或结束）之后**才开始运行，与 asyncio `create_task` 的时序一致。
-- **取消永不撕裂调用栈**：`cancel()` 只置位标志并唤醒任务，`CancelledError` 在阻塞点注入，因此栈通过
-  普通异常传播展开，RAII 总会执行；杀掉仿真进程（`process::kill()`、SV `disable`）是被禁止的，因此
-  不会有任何东西被异步拆除。
-- **在 weave 之外挂起的代码，在那段时间里不可取消**：`cancel()` 只在 weave 自己的阻塞点落地，所以
+- **取消不会拆掉调用栈**：`cancel()` 只置位标志并唤醒任务，`CancelledError` 在阻塞点注入，于是调用栈
+  按普通异常传播的方式展开，RAII 一定会执行；禁止杀掉仿真进程（`process::kill()`、SV `disable`），
+  所以不会出现任何异步拆除。
+- **在 weave 之外挂起的代码，在那段时间里不可取消**：`cancel()` 只在 weave 自己的阻塞点生效，所以
   body 阻塞在另一个 DPI export、SV 等待或第三方阻塞调用期间会继续运行（`state` 仍是 `RUNNING`，
-  等待图里没有节点），`wait_for` / `TaskGroup` 的收尾也只能等它返回之后再进行。这类区域应当交给
-  `shield`，或者把通知改造成对 `Event` / `sv::Edge` 的等待；在任务之外则只允许叶子等待。见
+  等待图里没有节点），`wait_for` / `TaskGroup` 的收尾也只能等它返回之后才完成。这类区域应当交给
+  `shield`，或者把通知改成等 `Event` / `sv::Edge`；在任务之外则只允许叶子等待。见
   [架构](architecture_zh.md#weave-之外的挂起外部阻塞与无主等待)。
 
 ### 已知偏差
@@ -98,13 +98,15 @@ WEAVE_TEST(my_test) {
 }
 ```
 
-### 诊断挂死
+### 排查挂死
 
-死锁永远不会超时，所以最后手段是 `weave::debug`：`debug::snapshot()` 返回任务等待图——每个存活任务
-阻塞在哪个后端事件上、已阻塞多久（**仿真**时间）——`debug::dump(tag)` 把它逐行经 simlog（`weave.debug`，info 级）打出。两者都不
-挂起、也不改状态，因此可以从 done 回调或 harness 链里调用；dump 与 core trace 共用同一条输出流、
-同一个仿真时间戳和同一个 `SIMLOG_LEVEL` 开关（`SIMLOG_LEVEL="weave*=debug"` 打开生命周期 trace）。快照能描述挂死，但**不能**证明存在环
-（任何人都可以 `set()` 一个 `Event`，“谁该唤醒它”没有任何地方记录）。
+死锁不会自己超时，所以最后一招是 `weave::debug`：`debug::snapshot()` 返回任务等待图——每个还活着的
+任务阻塞在哪个后端事件上、已经等了多久（**仿真**时间）；`debug::dump(tag)` 把它交给 simlog
+（`weave.debug`，info 级）逐行打印。两者都不挂起、也不改状态，所以从 done 回调或 harness 链里也能调用；
+dump 与 core trace 共用同一条输出流、同一个仿真时间戳和同一个 `SIMLOG_LEVEL` 开关
+（`SIMLOG_LEVEL="weave*=debug"` 可打开生命周期 trace）。快照能把挂死描述清楚，但**不能**证明存在环
+（谁都可以 `set()` 一个 `Event`，“该由谁唤醒它”没有任何地方记录）。详见
+[架构](architecture_zh.md#死锁诊断只诊断-core-看得见的边)。
 
 ## 构建与运行
 
@@ -113,9 +115,9 @@ just smoke      # 语义自检：构建 smoke payload，并通过 xmake run 逐�
 just examples   # 示例回归：一次跑通 systemc 与 svdpi 两个后端
 ```
 
-两者职责不同，且缺一不可：`tests/` 中的断言体与 `examples/` 中的程序永远不会被编译进对方的
+两者分工不同，而且都不能省：`tests/` 中的断言体与 `examples/` 中的程序永远不会被编译进对方的
 payload；示例完全按用户的方式构建（只用公共头、链接 `libweave.so`，真正跨越 DSO 边界）。产物位于
-`build/<plat>/<arch>/<mode>/`；没有 VCS/IES 时，SVDPI 驱动会打印 SKIP 并返回 0（等价于只做编译
+`build/<plat>/<arch>/<mode>/`；没有 VCS/IES 时，SVDPI 运行脚本会打印 SKIP 并返回 0（等价于只做编译
 检查）。后端切换、SystemC bootstrap 入口点以及新增后端的方法，见 [backends](backends_zh.md)。
 
 ## 语言标准：C++17 及以上
@@ -134,12 +136,13 @@ payload；示例完全按用户的方式构建（只用公共头、链接 `libwe
 
 ```
 include/weave/    公共 API：weave.hpp（伞头）+
-                  config/time/task/event/locks/semaphore/barrier/sync/test[/sc]
-src/core/         与后端无关的核心 + port.hpp 后端契约
+                  time/task/event/locks/semaphore/barrier/sync/test[/sc]
+src/core/         与后端无关的核心 + port.hpp 后端契约 + config.hpp（内部宏）
 src/backend/      后端适配器（恰好一个，由宏选择）：svdpi.cpp（默认）/ systemc.cpp
 sv/               SVDPI 后端协议的 SV 侧（事件表、三路 wait、spawn）
 examples/         按领域划分的公共 API 演示 + 一个端到端用例（just examples 回归）
-tests/            语义自检断言体 + VCS 运行脚本及其 SV 测试顶层（just smoke 回归）
+tests/            语义自检断言体 + VCS 运行脚本（tests/svdpi/run.sh）及其 SV 测试顶层
+                  （just smoke 回归）
 docs/             architecture.md / backends.md 及其中文版 README_zh.md / architecture_zh.md / backends_zh.md
 ```
 
