@@ -1,0 +1,180 @@
+#pragma once
+
+// Task primitives: Task / create_task / sleep / CancelledError. Semantics follow asyncio.Task.
+// create_task only schedules, it does not run immediately: a child task is scheduled only after
+// the parent reaches its next blocking point (or finishes), which the backend process semantics
+// guarantee.
+
+#include <functional>
+#include <initializer_list>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <weave/time.hpp>
+
+namespace weave {
+
+class Task;
+struct CancelledError;
+
+namespace detail {
+struct TaskRecord;  // core bookkeeping (defined in src/core/core_internal.hpp)
+
+// Constructs a CancelledError carrying a message (msg is owned by a TaskRecord; the view stays
+// valid for the lifetime of the throw). Takes a view rather than a const char*: a view does not own
+// data, consistent with the borrowed semantics of CancelledError::msg_, and callers (always
+// std::string members) can pass the whole string without a strlen.
+// Invariant: the view must come from a std::string's full contents (NUL immediately after),
+// because CancelledError::what() returns data() directly and uses it as a C string.
+// Exposed to detail:: so the dispatch path in sync.cpp can preserve the original message.
+CancelledError cancelled_with_msg(std::string_view msg) noexcept;
+}  // namespace detail
+
+// Cancellation signal. Corresponds to asyncio.CancelledError, injected at a task's blocking
+// point. Deliberately does not derive from std::exception: matching the hierarchy where
+// CancelledError belongs to BaseException since asyncio 3.8 — the idiomatic
+// catch (const std::exception&) backstop must not silently swallow cancellation (swallowing it
+// would make the task wrongly finish as DONE and break gather / TaskGroup / wait_for's judgement
+// of the CANCELLED terminal state). To catch it, write catch (const weave::CancelledError&) or
+// catch (...) explicitly.
+//
+// The message matches asyncio Task.cancel(msg) (Python 3.9+): msg is an optional description
+// passed by the canceller; no message (plain cancellation) corresponds to asyncio's msg=None and
+// is expressed as nullopt. The view returned by msg() points at TaskRecord::cancel_msg and is
+// valid only for the lifetime of the same throw that carried the exception.
+//
+// what() is a **virtual function** with an **out-of-line definition** (src/core/task.cpp) and is
+// diagnostics only. Both facts are deliberate: an out-of-line virtual function acts as the key
+// function, so the vtable/typeinfo is emitted exactly once, inside the library, while consumer
+// TUs keep only undefined references; only then does a cross-DSO catch match (libc++abi compares
+// type_info by pointer; if the type stayed non-polymorphic, typeinfo would degrade into one weak
+// definition per TU and catch would silently mismatch under hidden-visibility builds). The cost
+// is that a polymorphic class is no longer trivially copyable (the standard makes the copy
+// constructor of a class with virtual functions non-trivial) — catch correctness is chosen here,
+// and the assertions instead watch the properties that really matter (see the static_assert
+// below).
+struct CancelledError {
+  // A polymorphic type must declare a virtual destructor: CancelledError is constructed/destroyed
+  // on the heap through paths such as std::make_exception_ptr (gather(return_exceptions)), and a
+  // non-virtual destructor triggers -Wdelete-non-abstract-non-virtual-dtor (a hard compile
+  // failure under -Werror).
+  virtual ~CancelledError() = default;
+  virtual const char* what() const noexcept;
+  // msg=None → nullopt (no longer a nullptr sentinel)
+  std::optional<std::string_view> msg() const noexcept { return msg_; }
+
+private:
+  std::optional<std::string_view> msg_;
+  friend CancelledError detail::cancelled_with_msg(std::string_view msg) noexcept;
+};
+
+// The exception object = "a nullable view + a discriminant", with no heap members and a nothrow
+// copy: taking the exception path allocates nothing extra. Note that trivially_copyable cannot be
+// required: what() is the key function emitted only in the library (see above), and the standard
+// makes the copy constructor of a polymorphic class non-trivial — RTTI being unique across DSOs
+// (catch correctness) takes priority over that trait. What is watched here instead are the two
+// things actually wanted: nothrow copy/destruction, and no heap members at all.
+static_assert(std::is_nothrow_copy_constructible_v<CancelledError> &&
+                  std::is_nothrow_destructible_v<CancelledError>,
+              "CancelledError must be cheap to throw: nothrow copy, no heap members");
+
+// A wait that can never be satisfied because the waiter is part of what it waits for is *not* an
+// exception: only the edges visible in the core are diagnosable — `Task::await()` on itself and
+// `TaskGroup::wait()` called from one of the group's own children — because those are the only
+// "who waits for whom" relations the bookkeeping knows. A cycle through Event set/wait (who will
+// set the event this task is blocked on) is not expressible in the API surface, so it is not
+// diagnosed: that hang has to be surveyed instead (debug::snapshot(), see docs/architecture.md,
+// "Deadlock diagnostics").
+//
+// Such a violation ends the simulation on the spot (detail::fatal_report → port::fatal). There
+// is deliberately no exception type for it: a `catch (...)` anywhere in user code could swallow the
+// diagnosis, and a hang that was swallowed is indistinguishable from a run that merely takes long —
+// these are the only failures for which the core cannot rely on the caller's cooperation.
+
+namespace detail {
+// Combinator entry points (defined in src/core/sync.cpp); declared here only for Task's friends.
+void gather_impl(std::initializer_list<Task> tasks);
+// Handle/id conversion inside combinators (defined in src/core/task.cpp).
+int task_id(const Task& t);
+Task task_from_id(int id);
+// Backend bootstrap entry (defined in src/core/registry.cpp); only for the backend adapter layer.
+int run_registered_test();
+}  // namespace detail
+
+class Task {
+public:
+  Task() = default;
+
+  // Stable identity of the referenced task: unique among all tasks ever created, monotonically
+  // increasing from 1, never recycled; -1 for a default-constructed (invalid) handle. Diagnostics
+  // only (logging, wait-graph dumps, cross-referencing the backend trace) — no behavioural meaning.
+  // Unlike get_name(), which asyncio keeps free-form, this is the handle's identity: the same id a
+  // backend trace prints and current_task() returns.
+  [[nodiscard]] int id() const noexcept { return id_; }
+
+  // Waits for the task to finish. A FAILED task rethrows its exception; a CANCELLED task throws
+  // CancelledError. Must be called inside a task context (it is a blocking primitive).
+  void await();
+
+  // Reached any terminal state (DONE / FAILED / CANCELLED), matching asyncio.Task.done()
+  [[nodiscard]] bool done() const;
+  [[nodiscard]] bool cancelled() const;
+  [[nodiscard]] bool valid() const noexcept { return id_ >= 0; }
+  const std::string& get_name() const;  // Matches asyncio.Task.get_name()
+
+  // Cooperative cancellation (matching asyncio Task.cancel(msg), Python 3.9+):
+  // PENDING → the body does not run; RUNNING → CancelledError(msg) is thrown at the next blocking
+  // point; WAITING → woken immediately and CancelledError(msg) thrown at the blocking point. A task
+  // may catch CancelledError to refuse cancellation. A RUNNING body that reaches no further
+  // blocking point (a suspension weave cannot see) still ends CANCELLED once it returns normally,
+  // as asyncio's Task does when the coroutine stops before its next await; an exception it raises
+  // still wins (the task ends FAILED).
+  // msg is an optional cancellation reason; an empty string means a plain cancellation; whoever
+  // awaits this task sees a CancelledError carrying the same msg.
+  // const: Task is a handle, and cancelling changes the bookkeeping state of the referenced task,
+  // not the handle itself (same semantics as shared_ptr's const operator*), so cancellation may
+  // be initiated through a const Task& (e.g. gather's cascade cancellation).
+  void cancel(std::string msg = {}) const;
+
+private:
+  explicit Task(int id) : id_(id) {}
+  int id_ = -1;
+
+  friend Task create_task(std::string name, std::function<void()> body);
+  friend void detail::gather_impl(std::initializer_list<Task> tasks);
+  friend int detail::task_id(const Task& t);
+  friend Task detail::task_from_id(int id);
+  friend int detail::run_registered_test();
+};
+
+// The task currently executing, or nullopt outside a task context (the harness chain: the
+// registered-test driver, backend bootstrap callbacks, and done callbacks). Matches
+// asyncio.current_task(), including the None case. Non-suspending, never throws: it may be used
+// from logging and diagnostic code.
+//
+// "Outside a task context" is now real: the identity is owned per simulation process by the backend
+// (port::owner_task), so a task suspended in its own process cannot disturb the identity of a
+// process that called into C++ from simulation code, and the task dispatch entry clears it before
+// running done callbacks and before returning to the backend.
+std::optional<Task> current_task() noexcept;
+
+// Creates a task. As in asyncio: the new task does not run immediately, it is scheduled only after
+// the current task reaches its next blocking point (guaranteed by backend process semantics).
+Task create_task(std::string name, std::function<void()> body);
+
+template <typename F>
+Task create_task(std::string name, F&& body) {
+  static_assert(std::is_invocable_v<F&>, "weave: task body must be callable with no arguments");
+  return create_task(std::move(name), std::function<void()>(std::forward<F>(body)));
+}
+
+// ── Time waits ──────────────────────────────────────────────────────────
+// sleep(0) is a zero-time yield (corresponding to asyncio.sleep(0)): the caller is really
+// suspended and the scheduling step is handed over, but the simulated time does not advance. The
+// hand-over is not optional bookkeeping — it is what makes a pure-yield loop fair, so
+// tests/task_semantics.cpp pins it (case10/case11); an implementation may not turn it into a no-op.
+void sleep(duration t);
+
+}  // namespace weave

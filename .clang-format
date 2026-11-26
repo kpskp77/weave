@@ -1,0 +1,18 @@
+---
+BasedOnStyle: Google
+IndentWidth: 2
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+BreakBeforeBraces: Attach
+IndentAccessModifiers: false
+AccessModifierOffset: -2
+IndentPPDirectives: None
+SortIncludes: CaseSensitive
+SpaceAfterTemplateKeyword: true
+PointerAlignment: Left
+DerivePointerAlignment: false
+...
